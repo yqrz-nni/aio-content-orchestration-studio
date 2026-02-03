@@ -14,58 +14,57 @@ import {
   ProgressCircle
 } from "@adobe/react-spectrum";
 
+import { Runtime } from "@adobe/aio-lib-runtime";
+
+const runtime = new Runtime();
+
 /**
- * Minimal, clean App.js for an App Builder Experience Cloud Shell SPA.
- * - No tutorial components
- * - Simple "Connectivity" area you can extend
+ * Calls an App Builder web action by name.
+ * Works in `aio app run` and when deployed.
  *
- * Assumes your Runtime actions are exposed under /api/* (typical App Builder dev/proxy setup).
+ * actionName format:
+ *   "<package>/<action>"
+ * e.g.
+ *   "dx-excshell-1/listUnifiedPromos"
  */
-
-async function callApi(path) {
-  const res = await fetch(path, {
-    method: "GET",
-    headers: { Accept: "application/json" }
-  });
-
-  const text = await res.text();
-  let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    // leave as null; we'll show raw text
-  }
-
-  return {
-    ok: res.ok,
-    status: res.status,
-    json,
-    text
-  };
+async function invokeAction(actionName, body = {}) {
+  const action = runtime.action(actionName);
+  // action.invoke expects { params, headers, body } depending on usage;
+  // passing { body } is the common pattern for JSON payload.
+  const result = await action.invoke({ body });
+  return result;
 }
 
 function ResultPanel({ title, result }) {
   if (!result) return null;
 
   const payload =
-    result.json != null ? JSON.stringify(result.json, null, 2) : result.text;
+    result.data != null
+      ? JSON.stringify(result.data, null, 2)
+      : result.error != null
+        ? String(result.error)
+        : JSON.stringify(result, null, 2);
 
   return (
     <Well marginTop="size-200">
       <Flex direction="column" gap="size-100">
         <Flex alignItems="center" justifyContent="space-between">
           <Text UNSAFE_style={{ fontWeight: 600 }}>{title}</Text>
-          <Text>
-            {result.ok ? "✅" : "❌"} {result.status}
-          </Text>
+          <Text>{result.ok ? "✅" : "❌"}</Text>
         </Flex>
+
         <View
           borderWidth="thin"
           borderColor="dark"
           borderRadius="small"
           padding="size-200"
           backgroundColor="gray-75"
-          UNSAFE_style={{ maxHeight: 320, overflow: "auto", fontFamily: "monospace", fontSize: 12 }}
+          UNSAFE_style={{
+            maxHeight: 360,
+            overflow: "auto",
+            fontFamily: "monospace",
+            fontSize: 12
+          }}
         >
           <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>{payload}</pre>
         </View>
@@ -77,16 +76,12 @@ function ResultPanel({ title, result }) {
 export default function App() {
   const [loadingKey, setLoadingKey] = useState(null);
   const [results, setResults] = useState({
-    health: null,
-    aem: null,
-    ajo: null
+    aem: null
   });
 
-  const endpoints = useMemo(
+  const actions = useMemo(
     () => ({
-      health: "/api/health",
-      aem: "/api/aem/listUnifiedPromos", // change to /api/aem/listUnifiedPromos when you add it
-      ajo: "/api/ajo/ping"
+      aem: "dx-excshell-1/listUnifiedPromos"
     }),
     []
   );
@@ -94,12 +89,15 @@ export default function App() {
   async function runCheck(key) {
     try {
       setLoadingKey(key);
-      const r = await callApi(endpoints[key]);
-      setResults((prev) => ({ ...prev, [key]: r }));
+      const res = await invokeAction(actions[key], {});
+      setResults((prev) => ({
+        ...prev,
+        [key]: { ok: true, data: res }
+      }));
     } catch (e) {
       setResults((prev) => ({
         ...prev,
-        [key]: { ok: false, status: 0, json: { error: e?.message || String(e) }, text: "" }
+        [key]: { ok: false, error: e?.message || String(e) }
       }));
     } finally {
       setLoadingKey(null);
@@ -113,7 +111,7 @@ export default function App() {
       <View padding="size-300">
         <Flex direction="column" gap="size-200">
           <Heading level={2}>Content Orchestration Studio</Heading>
-          <Text>Connectivity checks (Runtime → AEM Author GraphQL → AJO)</Text>
+          <Text>Connectivity check: App Builder Runtime → AEM Author GraphQL</Text>
 
           <Divider />
 
@@ -122,25 +120,11 @@ export default function App() {
               <Flex alignItems="center" gap="size-200">
                 <ButtonGroup>
                   <Button
-                    variant="primary"
-                    onPress={() => runCheck("health")}
-                    isDisabled={anyLoading}
-                  >
-                    Test Runtime Health
-                  </Button>
-                  <Button
                     variant="secondary"
                     onPress={() => runCheck("aem")}
                     isDisabled={anyLoading}
                   >
-                    Test AEM
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    onPress={() => runCheck("ajo")}
-                    isDisabled={anyLoading}
-                  >
-                    Test AJO
+                    Test AEM (list 5 CFs)
                   </Button>
                 </ButtonGroup>
 
@@ -152,9 +136,7 @@ export default function App() {
                 )}
               </Flex>
 
-              <ResultPanel title="Runtime Health" result={results.health} />
-              <ResultPanel title="AEM" result={results.aem} />
-              <ResultPanel title="AJO" result={results.ajo} />
+              <ResultPanel title="AEM listUnifiedPromos" result={results.aem} />
             </Flex>
           </Content>
         </Flex>
