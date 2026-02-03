@@ -18,3 +18,7 @@ runtimeManifest:
           annotations:
             require-adobe-auth: true
             final: true
+        listUnifiedPromos:
+          function: actions/aem/listUnifiedPromos/index.js
+          web: 'yes'
+          runtime: nodejs:18
