@@ -14,23 +14,41 @@ import {
   ProgressCircle
 } from "@adobe/react-spectrum";
 
+// App Builder template usually generates this at build/dev time.
+// If your project doesn't have it for some reason, the fallback path will still work.
+import config from "./config.json";
+
 async function callJson(url, payload) {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
     body: JSON.stringify(payload ?? {})
   });
 
   const text = await res.text();
   let json = null;
-  try { json = JSON.parse(text); } catch {}
-  return { ok: res.ok, status: res.status, json, text };
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    // Not JSON; leave json null
+  }
+
+  return {
+    ok: res.ok,
+    status: res.status,
+    json,
+    text
+  };
 }
 
 function ResultPanel({ title, result }) {
   if (!result) return null;
 
-  const payload = result.json != null ? JSON.stringify(result.json, null, 2) : result.text;
+  const payload =
+    result.json != null ? JSON.stringify(result.json, null, 2) : result.text;
 
   return (
     <Well marginTop="size-200">
@@ -66,20 +84,31 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [aemResult, setAemResult] = useState(null);
 
-  // This is your web action path in local dev.
-  // You said you're past the <noscript> issue, so this should now hit Runtime.
-  const endpoints = useMemo(
-    () => ({
-      aem: "/api/v1/web/dx-excshell-1/listUnifiedPromos"
-    }),
-    []
-  );
+  const endpoints = useMemo(() => {
+    // Prefer the generated Runtime web-action URL if present
+    const fromConfig =
+      config?.runtime?.actions?.listUnifiedPromos ||
+      config?.runtime?.actionUrls?.listUnifiedPromos;
+
+    // Fallback: your local dev path (works in some setups, but config is safer)
+    const fallback = "/api/v1/web/dx-excshell-1/listUnifiedPromos";
+
+    return { aem: fromConfig || fallback };
+  }, []);
 
   async function testAem() {
+    setLoading(true);
     try {
-      setLoading(true);
-      const r = await callJson(endpoints.aem);
+      const r = await callJson(endpoints.aem, { limit: 5 });
       setAemResult(r);
+    } catch (e) {
+      // If fetch itself throws (network/CORS/etc), show it in the panel
+      setAemResult({
+        ok: false,
+        status: 0,
+        json: { error: e?.message ?? String(e) },
+        text: String(e)
+      });
     } finally {
       setLoading(false);
     }
@@ -98,14 +127,22 @@ export default function App() {
             <Flex direction="column" gap="size-200">
               <Flex alignItems="center" gap="size-200">
                 <ButtonGroup>
-                  <Button variant="secondary" onPress={testAem} isDisabled={loading}>
+                  <Button
+                    variant="secondary"
+                    onPress={testAem}
+                    isDisabled={loading}
+                  >
                     Test AEM (list 5 CFs)
                   </Button>
                 </ButtonGroup>
 
                 {loading && (
                   <Flex alignItems="center" gap="size-100">
-                    <ProgressCircle size="S" aria-label="Running check" isIndeterminate />
+                    <ProgressCircle
+                      size="S"
+                      aria-label="Running check"
+                      isIndeterminate
+                    />
                     <Text>Running…</Text>
                   </Flex>
                 )}

@@ -1,66 +1,43 @@
-// actions/aem/listUnifiedPromos/index.js
+/**
+ * Adobe I/O Runtime action: listUnifiedPromos
+ *
+ * Expected inputs (set via ext.config.yaml / runtime):
+ * - AEM_GRAPHQL_AUTHOR_URL : full URL to your AEM GraphQL endpoint
+ *
+ * Notes:
+ * - This action accepts BOTH GET and POST from the UI, but the UI should use POST.
+ * - This action calls AEM GraphQL using POST (required for normal GraphQL).
+ * - If your AEM endpoint requires auth, ensure your action has `require-adobe-auth: true`
+ *   so an Authorization header arrives in params.__ow_headers.
+ */
 
-export async function main(params) {
-  try {
-    const aemUrl = params.AEM_GRAPHQL_AUTHOR_URL;
-    if (!aemUrl) {
-      return {
-        statusCode: 500,
-        body: { error: "Missing AEM_GRAPHQL_AUTHOR_URL input" }
-      };
-    }
-
-    // Web actions typically provide request headers under __ow_headers
-    const incomingAuth =
-      params.__ow_headers?.authorization || params.__ow_headers?.Authorization;
-
-    // TODO: replace these with your model/query details.
-    // If you have a persisted query endpoint, you may not need a big query string here.
-    const query = `
-      query ListUnifiedPromos($limit: Int!) {
-        unifiedPromotionalContentList(limit: $limit) {
-          items {
-            _path
-            _id
-            title
-          }
-        }
-      }
-    `;
-
-    const body = JSON.stringify({
-      query,
-      variables: { limit: 5 }
-    });
-
-    const res = await fetch(aemUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-        ...(incomingAuth ? { Authorization: incomingAuth } : {})
-      },
-      body
-    });
-
-    const text = await res.text();
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      json = null;
-    }
-
-    // Return whatever AEM gave you (plus status) so your UI can display it
-    return {
-      statusCode: res.status,
-      headers: { "Content-Type": "application/json" },
-      body: json ?? { raw: text }
-    };
-  } catch (e) {
-    return {
-      statusCode: 500,
-      body: { error: e?.message ?? String(e) }
-    };
-  }
+function jsonResponse(statusCode, body, extraHeaders = {}) {
+  return {
+    statusCode,
+    headers: {
+      "Content-Type": "application/json",
+      // Helpful during local dev:
+      "Cache-Control": "no-store",
+      ...extraHeaders
+    },
+    body
+  };
 }
+
+function getIncomingAuth(params) {
+  const h = params?.__ow_headers || {};
+  return h.authorization || h.Authorization || null;
+}
+
+function getMethod(params) {
+  return (params?.__ow_method || "post").toLowerCase();
+}
+
+function parseBodyParams(params) {
+  // Web actions sometimes provide body as a string in __ow_body
+  // and sometimes already merged into params.
+  const raw = params?.__ow_body;
+
+  if (raw && typeof raw === "string") {
+    try {
+      const parsed = JSON.pa
