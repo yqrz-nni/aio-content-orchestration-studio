@@ -14,39 +14,41 @@ import {
   ProgressCircle
 } from "@adobe/react-spectrum";
 
+async function callJson(url) {
+  const res = await fetch(url, {
+    method: "GET",
+    headers: { Accept: "application/json" }
+  });
 
-/**
- * Calls an App Builder web action by name.
- * Works in `aio app run` and when deployed.
- *
- * actionName format:
- *   "<package>/<action>"
- * e.g.
- *   "dx-excshell-1/listUnifiedPromos"
- */
-async function invokeAction(actionName, body = {}) {
-  // action.invoke expects { params, headers, body } depending on usage;
-  // passing { body } is the common pattern for JSON payload.
-  const result = await action.invoke({ body });
-  return result;
+  const text = await res.text();
+  let json = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    // Not JSON; leave json null
+  }
+
+  return {
+    ok: res.ok,
+    status: res.status,
+    json,
+    text
+  };
 }
 
 function ResultPanel({ title, result }) {
   if (!result) return null;
 
-  const payload =
-    result.data != null
-      ? JSON.stringify(result.data, null, 2)
-      : result.error != null
-        ? String(result.error)
-        : JSON.stringify(result, null, 2);
+  const payload = result.json != null ? JSON.stringify(result.json, null, 2) : result.text;
 
   return (
     <Well marginTop="size-200">
       <Flex direction="column" gap="size-100">
         <Flex alignItems="center" justifyContent="space-between">
           <Text UNSAFE_style={{ fontWeight: 600 }}>{title}</Text>
-          <Text>{result.ok ? "✅" : "❌"}</Text>
+          <Text>
+            {result.ok ? "✅" : "❌"} {result.status}
+          </Text>
         </Flex>
 
         <View
@@ -70,44 +72,34 @@ function ResultPanel({ title, result }) {
 }
 
 export default function App() {
-  const [loadingKey, setLoadingKey] = useState(null);
-  const [results, setResults] = useState({
-    aem: null
-  });
+  const [loading, setLoading] = useState(false);
+  const [aemResult, setAemResult] = useState(null);
 
-  const actions = useMemo(
+  // This is your web action path in local dev.
+  // You said you're past the <noscript> issue, so this should now hit Runtime.
+  const endpoints = useMemo(
     () => ({
-      aem: "dx-excshell-1/listUnifiedPromos"
+      aem: "/api/v1/web/dx-excshell-1/listUnifiedPromos"
     }),
     []
   );
 
-  async function runCheck(key) {
+  async function testAem() {
     try {
-      setLoadingKey(key);
-      const res = await invokeAction(actions[key], {});
-      setResults((prev) => ({
-        ...prev,
-        [key]: { ok: true, data: res }
-      }));
-    } catch (e) {
-      setResults((prev) => ({
-        ...prev,
-        [key]: { ok: false, error: e?.message || String(e) }
-      }));
+      setLoading(true);
+      const r = await callJson(endpoints.aem);
+      setAemResult(r);
     } finally {
-      setLoadingKey(null);
+      setLoading(false);
     }
   }
-
-  const anyLoading = loadingKey !== null;
 
   return (
     <Provider theme={defaultTheme} colorScheme="light">
       <View padding="size-300">
         <Flex direction="column" gap="size-200">
           <Heading level={2}>Content Orchestration Studio</Heading>
-          <Text>Connectivity check: App Builder Runtime → AEM Author GraphQL</Text>
+          <Text>Handshake: UI → Runtime Action → AEM Author GraphQL</Text>
 
           <Divider />
 
@@ -115,24 +107,20 @@ export default function App() {
             <Flex direction="column" gap="size-200">
               <Flex alignItems="center" gap="size-200">
                 <ButtonGroup>
-                  <Button
-                    variant="secondary"
-                    onPress={() => runCheck("aem")}
-                    isDisabled={anyLoading}
-                  >
+                  <Button variant="secondary" onPress={testAem} isDisabled={loading}>
                     Test AEM (list 5 CFs)
                   </Button>
                 </ButtonGroup>
 
-                {anyLoading && (
+                {loading && (
                   <Flex alignItems="center" gap="size-100">
                     <ProgressCircle size="S" aria-label="Running check" isIndeterminate />
-                    <Text>Running: {loadingKey}</Text>
+                    <Text>Running…</Text>
                   </Flex>
                 )}
               </Flex>
 
-              <ResultPanel title="AEM listUnifiedPromos" result={results.aem} />
+              <ResultPanel title="AEM listUnifiedPromos" result={aemResult} />
             </Flex>
           </Content>
         </Flex>
