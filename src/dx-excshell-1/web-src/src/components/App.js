@@ -14,9 +14,6 @@ import {
   ProgressCircle
 } from "@adobe/react-spectrum";
 
-import { Runtime } from "@adobe/aio-lib-runtime";
-
-const runtime = new Runtime();
 
 /**
  * Calls an App Builder web action by name.
@@ -28,7 +25,6 @@ const runtime = new Runtime();
  *   "dx-excshell-1/listUnifiedPromos"
  */
 async function invokeAction(actionName, body = {}) {
-  const action = runtime.action(actionName);
   // action.invoke expects { params, headers, body } depending on usage;
   // passing { body } is the common pattern for JSON payload.
   const result = await action.invoke({ body });
