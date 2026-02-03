@@ -1,77 +1,164 @@
-/* 
-* <license header>
-*/
+import React, { useMemo, useState } from "react";
+import {
+  Provider,
+  defaultTheme,
+  Flex,
+  View,
+  Heading,
+  Text,
+  Button,
+  ButtonGroup,
+  Divider,
+  Content,
+  Well,
+  ProgressCircle
+} from "@adobe/react-spectrum";
 
-import React from 'react'
-import { Provider, defaultTheme, Grid, View } from '@adobe/react-spectrum'
-import ErrorBoundary from 'react-error-boundary'
-import { HashRouter as Router, Routes, Route } from 'react-router-dom'
-import SideBar from './SideBar'
-import ActionsForm from './ActionsForm'
-import { Home } from './Home'
-import { About } from './About'
+/**
+ * Minimal, clean App.js for an App Builder Experience Cloud Shell SPA.
+ * - No tutorial components
+ * - Simple "Connectivity" area you can extend
+ *
+ * Assumes your Runtime actions are exposed under /api/* (typical App Builder dev/proxy setup).
+ */
 
-function App (props) {
-  console.log('runtime object:', props.runtime)
-  console.log('ims object:', props.ims)
+async function callApi(path) {
+  const res = await fetch(path, {
+    method: "GET",
+    headers: { Accept: "application/json" }
+  });
 
-  // use exc runtime event handlers
-  // respond to configuration change events (e.g. user switches org)
-  props.runtime.on('configuration', ({ imsOrg, imsToken, locale }) => {
-    console.log('configuration change', { imsOrg, imsToken, locale })
-  })
-  // respond to history change events
-  props.runtime.on('history', ({ type, path }) => {
-    console.log('history change', { type, path })
-  })
-
-  return (
-    <ErrorBoundary onError={onError} FallbackComponent={fallbackComponent}>
-      <Router>
-        <Provider theme={defaultTheme} colorScheme={'light'}>
-          <Grid
-            areas={['sidebar content']}
-            columns={['256px', '3fr']}
-            rows={['auto']}
-            height='100vh'
-            gap='size-100'
-          >
-            <View
-              gridArea='sidebar'
-              backgroundColor='gray-200'
-              padding='size-200'
-            >
-              <SideBar></SideBar>
-            </View>
-            <View gridArea='content' padding='size-200'>
-              <Routes>
-                <Route path='/' element={<Home />} />
-                <Route path='/actions' element={<ActionsForm runtime={props.runtime} ims={props.ims} />}/>
-                <Route path='/about' element={<About />}/>
-              </Routes>
-            </View>
-          </Grid>
-        </Provider>
-      </Router>
-    </ErrorBoundary>
-  )
-
-  // Methods
-
-  // error handler on UI rendering failure
-  function onError (e, componentStack) { }
-
-  // component to show if UI fails rendering
-  function fallbackComponent ({ componentStack, error }) {
-    return (
-      <React.Fragment>
-        <h1 style={{ textAlign: 'center', marginTop: '20px' }}>
-          Something went wrong :(
-        </h1>
-        <pre>{componentStack + '\n' + error.message}</pre>
-      </React.Fragment>
-    )
+  const text = await res.text();
+  let json = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    // leave as null; we'll show raw text
   }
+
+  return {
+    ok: res.ok,
+    status: res.status,
+    json,
+    text
+  };
 }
 
-export default App
+function ResultPanel({ title, result }) {
+  if (!result) return null;
+
+  const payload =
+    result.json != null ? JSON.stringify(result.json, null, 2) : result.text;
+
+  return (
+    <Well marginTop="size-200">
+      <Flex direction="column" gap="size-100">
+        <Flex alignItems="center" justifyContent="space-between">
+          <Text UNSAFE_style={{ fontWeight: 600 }}>{title}</Text>
+          <Text>
+            {result.ok ? "✅" : "❌"} {result.status}
+          </Text>
+        </Flex>
+        <View
+          borderWidth="thin"
+          borderColor="dark"
+          borderRadius="small"
+          padding="size-200"
+          backgroundColor="gray-75"
+          UNSAFE_style={{ maxHeight: 320, overflow: "auto", fontFamily: "monospace", fontSize: 12 }}
+        >
+          <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>{payload}</pre>
+        </View>
+      </Flex>
+    </Well>
+  );
+}
+
+export default function App() {
+  const [loadingKey, setLoadingKey] = useState(null);
+  const [results, setResults] = useState({
+    health: null,
+    aem: null,
+    ajo: null
+  });
+
+  const endpoints = useMemo(
+    () => ({
+      health: "/api/health",
+      aem: "/api/aem/listUnifiedPromos", // change to /api/aem/listUnifiedPromos when you add it
+      ajo: "/api/ajo/ping"
+    }),
+    []
+  );
+
+  async function runCheck(key) {
+    try {
+      setLoadingKey(key);
+      const r = await callApi(endpoints[key]);
+      setResults((prev) => ({ ...prev, [key]: r }));
+    } catch (e) {
+      setResults((prev) => ({
+        ...prev,
+        [key]: { ok: false, status: 0, json: { error: e?.message || String(e) }, text: "" }
+      }));
+    } finally {
+      setLoadingKey(null);
+    }
+  }
+
+  const anyLoading = loadingKey !== null;
+
+  return (
+    <Provider theme={defaultTheme} colorScheme="light">
+      <View padding="size-300">
+        <Flex direction="column" gap="size-200">
+          <Heading level={2}>Content Orchestration Studio</Heading>
+          <Text>Connectivity checks (Runtime → AEM Author GraphQL → AJO)</Text>
+
+          <Divider />
+
+          <Content>
+            <Flex direction="column" gap="size-200">
+              <Flex alignItems="center" gap="size-200">
+                <ButtonGroup>
+                  <Button
+                    variant="primary"
+                    onPress={() => runCheck("health")}
+                    isDisabled={anyLoading}
+                  >
+                    Test Runtime Health
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onPress={() => runCheck("aem")}
+                    isDisabled={anyLoading}
+                  >
+                    Test AEM
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onPress={() => runCheck("ajo")}
+                    isDisabled={anyLoading}
+                  >
+                    Test AJO
+                  </Button>
+                </ButtonGroup>
+
+                {anyLoading && (
+                  <Flex alignItems="center" gap="size-100">
+                    <ProgressCircle size="S" aria-label="Running check" isIndeterminate />
+                    <Text>Running: {loadingKey}</Text>
+                  </Flex>
+                )}
+              </Flex>
+
+              <ResultPanel title="Runtime Health" result={results.health} />
+              <ResultPanel title="AEM" result={results.aem} />
+              <ResultPanel title="AJO" result={results.ajo} />
+            </Flex>
+          </Content>
+        </Flex>
+      </View>
+    </Provider>
+  );
+}
