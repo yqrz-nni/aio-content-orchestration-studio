@@ -24,3 +24,5 @@ runtimeManifest:
           runtime: nodejs:18
           inputs:
             AEM_GRAPHQL_AUTHOR_URL: $AEM_GRAPHQL_AUTHOR_URL
+          annotations:
+            require-adobe-auth: true

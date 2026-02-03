@@ -1,64 +1,66 @@
-const fetch = require("node-fetch");
+// actions/aem/listUnifiedPromos/index.js
 
-exports.main = async () => {
+export async function main(params) {
   try {
-    const gqlUrl = process.env.AEM_GRAPHQL_AUTHOR_URL;
-
-    if (!gqlUrl) {
+    const aemUrl = params.AEM_GRAPHQL_AUTHOR_URL;
+    if (!aemUrl) {
       return {
         statusCode: 500,
-        body: { ok: false, error: "Missing env var: AEM_GRAPHQL_AUTHOR_URL" }
+        body: { error: "Missing AEM_GRAPHQL_AUTHOR_URL input" }
       };
     }
 
-    if (!/^https?:\/\//i.test(gqlUrl)) {
-      return {
-        statusCode: 500,
-        body: {
-          ok: false,
-          error: "AEM_GRAPHQL_AUTHOR_URL must be an absolute URL starting with http(s)://",
-          gqlUrl
-        }
-      };
-    }
+    // Web actions typically provide request headers under __ow_headers
+    const incomingAuth =
+      params.__ow_headers?.authorization || params.__ow_headers?.Authorization;
 
-    // IMPORTANT: match the exact query shape that works in your AEM GraphiQL,
-    // including "limit" vs "first" and field names.
+    // TODO: replace these with your model/query details.
+    // If you have a persisted query endpoint, you may not need a big query string here.
     const query = `
-      query {
-        unifiedPromotionalContentsList(limit: 5) {
+      query ListUnifiedPromos($limit: Int!) {
+        unifiedPromotionalContentList(limit: $limit) {
           items {
             _path
             _id
-            headlineText
+            title
           }
         }
       }
     `;
 
-    const resp = await fetch(gqlUrl, {
+    const body = JSON.stringify({
+      query,
+      variables: { limit: 5 }
+    });
+
+    const res = await fetch(aemUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Accept": "application/json"
-        // If your Author GraphQL requires auth, we’ll add Authorization here later.
+        Accept: "application/json",
+        ...(incomingAuth ? { Authorization: incomingAuth } : {})
       },
-      body: JSON.stringify({ query })
+      body
     });
 
-    const text = await resp.text();
-    let json = null;
+    const text = await res.text();
+    let json;
     try {
       json = JSON.parse(text);
     } catch {
-      // leave json null, return raw
+      json = null;
     }
 
+    // Return whatever AEM gave you (plus status) so your UI can display it
     return {
-      statusCode: resp.status,
+      statusCode: res.status,
+      headers: { "Content-Type": "application/json" },
       body: json ?? { raw: text }
     };
   } catch (e) {
-    return { statusCode: 500, body: { ok: false, error: e.message } };
+    return {
+      statusCode: 500,
+      body: { error: e?.message ?? String(e) }
+    };
   }
-};
+}

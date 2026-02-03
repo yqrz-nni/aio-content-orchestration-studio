@@ -14,26 +14,17 @@ import {
   ProgressCircle
 } from "@adobe/react-spectrum";
 
-async function callJson(url) {
+async function callJson(url, payload) {
   const res = await fetch(url, {
-    method: "GET",
-    headers: { Accept: "application/json" }
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(payload ?? {})
   });
 
   const text = await res.text();
   let json = null;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    // Not JSON; leave json null
-  }
-
-  return {
-    ok: res.ok,
-    status: res.status,
-    json,
-    text
-  };
+  try { json = JSON.parse(text); } catch {}
+  return { ok: res.ok, status: res.status, json, text };
 }
 
 function ResultPanel({ title, result }) {
