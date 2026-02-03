@@ -2,10 +2,8 @@ operations:
   view:
     - type: web
       impl: index.html
-
 actions: actions
 web: web-src
-
 runtimeManifest:
   packages:
     dx-excshell-1:
@@ -20,10 +18,9 @@ runtimeManifest:
           annotations:
             require-adobe-auth: true
             final: true
-
         listUnifiedPromos:
           function: actions/aem/listUnifiedPromos/index.js
           web: 'yes'
-          runtime: nodejs:22
+          runtime: nodejs:18
           inputs:
             AEM_GRAPHQL_AUTHOR_URL: $AEM_GRAPHQL_AUTHOR_URL
