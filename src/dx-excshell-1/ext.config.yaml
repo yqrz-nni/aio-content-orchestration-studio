@@ -9,20 +9,4 @@ runtimeManifest:
     dx-excshell-1:
       license: Apache-2.0
       actions:
-        generic:
-          function: actions/generic/index.js
-          web: 'yes'
-          runtime: nodejs:22
-          inputs:
-            LOG_LEVEL: debug
-          annotations:
-            require-adobe-auth: true
-            final: true
-        listUnifiedPromos:
-          function: actions/aem/listUnifiedPromos/index.js
-          web: 'yes'
-          runtime: nodejs:18
-          inputs:
-            AEM_GRAPHQL_AUTHOR_URL: $AEM_GRAPHQL_AUTHOR_URL
-          annotations:
-            require-adobe-auth: true
+       
