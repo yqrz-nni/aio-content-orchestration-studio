@@ -24,3 +24,4 @@ runtimeManifest:
             AEM_AUTHOR: $AEM_AUTHOR
             AEM_GQL_PATH: $AEM_GQL_PATH
             AEM_GQL_PATH_PROXY: $AEM_GQL_PATH_PROXY
+            USE_AEM_PROXY: $USE_AEM_PROXY
