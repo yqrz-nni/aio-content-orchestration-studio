@@ -4,11 +4,11 @@ import { ImsContext } from "../context/ImsContext";
 import actions from "../config.json";
 import actionWebInvoke from "../utils";
 
-export function VfDemo({ ims }) {
+export function VfDemo() {
   const ims = useContext(ImsContext);
   const [fragments, setFragments] = useState([]);
   const [error, setError] = useState("");
-      
+
   return (
     <View>
       <Heading level={2}>AJO VF Demo</Heading>
