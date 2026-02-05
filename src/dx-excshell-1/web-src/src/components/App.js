@@ -6,6 +6,7 @@ import React from 'react'
 import { Provider, defaultTheme, Grid, View } from '@adobe/react-spectrum'
 import ErrorBoundary from 'react-error-boundary'
 import { HashRouter as Router, Routes, Route } from 'react-router-dom'
+import { ImsContext } from "../context/ImsContext";
 import { GqlDemo } from "../screens/GqlDemo";
 import { VfDemo } from "../screens/VfDemo";
 
@@ -27,12 +28,14 @@ function App (props) {
     <ErrorBoundary onError={onError} FallbackComponent={fallbackComponent}>
       <Router>
         <Provider theme={defaultTheme} colorScheme={'light'}>
-          <View padding="size-200">
-            <GqlDemo />
-          </View>
-          <View padding="size-200">
-            <VfDemo />
-          </View>
+          <ImsContext.Provider value={props.ims}>
+            <View padding="size-200">
+              <GqlDemo />
+            </View>
+            <View padding="size-200">
+              <VfDemo />
+            </View>
+          </ImsContext.Provider>
         </Provider>
       </Router>
     </ErrorBoundary>
