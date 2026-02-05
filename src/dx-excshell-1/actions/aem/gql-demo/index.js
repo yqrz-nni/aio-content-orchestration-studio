@@ -19,7 +19,7 @@ async function main(params) {
             technicalAccountId: params.TECH_ACCOUNT_ID, // your "id" (…@techacct.adobe.com)
             orgId: params.ORG_ID,                     // …@AdobeOrg
             privateKey: (params.PRIVATE_KEY || "").replace(/\\r\\n/g, "\n"),
-            metaScopes: { [params.METASCOPES]: true } // e.g. { ent_aem_cloud_api: true }
+            metaScopes: params.METASCOPES
         });
         const accessToken = accessTokenResp.access_token || accessTokenResp;
         return json(200, { message: "AEM GraphQL Demo Action is working!" });
