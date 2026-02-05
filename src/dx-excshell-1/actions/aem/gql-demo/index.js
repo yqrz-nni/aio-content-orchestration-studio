@@ -22,7 +22,34 @@ async function main(params) {
             metaScopes: params.METASCOPES
         });
         const accessToken = accessTokenResp.access_token || accessTokenResp;
-        return json(200, { message: "AEM GraphQL Demo Action is working!" });
+        // 2) Call AEM GraphQL (Author)
+        const gqlUrl = `${params.AEM_AUTHOR}${params.AEM_GQL_PATH}`;
+        const query = `
+            query {
+                unifiedPromotionalContentList(limit: 5) {
+                    items {
+                        _path
+                        _id
+                        headlineText
+                    }
+                }
+            }
+        `;
+        const r = await fetch(gqlUrl, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+                "x-gw-ims-org-id": params.ORG_ID,
+                "x-api-key": params.CLIENT_ID
+            },
+            body: JSON.stringify({ query })
+        });
+        const text = await r.text();
+        if (!r.ok) {
+            return { statusCode: r.status, body: { error: text } };
+        }
+        return json(200, { message: JSON.parse(text) });
     } catch (error) {
       return json(500, { error: error.message });
     }
