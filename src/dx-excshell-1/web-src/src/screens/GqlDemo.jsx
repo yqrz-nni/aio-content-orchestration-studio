@@ -1,5 +1,7 @@
 import React from "react";
 import { Heading, View, Button, Text } from "@adobe/react-spectrum";
+import actions from "../config.json";
+import actionWebInvoke from "../utils";
 
 export function GqlDemo() {
   return (
