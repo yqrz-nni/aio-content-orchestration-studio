@@ -23,7 +23,9 @@ async function main(params) {
         });
         const accessToken = accessTokenResp.access_token || accessTokenResp;
         // 2) Call AEM GraphQL (Author)
-        const gqlUrl = `${params.AEM_AUTHOR}${params.AEM_GQL_PATH}`;
+        // const gqlUrl = `${params.AEM_AUTHOR}${params.AEM_GQL_PATH}`;
+        const gqlProxyUrl = `${params.AEM_GQL_PATH_PROXY}`;
+        gqlUrl = gqlProxyUrl;
         const query = `
             query {
                 unifiedPromotionalContentList(limit: 5) {
