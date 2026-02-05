@@ -11,8 +11,6 @@ export function GqlDemo() {
         onPress={async () => {
             const res = await fetch("/api/v1/web/dx-excshell-1/aem-gql-demo", {
                 method: "GET",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({})
             });
 
             const text = await res.text();
