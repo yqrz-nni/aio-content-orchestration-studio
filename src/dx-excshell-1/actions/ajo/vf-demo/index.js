@@ -36,6 +36,22 @@ async function main(params) {
           "Missing Authorization or x-gw-ims-org-id. Forward ims.token and ims.org from the UI.",
       });
     }
+    if (!params.AJO_FRAGMENTS_URL) return json(500, { error: "Missing AJO_FRAGMENTS_URL" });
+    if (!params.AJO_API_KEY) return json(500, { error: "Missing AJO_API_KEY" });
+    const r = await fetch(params.AJO_FRAGMENTS_URL, {
+      method: "GET",
+      headers: {
+        Authorization: token,
+        "x-gw-ims-org-id": imsOrg,
+        "x-api-key": params.AJO_API_KEY,
+        Accept: "application/json",
+      },
+    });
+
+    const text = await r.text();
+    if (!r.ok) return json(r.status, { error: text });
+
+    const payload = JSON.parse(text);
 
     return json(200, "AJO DEMO!");
   } catch (error) {
