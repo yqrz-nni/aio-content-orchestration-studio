@@ -8,8 +8,8 @@ runtimeManifest:
   packages:
     dx-excshell-1:
       license: Apache-2.0
-  actions:
-    aem-gql-demo:
-      function: actions/aem/gql-demo/index.js
-      web: 'yes'
-      runtime: nodejs:18
+      actions:
+        aem-gql-demo:
+          function: actions/aem/gql-demo/index.js
+          web: 'yes'
+          runtime: nodejs:18
