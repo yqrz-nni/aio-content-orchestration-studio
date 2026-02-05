@@ -8,10 +8,12 @@ function json(statusCode, body) {
   };
 }
 
-exports.main = async (params) => {
+async function main(params) {
     try {
         return json(200, { message: "AEM GraphQL Demo Action is working!" });
     } catch (error) {
       return json(500, { error: error.message });
     }
 };
+
+exports.main = main;
