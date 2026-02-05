@@ -43,6 +43,7 @@ async function main(params) {
       headers: {
         Authorization: token,
         "x-gw-ims-org-id": imsOrg,
+        "x-ims-org-id": imsOrg,
         "x-api-key": params.AJO_API_KEY,
         "x-sandbox-name": params.SANDBOX_NAME,
         Accept: "application/json",
@@ -50,7 +51,7 @@ async function main(params) {
     });
 
     const text = await r.text();
-    if (!r.ok) return json(r.status, { error: text });
+    if (!r.ok) return json(r.status, { url: params.AJO_FRAGMENTS_URL, sandbox: params.SANDBOX_NAME, status: r.status, error: text });
 
     const payload = JSON.parse(text);
 
