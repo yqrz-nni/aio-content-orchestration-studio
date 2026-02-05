@@ -26,10 +26,6 @@ async function main(params) {
       params.__ow_headers?.["x-gw-ims-org-id"] ||
       params.__ow_headers?.["X-GW-IMS-ORG-ID"];
 
-    let headers = {
-      "Content-Type": "application/json",
-    };
-
     if (!token || !imsOrg) {
       return json(400, {
         error:
@@ -55,7 +51,32 @@ async function main(params) {
 
     const payload = JSON.parse(text);
 
-    return json(200, "AJO DEMO!");
+    // 1) Pull items out
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+
+    // 2) Filter to "visual fragments"
+    const visual = items.filter((it) => {
+      const type = (it?.type || "").toLowerCase();
+      const channels = Array.isArray(it?.channels) ? it.channels : [];
+      return type === "html" && channels.includes("email");
+    });
+
+    // 3) Pick 5 random (fallback to all items if filter yields none)
+    const source = visual.length ? visual : items;
+    const chosen = pickRandom(source, Math.min(5, source.length)).map((it) => ({
+      id: it.id,
+      name: it.name,
+    }));
+
+    // 4) Return a clean response payload
+    return json(200, {
+      sandbox: params.SANDBOX_NAME,
+      totalFetched: items.length,
+      totalVisual: visual.length,
+      fragments: chosen,
+      page: payload?._page, // keep for debugging / pagination if you want
+    });
+
   } catch (error) {
     return json(500, { error: error.message });
   }
