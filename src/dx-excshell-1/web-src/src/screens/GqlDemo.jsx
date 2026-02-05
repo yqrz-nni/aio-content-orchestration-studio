@@ -6,9 +6,22 @@ export function GqlDemo() {
     <View>
       <Heading level={2}>AEM GraphQL Demo</Heading>
 
-      <Button variant="cta" onPress={() => console.log("Clicked: Run query")}>
-        Run query
-      </Button>
+      <Button
+        variant="cta"
+        onPress={async () => {
+            const res = await fetch("/api/v1/web/dx-excshell-1/aem-gql-demo", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({})
+            });
+
+            const text = await res.text();
+            console.log("action status:", res.status);
+            console.log("action response:", text);
+        }}
+      >
+      Run query
+    </Button>
 
       <Text marginTop="size-200">Open the console and click the button.</Text>
     </View>
