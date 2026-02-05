@@ -9,7 +9,7 @@ export function GqlDemo() {
       <Button
         variant="cta"
         onPress={async () => {
-            const res = await fetch("/api/v1/web/dx-excshell-1/aem-gql-demo", {
+            const res = await fetch("/api/v1/web/dx-excshell-1/aem-gql-demo.json", {
                 method: "GET",
             });
 
