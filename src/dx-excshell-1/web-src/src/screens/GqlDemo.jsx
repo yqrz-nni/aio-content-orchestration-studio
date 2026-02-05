@@ -13,7 +13,7 @@ export function GqlDemo() {
         onPress={async () => {
             const res = await actionWebInvoke(actions["aem-gql-demo"]);
 
-            const text = await res.text();
+            const text = await res.body;
             console.log("action status:", res.status);
             console.log("action response:", text);
         }}
