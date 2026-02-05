@@ -32,3 +32,4 @@ runtimeManifest:
           inputs:
             AJO_FRAGMENTS_URL: $AJO_FRAGMENTS_URL
             AJO_API_KEY: $AJO_API_KEY
+            SANDBOX_NAME: $SANDBOX_NAME

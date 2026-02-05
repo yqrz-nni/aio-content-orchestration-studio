@@ -44,6 +44,7 @@ async function main(params) {
         Authorization: token,
         "x-gw-ims-org-id": imsOrg,
         "x-api-key": params.AJO_API_KEY,
+        "x-sandbox-name": params.SANDBOX_NAME,
         Accept: "application/json",
       },
     });
