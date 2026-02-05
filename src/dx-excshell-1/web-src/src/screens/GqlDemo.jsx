@@ -9,11 +9,7 @@ export function GqlDemo() {
       <Button
         variant="cta"
         onPress={async () => {
-            const res = await fetch("/api/v1/web/dx-excshell-1/aem-gql-demo.json", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({})
-            });
+            const res = await actionWebInvoke(actions["aem-gql-demo"]);
 
             const text = await res.text();
             console.log("action status:", res.status);
