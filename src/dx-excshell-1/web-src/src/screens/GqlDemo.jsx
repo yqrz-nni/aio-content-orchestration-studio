@@ -12,10 +12,9 @@ export function GqlDemo() {
         variant="cta"
         onPress={async () => {
             const res = await actionWebInvoke(actions["aem-gql-demo"]);
-
-            const text = await res.body;
-            console.log("action status:", res.status);
-            console.log("action response:", text);
+            console.log("GraphQL action response:", res);
+            console.log("GraphQL test action completed");
+            console.log(res.statusCode, res.body);
         }}
       >
       Run query
