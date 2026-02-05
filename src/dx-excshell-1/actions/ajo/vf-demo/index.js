@@ -46,7 +46,7 @@ async function main(params) {
         "x-ims-org-id": imsOrg,
         "x-api-key": params.AJO_API_KEY,
         "x-sandbox-name": params.SANDBOX_NAME,
-        Accept: "application/json",
+        accept: "application/vnd.adobe.ajo.fragment-list.v1.0+json",
       },
     });
 
