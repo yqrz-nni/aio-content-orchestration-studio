@@ -25,3 +25,7 @@ runtimeManifest:
             AEM_GQL_PATH: $AEM_GQL_PATH
             AEM_GQL_PATH_PROXY: $AEM_GQL_PATH_PROXY
             USE_AEM_PROXY: $USE_AEM_PROXY
+        ajo-vf-demo:
+          function: actions/ajo/vf-demo/index.js
+          web: 'yes'
+          runtime: nodejs:18

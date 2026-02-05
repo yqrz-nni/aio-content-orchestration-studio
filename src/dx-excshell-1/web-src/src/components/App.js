@@ -7,6 +7,7 @@ import { Provider, defaultTheme, Grid, View } from '@adobe/react-spectrum'
 import ErrorBoundary from 'react-error-boundary'
 import { HashRouter as Router, Routes, Route } from 'react-router-dom'
 import { GqlDemo } from "../screens/GqlDemo";
+import { VfDemo } from "../screens/VfDemo";
 
 function App (props) {
   console.log('runtime object:', props.runtime)
@@ -28,6 +29,9 @@ function App (props) {
         <Provider theme={defaultTheme} colorScheme={'light'}>
           <View padding="size-200">
             <GqlDemo />
+          </View>
+          <View padding="size-200">
+            <VfDemo />
           </View>
         </Provider>
       </Router>
