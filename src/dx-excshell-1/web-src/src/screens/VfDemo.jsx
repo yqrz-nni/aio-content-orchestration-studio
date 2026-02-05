@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useContext, useState } from "react";
 import { Heading, View, Button, Text } from "@adobe/react-spectrum";
 import { ImsContext } from "../context/ImsContext";
 import actions from "../config.json";
@@ -22,7 +22,7 @@ export function VfDemo() {
                 Authorization: `Bearer ${ims?.token}`,
                 "x-gw-ims-org-id": ims?.org,
               };
-              const res = await actionWebInvoke(actions["ajo-vf-demo"]);
+              const res = await actionWebInvoke(actions["ajo-vf-demo"], headers);
               console.log("AJO action response:", res);
             } catch (e) {
                 setError(e.message);
