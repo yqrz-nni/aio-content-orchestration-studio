@@ -8,26 +8,26 @@ const fetch = require("node-fetch");
  * - Throws structured errors on non-2xx responses
  */
 async function fetchJson(url, options = {}) {
-  const response = await fetch(url, options);
-
-  const text = await response.text();
+  const res = await fetch(url, options);
+  const text = await res.text();
 
   let data;
   try {
     data = text ? JSON.parse(text) : null;
-  } catch (e) {
-    data = text;
+  } catch {
+    data = null;
   }
 
-  if (!response.ok) {
-    const error = new Error("Upstream request failed");
-    error.status = response.status;
-    error.body = data;
-    error.url = url;
-    throw error;
+  if (!res.ok) {
+    const err = new Error(`HTTP ${res.status} calling ${url}`);
+    err.status = res.status;
+    err.url = url;
+    err.responseText = text;
+    err.data = data;
+    throw err;
   }
 
-  return data;
+  return data ?? text;
 }
 
 module.exports = { fetchJson };

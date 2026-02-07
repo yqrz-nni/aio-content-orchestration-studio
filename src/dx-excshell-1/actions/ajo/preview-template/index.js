@@ -82,8 +82,9 @@ async function main(params) {
   } catch (e) {
     return json(e.status || 500, {
       error: e.message,
-      upstream: e.body,
       url: e.url,
+      status: e.status,
+      responseText: e.responseText
     });
   }
 }

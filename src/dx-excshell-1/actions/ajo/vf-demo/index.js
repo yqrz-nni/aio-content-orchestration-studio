@@ -67,9 +67,11 @@ async function main(params) {
     });
 
   } catch (error) {
-      return json(error.status || 500, {
-      error: error.message,
-      upstream: error.body,
+    return json(e.status || 500, {
+      error: e.message,
+      url: e.url,
+      status: e.status,
+      responseText: e.responseText
     });
   }
 }

@@ -54,7 +54,12 @@ async function main(params) {
 
     return json(200, JSON.parse(text));
   } catch (error) {
-    return json(500, { error: error.message });
+    return json(e.status || 500, {
+      error: e.message,
+      url: e.url,
+      status: e.status,
+      responseText: e.responseText
+    });
   }
 }
 
