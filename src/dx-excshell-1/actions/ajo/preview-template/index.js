@@ -1,3 +1,6 @@
+if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
+  return corsPreflight();
+}
 const { ok, json } = require("../../_lib/http");
 const { fetchJson } = require("../../_lib/fetchJson");
 const { requireIms } = require("../../_lib/ims");
