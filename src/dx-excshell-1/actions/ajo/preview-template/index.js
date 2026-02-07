@@ -52,7 +52,7 @@ async function main(params) {
       headers: {
         Authorization: token,
         "x-gw-ims-org-id": imsOrg,
-        "x-api-key": params.AJO_API_KEY,
+        "x-api-key": "cjm-authoring-ui",
         "x-sandbox-name": params.SANDBOX_NAME,
         "content-type": "application/json",
         accept: "application/json",
