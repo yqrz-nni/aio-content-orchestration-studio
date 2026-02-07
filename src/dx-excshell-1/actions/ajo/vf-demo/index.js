@@ -1,12 +1,5 @@
 const fetch = require("node-fetch");
-
-function json(statusCode, body) {
-  return {
-    statusCode,
-    headers: { "content-type": "application/json" },
-    body,
-  };
-}
+const { json, badRequest, serverError } = require("../../_lib/http");
 
 function pickRandom(items, n) {
   const copy = [...items];
