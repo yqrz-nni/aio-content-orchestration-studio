@@ -34,7 +34,10 @@ function serverError(message, extra = {}) {
   return json(500, { error: message, ...extra });
 }
 
-// ✅ Used for browser preflight (OPTIONS requests)
+function badGateway(message, extra = {}) {
+  return json(502, { error: message, ...extra });
+}
+
 function corsPreflight(extraHeaders = {}) {
   return {
     statusCode: 204,
@@ -51,5 +54,6 @@ module.exports = {
   ok,
   badRequest,
   serverError,
+  badGateway,
   corsPreflight,
 };

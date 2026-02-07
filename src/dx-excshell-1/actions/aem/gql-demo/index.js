@@ -1,11 +1,5 @@
-const fetch = require("node-fetch");
 const auth = require("@adobe/jwt-auth");
-const {
-  ok,
-  badRequest,
-  serverError,
-  corsPreflight
-} = require("../../_lib/http");
+const { ok, badRequest, serverError, badGateway, corsPreflight } = require("../../_lib/http");
 const { fetchJson } = require("../../_lib/fetchJson");
 
 async function main(params) {
@@ -58,15 +52,15 @@ async function main(params) {
     });
 
     const text = await r.text();
-    if (!r.ok) return json(r.status, { error: text });
+    if (!r.ok) return serverError(text);
 
     return json(200, JSON.parse(text));
-  } catch (error) {
-    return json(e.status || 500, {
-      error: e.message,
+  } catch (e) {
+    return serverError(e.message, {
       url: e.url,
       status: e.status,
-      responseText: e.responseText
+      responseText: e.responseText,
+      data: e.data,
     });
   }
 }

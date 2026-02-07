@@ -1,10 +1,4 @@
-const fetch = require("node-fetch");
-const {
-  ok,
-  badRequest,
-  serverError,
-  corsPreflight
-} = require("../../_lib/http");
+const { ok, badRequest, serverError, badGateway, corsPreflight } = require("../../_lib/http");
 const { fetchJson } = require("../../_lib/fetchJson");
 
 function pickRandom(items, n) {
@@ -17,10 +11,11 @@ function pickRandom(items, n) {
 }
 
 async function main(params) {
-    if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
-     return corsPreflight();
-    }
-    try {
+  if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
+    return corsPreflight();
+  }
+
+  try {
     const token =
       params.__ow_headers?.authorization || params.__ow_headers?.Authorization;
 
@@ -29,18 +24,27 @@ async function main(params) {
       params.__ow_headers?.["X-GW-IMS-ORG-ID"];
 
     if (!token || !imsOrg) {
-      return json(400, {
-        error:
-          "Missing Authorization or x-gw-ims-org-id. Forward ims.token and ims.org from the UI.",
-      });
+      return badRequest(
+        "Missing Authorization or x-gw-ims-org-id. Forward ims.token and ims.org from the UI."
+      );
     }
-    if (!params.AJO_FRAGMENTS_URL) return json(500, { error: "Missing AJO_FRAGMENTS_URL" });
-    if (!params.AJO_API_KEY) return json(500, { error: "Missing AJO_API_KEY" });
-    
+
+    if (!params.AJO_FRAGMENTS_URL) {
+      return serverError("Missing AJO_FRAGMENTS_URL");
+    }
+    if (!params.AJO_API_KEY) {
+      return serverError("Missing AJO_API_KEY");
+    }
+    if (!params.SANDBOX_NAME) {
+      return serverError("Missing SANDBOX_NAME");
+    }
+
+    const authHeader = token.startsWith("Bearer ") ? token : `Bearer ${token}`;
+
     const payload = await fetchJson(params.AJO_FRAGMENTS_URL, {
       method: "GET",
       headers: {
-        Authorization: token,
+        Authorization: authHeader,
         "x-gw-ims-org-id": imsOrg,
         "x-api-key": params.AJO_API_KEY,
         "x-sandbox-name": params.SANDBOX_NAME,
@@ -48,38 +52,33 @@ async function main(params) {
       },
     });
 
-    // 1) Pull items out
     const items = Array.isArray(payload?.items) ? payload.items : [];
 
-    // 2) Filter to "visual fragments"
     const visual = items.filter((it) => {
       const type = (it?.type || "").toLowerCase();
       const channels = Array.isArray(it?.channels) ? it.channels : [];
       return type === "html" && channels.includes("email");
     });
 
-    // 3) Pick 5 random (fallback to all items if filter yields none)
     const source = visual.length ? visual : items;
     const chosen = pickRandom(source, Math.min(5, source.length)).map((it) => ({
       id: it.id,
       name: it.name,
     }));
 
-    // 4) Return a clean response payload
-    return json(200, {
+    return ok({
       sandbox: params.SANDBOX_NAME,
       totalFetched: items.length,
       totalVisual: visual.length,
       fragments: chosen,
-      page: payload?._page, // keep for debugging / pagination if you want
+      page: payload?._page,
     });
-
-  } catch (error) {
-    return json(e.status || 500, {
-      error: e.message,
+  } catch (e) {
+    return serverError(e.message, {
       url: e.url,
       status: e.status,
-      responseText: e.responseText
+      responseText: e.responseText,
+      data: e.data,
     });
   }
 }

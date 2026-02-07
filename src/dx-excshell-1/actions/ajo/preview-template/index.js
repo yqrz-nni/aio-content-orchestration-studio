@@ -1,36 +1,25 @@
-const fetch = require("node-fetch");
-const {
-  ok,
-  badRequest,
-  serverError,
-  corsPreflight
-} = require("../../_lib/http");
+const { ok, badRequest, serverError, badGateway, corsPreflight } = require("../../_lib/http");
 const { fetchJson } = require("../../_lib/fetchJson");
 const { requireIms } = require("../../_lib/ims");
 
 async function main(params) {
-    if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
-     return corsPreflight();
-    }
+  if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
+    return corsPreflight();
+  }
+
   try {
     const { token, imsOrg } = requireIms(params);
+    const authHeader = token.startsWith("Bearer ") ? token : `Bearer ${token}`;
 
-    if (!params.AJO_MESSAGE_GQL_URL) {
-      return json(500, { error: "Missing AJO_MESSAGE_GQL_URL" });
-    }
-    if (!params.AJO_API_KEY) {
-      return json(500, { error: "Missing AJO_API_KEY" });
-    }
-    if (!params.SANDBOX_NAME) {
-      return json(500, { error: "Missing SANDBOX_NAME" });
-    }
+    if (!params.AJO_MESSAGE_GQL_URL) return serverError("Missing AJO_MESSAGE_GQL_URL");
+    if (!params.AJO_API_KEY) return serverError("Missing AJO_API_KEY");
+    if (!params.SANDBOX_NAME) return serverError("Missing SANDBOX_NAME");
 
-    // Get from UI
     const templateId = params.templateId;
     const profileId = params.profileId;
 
-    if (!templateId) return json(400, { error: "Missing templateId" });
-    if (!profileId) return json(400, { error: "Missing profileId" });
+    if (!templateId) return badRequest("Missing templateId");
+    if (!profileId) return badRequest("Missing profileId");
 
     const gqlBody = {
       operationName: "ajoContentPreview",
@@ -59,9 +48,9 @@ async function main(params) {
     const data = await fetchJson(params.AJO_MESSAGE_GQL_URL, {
       method: "POST",
       headers: {
-        Authorization: token,
+        Authorization: authHeader,
         "x-gw-ims-org-id": imsOrg,
-        "x-api-key": "cjm-authoring-ui",
+        "x-api-key": params.AJO_API_KEY,
         "x-sandbox-name": params.SANDBOX_NAME,
         "content-type": "application/json",
         accept: "application/json",
@@ -69,14 +58,13 @@ async function main(params) {
       body: JSON.stringify(gqlBody),
     });
 
-    // GraphQL-style errors can come back 200 with `errors`
     if (data?.errors?.length) {
-      return json(502, { error: "GraphQL returned errors", errors: data.errors });
+      return badGateway("GraphQL returned errors", { errors: data.errors });
     }
 
     const rendered = data?.data?.ajoContentPreview;
     if (!rendered?.html?.body) {
-      return json(502, { error: "Preview returned no HTML body", raw: rendered });
+      return badGateway("Preview returned no HTML body", { raw: rendered });
     }
 
     return ok({
@@ -89,11 +77,11 @@ async function main(params) {
       text: rendered?.text?.body ?? null,
     });
   } catch (e) {
-    return json(e.status || 500, {
-      error: e.message,
+    return serverError(e.message, {
       url: e.url,
       status: e.status,
-      responseText: e.responseText
+      responseText: e.responseText,
+      data: e.data,
     });
   }
 }
