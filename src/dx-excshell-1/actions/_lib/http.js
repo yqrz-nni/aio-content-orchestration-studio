@@ -1,20 +1,7 @@
-// src/dx-excshell-1/actions/_lib/http.js
-
-// Shared CORS headers for ALL responses
-const DEFAULT_CORS_HEADERS = {
-  // OK for local dev. Later you can restrict to your domain.
-  "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-  "access-control-allow-headers":
-    "Authorization,Content-Type,x-gw-ims-org-id,x-api-key,x-sandbox-name",
-  "access-control-max-age": "86400",
-};
-
 function json(statusCode, bodyObj, extraHeaders = {}) {
   return {
     statusCode,
     headers: {
-      ...DEFAULT_CORS_HEADERS,
       "content-type": "application/json",
       ...extraHeaders,
     },
@@ -41,19 +28,9 @@ function badGateway(message, extra = {}) {
 function corsPreflight(extraHeaders = {}) {
   return {
     statusCode: 204,
-    headers: {
-      ...DEFAULT_CORS_HEADERS,
-      ...extraHeaders,
-    },
+    headers: { ...extraHeaders },
     body: "",
   };
 }
 
-module.exports = {
-  json,
-  ok,
-  badRequest,
-  serverError,
-  badGateway,
-  corsPreflight,
-};
+module.exports = { json, ok, badRequest, serverError, badGateway, corsPreflight };
