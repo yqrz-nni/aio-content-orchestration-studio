@@ -1,11 +1,17 @@
-if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
-  return corsPreflight();
-}
-const { ok, json } = require("../../_lib/http");
+const fetch = require("node-fetch");
+const {
+  ok,
+  badRequest,
+  serverError,
+  corsPreflight
+} = require("../../_lib/http");
 const { fetchJson } = require("../../_lib/fetchJson");
 const { requireIms } = require("../../_lib/ims");
 
 async function main(params) {
+    if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
+     return corsPreflight();
+    }
   try {
     const { token, imsOrg } = requireIms(params);
 

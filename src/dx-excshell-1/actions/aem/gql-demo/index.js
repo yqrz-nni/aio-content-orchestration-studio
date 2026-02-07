@@ -1,10 +1,18 @@
 const fetch = require("node-fetch");
 const auth = require("@adobe/jwt-auth");
-const { json, badRequest, serverError } = require("../../_lib/http");
+const {
+  ok,
+  badRequest,
+  serverError,
+  corsPreflight
+} = require("../../_lib/http");
 const { fetchJson } = require("../../_lib/fetchJson");
 
 async function main(params) {
-  try {
+    if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
+     return corsPreflight();
+    }
+    try {
     const useProxy = params.USE_AEM_PROXY === "true";
 
     const gqlUrl = useProxy

@@ -1,5 +1,10 @@
 const fetch = require("node-fetch");
-const { json, badRequest, serverError } = require("../../_lib/http");
+const {
+  ok,
+  badRequest,
+  serverError,
+  corsPreflight
+} = require("../../_lib/http");
 const { fetchJson } = require("../../_lib/fetchJson");
 
 function pickRandom(items, n) {
@@ -12,7 +17,10 @@ function pickRandom(items, n) {
 }
 
 async function main(params) {
-  try {
+    if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
+     return corsPreflight();
+    }
+    try {
     const token =
       params.__ow_headers?.authorization || params.__ow_headers?.Authorization;
 
