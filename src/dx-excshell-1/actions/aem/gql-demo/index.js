@@ -1,6 +1,7 @@
 const fetch = require("node-fetch");
 const auth = require("@adobe/jwt-auth");
 const { json, badRequest, serverError } = require("../../_lib/http");
+const { fetchJson } = require("../../_lib/fetchJson");
 
 async function main(params) {
   try {

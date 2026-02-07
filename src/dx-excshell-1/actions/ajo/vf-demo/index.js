@@ -1,5 +1,6 @@
 const fetch = require("node-fetch");
 const { json, badRequest, serverError } = require("../../_lib/http");
+const { fetchJson } = require("../../_lib/fetchJson");
 
 function pickRandom(items, n) {
   const copy = [...items];
@@ -27,22 +28,17 @@ async function main(params) {
     }
     if (!params.AJO_FRAGMENTS_URL) return json(500, { error: "Missing AJO_FRAGMENTS_URL" });
     if (!params.AJO_API_KEY) return json(500, { error: "Missing AJO_API_KEY" });
-    const r = await fetch(params.AJO_FRAGMENTS_URL, {
+    
+    const payload = await fetchJson(params.AJO_FRAGMENTS_URL, {
       method: "GET",
       headers: {
         Authorization: token,
         "x-gw-ims-org-id": imsOrg,
-        "x-ims-org-id": imsOrg,
         "x-api-key": params.AJO_API_KEY,
         "x-sandbox-name": params.SANDBOX_NAME,
         accept: "application/vnd.adobe.ajo.fragment-list.v1.0+json",
       },
     });
-
-    const text = await r.text();
-    if (!r.ok) return json(r.status, { url: params.AJO_FRAGMENTS_URL, sandbox: params.SANDBOX_NAME, status: r.status, error: text });
-
-    const payload = JSON.parse(text);
 
     // 1) Pull items out
     const items = Array.isArray(payload?.items) ? payload.items : [];
@@ -71,7 +67,10 @@ async function main(params) {
     });
 
   } catch (error) {
-    return json(500, { error: error.message });
+      return json(error.status || 500, {
+      error: error.message,
+      upstream: error.body,
+    });
   }
 }
 
