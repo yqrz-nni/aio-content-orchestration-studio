@@ -1,4 +1,10 @@
-const { ok, badRequest, serverError, badGateway, corsPreflight } = require("../../_lib/http");
+const {
+  ok,
+  badRequest,
+  serverError,
+  badGateway,
+  corsPreflight,
+} = require("../../_lib/http");
 const { fetchJson } = require("../../_lib/fetchJson");
 const { requireIms } = require("../../_lib/ims");
 
@@ -50,7 +56,7 @@ async function main(params) {
       headers: {
         Authorization: authHeader,
         "x-gw-ims-org-id": imsOrg,
-        "x-api-key": params.AJO_API_KEY,
+        "x-api-key": "cjm-authoring-ui",
         "x-sandbox-name": params.SANDBOX_NAME,
         "content-type": "application/json",
         accept: "application/json",

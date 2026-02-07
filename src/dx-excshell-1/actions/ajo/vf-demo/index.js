@@ -1,4 +1,10 @@
-const { ok, badRequest, serverError, badGateway, corsPreflight } = require("../../_lib/http");
+const {
+  ok,
+  badRequest,
+  serverError,
+  badGateway,
+  corsPreflight,
+} = require("../../_lib/http");
 const { fetchJson } = require("../../_lib/fetchJson");
 
 function pickRandom(items, n) {
