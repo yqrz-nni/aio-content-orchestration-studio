@@ -55,6 +55,63 @@ function appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId }) {
   return html + insertion;
 }
 
+function buildLabelsForPrb(prbNumber) {
+  const labels = [];
+  if (prbNumber) labels.push(`PRB:${prbNumber}`);
+  return labels;
+}
+
+// If you already have a placeholder fragment in baseline, replace it deterministically.
+// If not found, we can prepend it (safe v1 behavior).
+function applyPrbToTemplateHtml(html, { prbCfId, repoId }) {
+  if (!html) return html;
+
+  const newCall = `{{fragment id='aem:${prbCfId}?repoId=${repoId}' result='prbProperties'}}`;
+
+  // Common patterns we might see in baseline:
+  // 1) {{fragment id='aem:<something>?repoId=...' result='prbProperties'}}
+  // 2) {{fragment id="aem:<something>?repoId=..." result="prbProperties"}}
+  const re =
+    /{{\s*fragment\s+id=(['"])aem:[^'"]+\?repoId=[^'"]+\1\s+result=(['"])prbProperties\2\s*}}/g;
+
+  if (re.test(html)) {
+    return html.replace(re, newCall);
+  }
+
+  // Fallback: inject near top of body (v1).
+  const bodyTag = /<body[^>]*>/i;
+  if (bodyTag.test(html)) {
+    return html.replace(bodyTag, (m) => `${m}\n${newCall}\n`);
+  }
+
+  return `${newCall}\n${html}`;
+}
+
+  function enqueueTemplateUpdate(work) {
+    // `work` is an async fn. We chain it so writes serialize.
+    setUpdateChain((prev) => {
+      const next = prev
+        .catch(() => {}) // keep chain alive if a prior update failed
+        .then(async () => {
+          setIsUpdating(true);
+          try {
+            await work();
+          } finally {
+            setIsUpdating(false);
+          }
+        });
+
+      return next;
+    });
+  }
+
+  function computeTemplateNameWithPrb({ baseName, prbNumber, prbName }) {
+    if (!prbNumber) return baseName || "Baseline Clone";
+    const suffix = prbName ? ` — ${prbName}` : "";
+    // Example: "US26OZ00001 — Baseline Clone — Holiday Push"
+    return `${prbNumber} — ${baseName || "Baseline Clone"}${suffix}`;
+  }
+
 export function TemplateStudio() {
   const ims = useContext(ImsContext);
   const headers = useMemo(() => buildHeaders(ims), [ims]);
@@ -64,6 +121,8 @@ export function TemplateStudio() {
   const [templateName, setTemplateName] = useState("Baseline Clone");
   const [canonicalHtml, setCanonicalHtml] = useState("");
   const [previewHtml, setPreviewHtml] = useState("");
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [updateChain, setUpdateChain] = useState(Promise.resolve());
 
   // ---- Global context (PRB) ----
   const [prbOptions, setPrbOptions] = useState([]); // [{id, label, path}]
@@ -178,28 +237,71 @@ async function createTemplateFromBaseline() {
     setSelectedPrbId(prbId);
     const prbObj = prbOptions.find((o) => o.id === prbId) || null;
     setSelectedPrb(prbObj);
+
+    // If we don't have a template yet, we just "stage" the PRB for create.
+    if (!templateId || !prbObj) return;
+
+    // Auto-update the template in AJO (rename + labels + PRB fragment)
+    enqueueTemplateUpdate(async () => {
+      const prbNumber = prbObj?.raw?.prbNumber || null;
+      const prbName = prbObj?.raw?.name || null;
+      const prbCfId = prbObj?.id || null;
+
+      if (!prbNumber || !prbCfId) {
+        console.warn("PRB selected but missing prbNumber or prbCfId:", prbObj);
+        return;
+      }
+
+      // 1) Update HTML locally (so preview and our next writes are consistent)
+      const nextHtml = applyPrbToTemplateHtml(canonicalHtml, {
+        prbCfId,
+        repoId,
+      });
+
+      setCanonicalHtml(nextHtml);
+
+      // 2) Update AJO template (name + labels + html)
+      const nextName = computeTemplateNameWithPrb({
+        baseName: templateName,
+        prbNumber,
+        prbName,
+      });
+
+      const nextLabels = buildLabelsForPrb(prbNumber);
+
+      const resp = await actionWebInvoke(actions["ajo-template-update"], headers, {
+        templateId,
+        name: nextName,
+        labels: nextLabels,
+        html: nextHtml, // IMPORTANT: avoid GET-before-update race by sending the html we just computed
+        // updateMethod: "PUT", // optional override
+      });
+
+      console.log("PRB update response:", resp);
+    });
   }
 
   function addModule() {
     if (!templateId) return;
     if (!selectedVfId || !selectedContentId) return;
-    if (!canonicalHtml) {
-      // In v1 you’ll load this via ajo-template-get after create
-      console.warn("No canonical HTML loaded yet. Add ajo-template-get and load it after creation.");
-      return;
-    }
+    if (!canonicalHtml) return;
 
-    const moduleId = `m_${Date.now()}`;
-    const nextModules = [...modules, { moduleId, vfId: selectedVfId, contentId: selectedContentId }];
-    setModules(nextModules);
+    enqueueTemplateUpdate(async () => {
+      const moduleId = `m_${Date.now()}`;
+      const nextModules = [...modules, { moduleId, vfId: selectedVfId, contentId: selectedContentId }];
+      setModules(nextModules);
 
-    const nextHtml = appendModuleToTemplateHtml(canonicalHtml, {
-      vfId: selectedVfId,
-      aemCfId: selectedContentId,
-      repoId,
+      const nextHtml = appendModuleToTemplateHtml(canonicalHtml, {
+        vfId: selectedVfId,
+        aemCfId: selectedContentId,
+        repoId,
+      });
+
+      setCanonicalHtml(nextHtml);
+
+      // Later, when you want module add to persist immediately:
+      // await actionWebInvoke(actions["ajo-template-update"], headers, { templateId, html: nextHtml });
     });
-
-    setCanonicalHtml(nextHtml);
   }
 
   async function renderPreview() {
