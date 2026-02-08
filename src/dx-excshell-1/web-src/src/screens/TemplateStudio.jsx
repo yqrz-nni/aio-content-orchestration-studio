@@ -13,7 +13,7 @@ import {
   TabPanels,
   Divider,
   TextField,
-  Picker,
+  ComboBox,
   StatusLight
 } from "@adobe/react-spectrum";
 
@@ -228,17 +228,18 @@ async function createTemplateFromBaseline() {
           <Flex direction="column" gap="size-50">
             <Text>Global configuration</Text>
             <Flex gap="size-200" alignItems="center">
-              <Picker
+              <ComboBox
                 label="PRB Properties (global)"
-                placeholder="Select PRB…"
+                placeholder="Paste/type PRB number…"
                 selectedKey={selectedPrbId}
                 onSelectionChange={(key) => setPrb(key)}
                 width="size-3600"
-              >
+                menuTrigger="focus"
+                >
                 {prbOptions.map((o) => (
                   <Item key={o.id}>{o.label}</Item>
                 ))}
-              </Picker>
+              </ComboBox>
               <Button variant="secondary" onPress={loadPrbList}>
                 Load PRBs
               </Button>
