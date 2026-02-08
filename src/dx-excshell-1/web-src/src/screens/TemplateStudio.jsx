@@ -11,7 +11,6 @@ import {
   Tabs,
   TabList,
   TabPanels,
-  TabPanel,
   Divider,
   TextField,
   Picker,
@@ -300,7 +299,7 @@ export function TemplateStudio() {
               <Item key="html">AJO HTML</Item>
             </TabList>
             <TabPanels>
-              <TabPanel id="preview">
+              <Item key="preview">
                 <View borderWidth="thin" borderColor="light" borderRadius="small" height="62vh">
                   <iframe
                     title="Email Preview"
@@ -309,9 +308,9 @@ export function TemplateStudio() {
                     srcDoc={previewHtml}
                   />
                 </View>
-              </TabPanel>
+              </Item>
 
-              <TabPanel id="modules">
+              <Item key="modules">
                 <View height="62vh" overflow="auto">
                   {modules.length === 0 ? (
                     <Text>No modules yet.</Text>
@@ -325,9 +324,9 @@ export function TemplateStudio() {
                     ))
                   )}
                 </View>
-              </TabPanel>
+              </Item>
 
-              <TabPanel id="html">
+              <Item key="html">
                 <View
                   borderWidth="thin"
                   borderColor="light"
@@ -338,7 +337,7 @@ export function TemplateStudio() {
                 >
                   <pre style={{ whiteSpace: "pre-wrap" }}>{canonicalHtml || "(empty)"}</pre>
                 </View>
-              </TabPanel>
+              </Item>
             </TabPanels>
           </Tabs>
         </View>
