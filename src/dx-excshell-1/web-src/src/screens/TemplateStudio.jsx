@@ -68,23 +68,19 @@ function applyPrbToTemplateHtml(html, { prbCfId, repoId }) {
 
   const newCall = `{{fragment id='aem:${prbCfId}?repoId=${repoId}' result='prbProperties'}}`;
 
-  // Common patterns we might see in baseline:
-  // 1) {{fragment id='aem:<something>?repoId=...' result='prbProperties'}}
-  // 2) {{fragment id="aem:<something>?repoId=..." result="prbProperties"}}
+  // Baseline guarantee: we should *always* find an existing prbProperties fragment call.
+  // Replace any existing aem:* prbProperties call (handles single or double quotes).
   const re =
     /{{\s*fragment\s+id=(['"])aem:[^'"]+\?repoId=[^'"]+\1\s+result=(['"])prbProperties\2\s*}}/g;
 
-  if (re.test(html)) {
-    return html.replace(re, newCall);
+  if (!re.test(html)) {
+    console.warn(
+      "Baseline HTML did not contain prbProperties fragment call; refusing to inject automatically."
+    );
+    return html;
   }
 
-  // Fallback: inject near top of body (v1).
-  const bodyTag = /<body[^>]*>/i;
-  if (bodyTag.test(html)) {
-    return html.replace(bodyTag, (m) => `${m}\n${newCall}\n`);
-  }
-
-  return `${newCall}\n${html}`;
+  return html.replace(re, newCall);
 }
 
   function enqueueTemplateUpdate(work) {

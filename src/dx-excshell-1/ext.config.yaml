@@ -51,6 +51,15 @@ runtimeManifest:
             AJO_GET_TEMPLATE_URL: $AJO_GET_TEMPLATE_URL
             AJO_API_KEY: $AJO_API_KEY
             SANDBOX_NAME: $SANDBOX_NAME
+        ajo-template-update:
+          function: actions/ajo/template/update/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs:
+            AJO_GET_TEMPLATE_URL: $AJO_GET_TEMPLATE_URL
+            AJO_UPDATE_TEMPLATE_URL: $AJO_UPDATE_TEMPLATE_URL
+            AJO_API_KEY: $AJO_API_KEY
+            SANDBOX_NAME: $SANDBOX_NAME
         aem-prb-list:
           function: actions/aem/prb-list/index.js
           web: 'yes'
