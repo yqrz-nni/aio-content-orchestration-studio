@@ -83,23 +83,6 @@ function applyPrbToTemplateHtml(html, { prbCfId, repoId }) {
   return html.replace(re, newCall);
 }
 
-  function enqueueTemplateUpdate(work) {
-    // `work` is an async fn. We chain it so writes serialize.
-    setUpdateChain((prev) => {
-      const next = prev
-        .catch(() => {}) // keep chain alive if a prior update failed
-        .then(async () => {
-          setIsUpdating(true);
-          try {
-            await work();
-          } finally {
-            setIsUpdating(false);
-          }
-        });
-
-      return next;
-    });
-  }
 
   function computeTemplateNameWithPrb({ baseName, prbNumber, prbName }) {
     if (!prbNumber) return baseName || "Baseline Clone";
@@ -117,8 +100,8 @@ export function TemplateStudio() {
   const [templateName, setTemplateName] = useState("Baseline Clone");
   const [canonicalHtml, setCanonicalHtml] = useState("");
   const [previewHtml, setPreviewHtml] = useState("");
+  const [isUpdatingPrb, setIsUpdatingPrb] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
-  const [updateChain, setUpdateChain] = useState(Promise.resolve());
 
   // ---- Global context (PRB) ----
   const [prbOptions, setPrbOptions] = useState([]); // [{id, label, path}]
@@ -229,52 +212,52 @@ async function createTemplateFromBaseline() {
     }
   }
 
-  function setPrb(prbId) {
+  async function setPrb(prbId) {
     setSelectedPrbId(prbId);
+
     const prbObj = prbOptions.find((o) => o.id === prbId) || null;
     setSelectedPrb(prbObj);
 
-    // If we don't have a template yet, we just "stage" the PRB for create.
     if (!templateId || !prbObj) return;
 
-    // Auto-update the template in AJO (rename + labels + PRB fragment)
-    enqueueTemplateUpdate(async () => {
-      const prbNumber = prbObj?.raw?.prbNumber || null;
-      const prbName = prbObj?.raw?.name || null;
-      const prbCfId = prbObj?.id || null;
+    await updateTemplateForPrb(prbObj);
+  }
 
-      if (!prbNumber || !prbCfId) {
-        console.warn("PRB selected but missing prbNumber or prbCfId:", prbObj);
-        return;
-      }
+  async function setPrb(prbId) {
+    if (isUpdatingPrb) return;
 
-      // 1) Update HTML locally (so preview and our next writes are consistent)
+    setSelectedPrbId(prbId);
+
+    const prbObj = prbOptions.find((o) => o.id === prbId) || null;
+    setSelectedPrb(prbObj);
+
+    if (!templateId || !prbObj) return;
+
+    try {
+      setIsUpdatingPrb(true);
+
+      const prbNumber = prbObj?.raw?.prbNumber;
+      const prbName = prbObj?.raw?.name;
+
       const nextHtml = applyPrbToTemplateHtml(canonicalHtml, {
-        prbCfId,
+        prbCfId: prbObj.id,
         repoId,
       });
 
       setCanonicalHtml(nextHtml);
 
-      // 2) Update AJO template (name + labels + html)
-      const nextName = computeTemplateNameWithPrb({
-        baseName: templateName,
-        prbNumber,
-        prbName,
-      });
-
-      const nextLabels = buildLabelsForPrb(prbNumber);
-
-      const resp = await actionWebInvoke(actions["ajo-template-update"], headers, {
+      await actionWebInvoke(actions["ajo-template-update"], headers, {
         templateId,
-        name: nextName,
-        labels: nextLabels,
-        html: nextHtml, // IMPORTANT: avoid GET-before-update race by sending the html we just computed
-        // updateMethod: "PUT", // optional override
+        name: `${prbNumber} — ${templateName}`,
+        labels: [`PRB:${prbNumber}`],
+        html: nextHtml,
       });
 
-      console.log("PRB update response:", resp);
-    });
+    } catch (e) {
+      console.error("PRB update failed:", e);
+    } finally {
+      setIsUpdatingPrb(false);
+    }
   }
 
   function addModule() {
