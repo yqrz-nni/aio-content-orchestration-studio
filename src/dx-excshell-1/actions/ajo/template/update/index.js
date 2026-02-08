@@ -25,6 +25,11 @@ function coerceHtml(params) {
   return null;
 }
 
+function pickEtag(headers = {}) {
+  // Depending on fetchRaw implementation, header keys might be normalized
+  return headers.etag || headers.ETag || headers["etag"] || headers["ETag"] || null;
+}
+
 function buildUpdateBody({ existing, params, html, editorContext }) {
   // Keep AJO shape consistent with create payload.
   // We prefer the incoming fields, but fall back to existing.
@@ -34,8 +39,11 @@ function buildUpdateBody({ existing, params, html, editorContext }) {
   // labels:
   // - if caller sends labels explicitly, use them
   // - else keep existing labels
-  const labels =
-    Array.isArray(params.labels) ? params.labels : Array.isArray(existing?.labels) ? existing.labels : [];
+  const labels = Array.isArray(params.labels)
+    ? params.labels
+    : Array.isArray(existing?.labels)
+      ? existing.labels
+      : [];
 
   // templateType / channels / source:
   const templateType = existing?.templateType ?? "html";
@@ -97,9 +105,16 @@ async function main(params) {
     let existing = null;
     let html = coerceHtml(params);
     let editorContext = params.editorContext || null;
+    let etag = null;
 
-    if (!html || !editorContext) {
-      existing = await fetchJson(updateUrl, {
+    // If caller provides ifMatch, we can skip GET *if* they also provide html + editorContext.
+    // Otherwise we must GET so we can:
+    //  - obtain the ETag
+    //  - preserve html/editorContext on name/label-only updates
+    const needsGet = !params.ifMatch || !html || !editorContext;
+
+    if (needsGet) {
+      const getResp = await fetchRaw(updateUrl, {
         method: "GET",
         headers: {
           Authorization: authHeader,
@@ -109,6 +124,9 @@ async function main(params) {
           accept: "application/vnd.adobe.ajo.template.v1+json",
         },
       });
+
+      existing = getResp?.data || null;
+      etag = pickEtag(getResp?.headers || {}) || null;
 
       if (!html) {
         html = existing?.template?.html?.body ?? existing?.template?.html ?? null;
@@ -120,6 +138,13 @@ async function main(params) {
 
     const bodyObj = buildUpdateBody({ existing, params, html, editorContext });
 
+    const ifMatch = params.ifMatch || etag;
+    if (!ifMatch) {
+      return serverError(
+        "Missing ETag for update. AJO requires If-Match; GET did not return an ETag header."
+      );
+    }
+
     const commonHeaders = {
       Authorization: authHeader,
       "x-gw-ims-org-id": imsOrg,
@@ -127,6 +152,7 @@ async function main(params) {
       "x-sandbox-name": params.SANDBOX_NAME,
       "content-type": "application/vnd.adobe.ajo.template.v1+json",
       accept: "application/vnd.adobe.ajo.template.v1+json",
+      "If-Match": ifMatch,
     };
 
     // Default to PUT; if the endpoint responds 405, fall back to PATCH.
@@ -156,6 +182,7 @@ async function main(params) {
       templateId,
       status: resp?.status ?? null,
       location,
+      etagUsed: ifMatch,
       result: resp?.data ?? null,
       responseText: resp?.text ?? null,
     });
