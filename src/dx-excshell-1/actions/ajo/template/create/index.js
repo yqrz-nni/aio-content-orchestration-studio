@@ -51,8 +51,7 @@ async function main(params) {
         "x-gw-ims-org-id": imsOrg,
         "x-api-key": params.AJO_API_KEY,
         "x-sandbox-name": params.SANDBOX_NAME,
-        "content-type": "application/json",
-        accept: "application/vnd.adobe.ajo.template.v1+json",
+        "content-type": "application/vnd.adobe.ajo.template.v1+json",
       },
       body: JSON.stringify(bodyObj),
     });
