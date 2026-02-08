@@ -20,16 +20,15 @@ export function AjoCreateTemplate() {
               "x-gw-ims-org-id": ims?.org,
             };
 
-            const res = await actionWebInvoke(
-              actions["ajo-template-create"],
-              headers,
-              {
-                name: "Cyber Monday Sale - Header !!",
-                description: "Cyber Monday Sale - Header Banner!!",
-                templateHtml:
-                  "<html> Hi {{profile.person.name}} its a great day to shop !! </html>",
-              }
-            );
+           const res = await actionWebInvoke(
+            actions["ajo-template-create"],
+            headers,
+            {
+              name: "Baseline Template (cloned)",
+              description: "Cloned from baseline via App Builder",
+              createFromBaseline: true
+            }
+          );
 
             console.log("AJO template create response:", res);
           } catch (e) {

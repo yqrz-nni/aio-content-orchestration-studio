@@ -39,5 +39,7 @@ runtimeManifest:
           runtime: nodejs:18
           inputs:
             AJO_CREATE_TEMPLATE_URL: $AJO_CREATE_TEMPLATE_URL
+            AJO_GET_TEMPLATE_URL: $AJO_GET_TEMPLATE_URL
+            AJO_BASELINE_TEMPLATE_ID: $AJO_BASELINE_TEMPLATE_ID
             AJO_API_KEY: $AJO_API_KEY
             SANDBOX_NAME: $SANDBOX_NAME
