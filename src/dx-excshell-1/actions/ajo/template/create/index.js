@@ -22,7 +22,9 @@ function extractTemplateIdFromLocation(location) {
 }
 
 function buildCreateTemplateBody(params, html, editorContext = {}) {
-  const name = params.name || "New Template";
+  const prbNumber = params.prbNumber || null;
+
+  let name = params.name || "New Template";
   const description = params.description || "";
 
   if (!html || typeof html !== "string") {
@@ -31,12 +33,25 @@ function buildCreateTemplateBody(params, html, editorContext = {}) {
     throw e;
   }
 
+  // Optional: make it obvious in template listings what PRB it's tied to
+  if (prbNumber) {
+    // Avoid double-prefixing if user re-creates quickly
+    if (!name.startsWith(`${prbNumber} — `)) {
+      name = `${prbNumber} — ${name}`;
+    }
+  }
+
+  // Labels for searchability / later lookup
+  const labels = [];
+  if (prbNumber) labels.push(`PRB:${prbNumber}`);
+
   return {
     name,
     description,
     templateType: "html",
     channels: ["email"],
     source: { origin: "ajo" },
+    labels, // ✅ new
     template: {
       html,
       editorContext: editorContext || {},
