@@ -8,8 +8,13 @@ const { requireIms } = require("../../../_lib/ims");
 function extractTemplateIdFromLocation(location) {
   if (!location || typeof location !== "string") return null;
 
-  // Most likely: https://platform.adobe.io/ajo/content/templates/<id>
+  // Examples:
+  // 1) /templates/<id>
+  // 2) https://platform.adobe.io/ajo/content/templates/<id>
+  // 3) /ajo/content/templates/<id>
+  // 4) /content/templates/<id>
   const m =
+    location.match(/\/templates\/([^/?#]+)/) ||
     location.match(/\/ajo\/content\/templates\/([^/?#]+)/) ||
     location.match(/\/content\/templates\/([^/?#]+)/);
 
