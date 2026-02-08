@@ -68,6 +68,7 @@ export function TemplateStudio() {
   // ---- Global context (PRB) ----
   const [prbOptions, setPrbOptions] = useState([]); // [{id, label, path}]
   const [selectedPrbId, setSelectedPrbId] = useState(null);
+  const [selectedPrb, setSelectedPrb] = useState(null); // {id,label,path,raw}
 
   // ---- Libraries ----
   const [vfItems, setVfItems] = useState([]); // [{id,name}]
@@ -91,6 +92,8 @@ async function createTemplateFromBaseline() {
       name: templateName,
       description: "Created from baseline via App Builder",
       createFromBaseline: true,
+      prbNumber: selectedPrb?.raw?.prbNumber || null,
+      prbName: selectedPrb?.raw?.name || null,
     });
 
     const id = res?.templateId;
@@ -173,9 +176,8 @@ async function createTemplateFromBaseline() {
 
   function setPrb(prbId) {
     setSelectedPrbId(prbId);
-    // Later:
-    // - update canonical HTML’s PRB fragment call (or ensure baseline already contains it)
-    // - trigger re-render (renderer will now have styles/prb vars)
+    const prbObj = prbOptions.find((o) => o.id === prbId) || null;
+    setSelectedPrb(prbObj);
   }
 
   function addModule() {
