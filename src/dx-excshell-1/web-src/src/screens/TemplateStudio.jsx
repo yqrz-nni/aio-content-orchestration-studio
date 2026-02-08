@@ -133,14 +133,24 @@ async function createTemplateFromBaseline() {
    * - aem-unifiedpromo-list
    */
   async function loadPrbList() {
-    const res = await actionWebInvoke(actions["aem-prb-list"]); // you’ll add this action
+    const res = await actionWebInvoke(actions["aem-prb-list"]);
     const items = res?.data?.prbPropertiesList?.items || [];
+
     setPrbOptions(
-      items.map((it) => ({
-        id: it._id,
-        label: it.title || it.prbNumber || it._path || it._id,
-        path: it._path,
-      }))
+      items.map((it) => {
+        const displayName = it.name || it.prbNumber || it._path || it._id;
+
+        return {
+          id: it._id,
+          // Show both if we have both (helps paste PRB # but see friendly name)
+          label:
+            it.prbNumber && it.name
+              ? `${it.prbNumber} — ${it.name}`
+              : displayName,
+          path: it._path,
+          raw: it, // optional, but useful later
+        };
+      })
     );
   }
 
