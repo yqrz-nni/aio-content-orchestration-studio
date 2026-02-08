@@ -1,11 +1,6 @@
-const {
-  ok,
-  badRequest,
-  serverError,
-  badGateway,
-  corsPreflight,
-} = require("../../../_lib/http");
+const { ok, serverError, corsPreflight } = require("../../../_lib/http");
 const { fetchJson } = require("../../../_lib/fetchJson");
+const { requireIms } = require("../../../_lib/ims");
 
 function buildCreateTemplateBody(params) {
   const name = params.name || "Cyber Monday Sale - Header !!";
@@ -41,31 +36,18 @@ async function main(params) {
   }
 
   try {
-    const token =
-      params.__ow_headers?.authorization || params.__ow_headers?.Authorization;
-
-    const imsOrg =
-      params.__ow_headers?.["x-gw-ims-org-id"] ||
-      params.__ow_headers?.["X-GW-IMS-ORG-ID"];
-
-    if (!token || !imsOrg) {
-      return badRequest(
-        "Missing Authorization or x-gw-ims-org-id. Forward ims.token and ims.org from the UI."
-      );
-    }
+    const { token, imsOrg } = requireIms(params);
 
     if (!params.AJO_CREATE_TEMPLATE_URL) return serverError("Missing AJO_CREATE_TEMPLATE_URL");
     if (!params.AJO_API_KEY) return serverError("Missing AJO_API_KEY");
     if (!params.SANDBOX_NAME) return serverError("Missing SANDBOX_NAME");
-
-    const authHeader = token.startsWith("Bearer ") ? token : `Bearer ${token}`;
 
     const bodyObj = buildCreateTemplateBody(params);
 
     const payload = await fetchJson(params.AJO_CREATE_TEMPLATE_URL, {
       method: "POST",
       headers: {
-        Authorization: authHeader,
+        Authorization: token,
         "x-gw-ims-org-id": imsOrg,
         "x-api-key": params.AJO_API_KEY,
         "x-sandbox-name": params.SANDBOX_NAME,
@@ -75,10 +57,7 @@ async function main(params) {
       body: JSON.stringify(bodyObj),
     });
 
-    return ok({
-      message: "Template Creation Successful",
-      result: payload,
-    });
+    return ok({ message: "Template Creation Successful", result: payload });
   } catch (e) {
     return serverError(e.message, {
       url: e.url,
