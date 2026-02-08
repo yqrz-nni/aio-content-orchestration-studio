@@ -10,6 +10,7 @@ const { fetchJson } = require("../../../_lib/fetchJson");
 function buildCreateTemplateBody(params) {
   const name = params.name || "Cyber Monday Sale - Header !!";
   const description = params.description || "Cyber Monday Sale - Header Banner!!";
+
   const html =
     typeof params.templateHtml === "string"
       ? params.templateHtml
@@ -28,7 +29,7 @@ function buildCreateTemplateBody(params) {
     channels: ["email"],
     source: { origin: "ajo" },
     template: {
-      html, 
+      html,
       editorContext: params.editorContext || {},
     },
   };
@@ -53,17 +54,13 @@ async function main(params) {
       );
     }
 
-    if (!params.AJO_CREATE_TEMPLATE_URL) {
-      return serverError("Missing AJO_CREATE_TEMPLATE_URL");
-    }
-    if (!params.AJO_API_KEY) {
-      return serverError("Missing AJO_API_KEY");
-    }
-    if (!params.SANDBOX_NAME) {
-      return serverError("Missing SANDBOX_NAME");
-    }
+    if (!params.AJO_CREATE_TEMPLATE_URL) return serverError("Missing AJO_CREATE_TEMPLATE_URL");
+    if (!params.AJO_API_KEY) return serverError("Missing AJO_API_KEY");
+    if (!params.SANDBOX_NAME) return serverError("Missing SANDBOX_NAME");
 
     const authHeader = token.startsWith("Bearer ") ? token : `Bearer ${token}`;
+
+    const bodyObj = buildCreateTemplateBody(params);
 
     const payload = await fetchJson(params.AJO_CREATE_TEMPLATE_URL, {
       method: "POST",
@@ -72,6 +69,7 @@ async function main(params) {
         "x-gw-ims-org-id": imsOrg,
         "x-api-key": params.AJO_API_KEY,
         "x-sandbox-name": params.SANDBOX_NAME,
+        "content-type": "application/json",
         accept: "application/vnd.adobe.ajo.template.v1+json",
       },
       body: JSON.stringify(bodyObj),
@@ -79,7 +77,7 @@ async function main(params) {
 
     return ok({
       message: "Template Creation Successful",
-      result: payload
+      result: payload,
     });
   } catch (e) {
     return serverError(e.message, {
