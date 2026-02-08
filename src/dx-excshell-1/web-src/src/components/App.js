@@ -38,9 +38,6 @@ function App (props) {
               <VfDemo />
             </View>
             <View padding="size-200">
-              <AjoPreviewDemo />
-            </View>
-            <View padding="size-200">
               <AjoCreateTemplate />
             </View>
           </ImsContext.Provider>
