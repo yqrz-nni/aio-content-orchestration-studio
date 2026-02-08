@@ -10,6 +10,7 @@ import { ImsContext } from "../context/ImsContext";
 import { GqlDemo } from "../screens/GqlDemo";
 import { VfDemo } from "../screens/VfDemo";
 import { AjoPreviewDemo } from "../screens/AjoPreviewDemo";
+import { AjoCreateTemplate } from '../screens/AjoCreateTemplate';
 
 function App (props) {
   console.log('runtime object:', props.runtime)
@@ -38,6 +39,9 @@ function App (props) {
             </View>
             <View padding="size-200">
               <AjoPreviewDemo />
+            </View>
+            <View padding="size-200">
+              <AjoCreateTemplate />
             </View>
           </ImsContext.Provider>
         </Provider>
