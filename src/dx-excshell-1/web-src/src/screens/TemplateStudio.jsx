@@ -85,7 +85,8 @@ export function TemplateStudio() {
   // Actions
   // ---------------------------
 
-  async function createTemplateFromBaseline() {
+async function createTemplateFromBaseline() {
+  try {
     const res = await actionWebInvoke(actions["ajo-template-create"], headers, {
       name: templateName,
       description: "Created from baseline via App Builder",
@@ -95,11 +96,27 @@ export function TemplateStudio() {
     const id = res?.templateId;
     setTemplateId(id);
 
-    // Next best: GET canonical HTML from AJO.
-    // Add an action ajo-template-get next; for now you can also return html from create action if you prefer.
-    // If you already have a get action, call it here and setCanonicalHtml(htmlBody).
-    console.log("Create response:", res);
+    if (!id) {
+      console.warn("Template created but no templateId returned:", res);
+      return;
+    }
+
+    // Immediately fetch canonical HTML from AJO
+    const getRes = await actionWebInvoke(actions["ajo-template-get"], headers, {
+      templateId: id,
+    });
+
+    const html = getRes?.htmlBody;
+    if (!html) {
+      console.warn("Template fetched but no htmlBody found:", getRes);
+      return;
+    }
+
+    setCanonicalHtml(html);
+  } catch (e) {
+    console.error("Create-from-baseline failed:", e);
   }
+}
 
   async function loadVfs() {
     const res = await actionWebInvoke(actions["ajo-vf-demo"], headers);
