@@ -33,15 +33,6 @@ function App (props) {
         <Provider theme={defaultTheme} colorScheme={'light'}>
           <ImsContext.Provider value={props.ims}>
             <View padding="size-200">
-              <GqlDemo />
-            </View>
-            <View padding="size-200">
-              <VfDemo />
-            </View>
-            <View padding="size-200">
-              <AjoCreateTemplate />
-            </View>
-            <View padding="size-200">
               <TemplateStudio />
             </View>
           </ImsContext.Provider>
