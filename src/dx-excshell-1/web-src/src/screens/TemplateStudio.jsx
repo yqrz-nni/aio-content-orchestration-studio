@@ -145,15 +145,20 @@ async function createTemplateFromBaseline() {
   }
 
   async function loadContentList() {
-    const res = await actionWebInvoke(actions["aem-unifiedpromo-list"]); // you’ll add this action
-    const items = res?.data?.unifiedPromotionalContentList?.items || [];
-    setContentOptions(
-      items.map((it) => ({
-        id: it._id,
-        label: it.headlineText || it._path || it._id,
-        path: it._path,
-      }))
-    );
+    try {
+      const res = await actionWebInvoke(actions["aem-gql-demo"]);
+      const items = res?.data?.unifiedPromotionalContentList?.items || [];
+
+      setContentOptions(
+        items.map((it) => ({
+          id: it._id,
+          label: it.headlineText || it._path || it._id,
+          path: it._path,
+        }))
+      );
+    } catch (e) {
+      console.error("Load Content CFs failed:", e);
+    }
   }
 
   function setPrb(prbId) {
