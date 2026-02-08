@@ -102,6 +102,8 @@ export function TemplateStudio() {
   const [previewHtml, setPreviewHtml] = useState("");
   const [isUpdatingPrb, setIsUpdatingPrb] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
+  const [isRendering, setIsRendering] = useState(false);
+  const [renderError, setRenderError] = useState("");
 
   // ---- Global context (PRB) ----
   const [prbOptions, setPrbOptions] = useState([]); // [{id, label, path}]
@@ -284,11 +286,56 @@ async function createTemplateFromBaseline() {
   }
 
   async function renderPreview() {
-    // Phase 0: client-side preview of canonicalHtml
-    // Next: call actions["ajo-render-preview"] with { html, prbId, modules } etc.
-    setPreviewHtml(
-      canonicalHtml || "<html><body><p>No HTML loaded yet (add ajo-template-get).</p></body></html>"
-    );
+    try {
+      setRenderError("");
+      setIsRendering(true);
+
+      if (!canonicalHtml) {
+        setPreviewHtml(
+          "<html><body><p>No HTML loaded yet.</p></body></html>"
+        );
+        return;
+      }
+
+      const renderContext = {
+        prb: {
+          id: selectedPrb?.id,
+          cfId: selectedPrb?.id, // (same as CF id in your current model)
+          prbNumber: selectedPrb?.raw?.prbNumber,
+          name: selectedPrb?.raw?.name,
+        },
+        repoId,
+      };
+
+      const res = await actionWebInvoke(actions["ajo-template-render"], headers, {
+        html: canonicalHtml,
+        renderContext,
+      });
+
+      // Be tolerant about response shape while we’re iterating
+      const rendered =
+        res?.renderedHtml ||
+        res?.html ||
+        res?.body?.html ||
+        res?.result?.html ||
+        res?.result?.renderedHtml ||
+        null;
+
+      if (!rendered || typeof rendered !== "string") {
+        console.warn("Render action returned no rendered HTML:", res);
+        setPreviewHtml(
+          "<html><body><p>Render succeeded but returned no HTML.</p></body></html>"
+        );
+        return;
+      }
+
+      setPreviewHtml(rendered);
+    } catch (e) {
+      console.error("Render preview failed:", e);
+      setRenderError(e?.message || "Render failed");
+    } finally {
+      setIsRendering(false);
+    }
   }
 
   // Auto-refresh preview when canonical HTML changes
@@ -354,8 +401,8 @@ async function createTemplateFromBaseline() {
             <Button variant="secondary" onPress={loadContentList}>
               Load Content CFs
             </Button>
-            <Button variant="primary" onPress={renderPreview} isDisabled={!canonicalHtml}>
-              Render preview
+            <Button variant="primary" onPress={renderPreview} isDisabled={!canonicalHtml || isRendering}>
+                {isRendering ? "Rendering…" : "Render preview"}
             </Button>
           </Flex>
         </Flex>
@@ -416,13 +463,18 @@ async function createTemplateFromBaseline() {
             </TabList>
             <TabPanels>
               <Item key="preview">
-                <View borderWidth="thin" borderColor="light" borderRadius="small" height="62vh">
-                  <iframe
-                    title="Email Preview"
-                    style={{ width: "100%", height: "100%", border: "none" }}
-                    sandbox="allow-same-origin"
-                    srcDoc={previewHtml}
-                  />
+                <View borderWidth="thin" borderColor="light" borderRadius="small" height="62vh" padding="size-100">
+                    {renderError ? (
+                        <View marginBottom="size-100">
+                            <StatusLight variant="negative">{renderError}</StatusLight>
+                        </View>
+                    ) : null}
+                    <iframe
+                        title="Email Preview"
+                        style={{ width: "100%", height: "100%", border: "none" }}
+                        sandbox="allow-same-origin"
+                        srcDoc={previewHtml}
+                    />
                 </View>
               </Item>
 
