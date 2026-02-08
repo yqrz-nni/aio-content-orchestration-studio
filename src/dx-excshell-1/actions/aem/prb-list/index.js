@@ -61,7 +61,7 @@ async function main(params) {
     const query = `
       query {
         prbPropertiesList(limit: 50) {
-          items { _id _path prbNumber startingDate expirationDate }
+          items { _id _path prbNumber startingDate expirationDate name }
         }
       }
     `;
