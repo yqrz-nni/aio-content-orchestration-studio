@@ -1,29 +1,19 @@
 const { ok, serverError, corsPreflight } = require("../../../_lib/http");
 const { fetchJson } = require("../../../_lib/fetchJson");
+const { fetchRaw } = require("../../../_lib/fetchRaw"); // ✅ add
 const { requireIms } = require("../../../_lib/ims");
 
-function buildCreateTemplateBody(params, html, editorContext = {}) {
-  const name = params.name || "New Template";
-  const description = params.description || "";
+// ... keep your existing helpers/buildCreateTemplateBody/clone logic ...
 
-  if (!html || typeof html !== "string") {
-    const e = new Error("Missing templateHtml (string).");
-    e.status = 400;
-    throw e;
-  }
+function extractTemplateIdFromLocation(location) {
+  if (!location || typeof location !== "string") return null;
 
-  return {
-    name,
-    description,
-    templateType: "html",
-    channels: ["email"],
-    source: { origin: "ajo" },
-    template: {
-      // If your create endpoint expects { body }, change to: html: { body: html }
-      html,
-      editorContext: editorContext || {},
-    },
-  };
+  // Most likely: https://platform.adobe.io/ajo/content/templates/<id>
+  const m =
+    location.match(/\/ajo\/content\/templates\/([^/?#]+)/) ||
+    location.match(/\/content\/templates\/([^/?#]+)/);
+
+  return m ? m[1] : null;
 }
 
 async function main(params) {
@@ -35,54 +25,14 @@ async function main(params) {
     const { token, imsOrg } = requireIms(params);
 
     if (!params.AJO_CREATE_TEMPLATE_URL) return serverError("Missing AJO_CREATE_TEMPLATE_URL");
-    if (!params.AJO_GET_TEMPLATE_URL) return serverError("Missing AJO_GET_TEMPLATE_URL");
     if (!params.AJO_API_KEY) return serverError("Missing AJO_API_KEY");
     if (!params.SANDBOX_NAME) return serverError("Missing SANDBOX_NAME");
 
     const authHeader = token.startsWith("Bearer ") ? token : `Bearer ${token}`;
 
-    const createFromBaseline =
-      params.createFromBaseline === true ||
-      params.createFromBaseline === "true" ||
-      !params.templateHtml;
+    const bodyObj = buildCreateTemplateBody(params); // or your baseline clone path
 
-    let bodyObj;
-
-    if (createFromBaseline) {
-      const baselineId = params.baselineTemplateId || params.AJO_BASELINE_TEMPLATE_ID;
-      if (!baselineId) return serverError("Missing AJO_BASELINE_TEMPLATE_ID (or baselineTemplateId).");
-
-      const getUrl = `${params.AJO_GET_TEMPLATE_URL}/${baselineId}`;
-
-      const baseline = await fetchJson(getUrl, {
-        method: "GET",
-        headers: {
-          Authorization: authHeader,
-          "x-gw-ims-org-id": imsOrg,
-          "x-api-key": params.AJO_API_KEY,
-          "x-sandbox-name": params.SANDBOX_NAME,
-          accept: "application/vnd.adobe.ajo.template.v1+json",
-        },
-      });
-
-      // Your baseline JSON shows template.html.body
-      const baselineHtml =
-        baseline?.template?.html?.body ??
-        baseline?.template?.html; // fallback if API returns string
-
-      const baselineEditorContext = baseline?.template?.editorContext ?? {};
-
-      bodyObj = buildCreateTemplateBody(params, baselineHtml, baselineEditorContext);
-    } else {
-      const html =
-        typeof params.templateHtml === "string"
-          ? params.templateHtml
-          : params.templateHtml?.body;
-
-      bodyObj = buildCreateTemplateBody(params, html, params.editorContext || {});
-    }
-
-    const payload = await fetchJson(params.AJO_CREATE_TEMPLATE_URL, {
+    const resp = await fetchRaw(params.AJO_CREATE_TEMPLATE_URL, {
       method: "POST",
       headers: {
         Authorization: authHeader,
@@ -94,7 +44,20 @@ async function main(params) {
       body: JSON.stringify(bodyObj),
     });
 
-    return ok({ message: "Template Creation Successful", result: payload });
+    const location = resp.headers["location"] || resp.headers["content-location"] || null;
+    const templateId =
+      extractTemplateIdFromLocation(location) ||
+      resp.data?.id || // just in case
+      null;
+
+    return ok({
+      message: "Template Creation Successful",
+      templateId,
+      location,
+      status: resp.status,
+      // Keep result for debugging, but avoid dumping huge HTML back unless you want it
+      result: resp.data ?? null,
+    });
   } catch (e) {
     return serverError(e.message, {
       url: e.url,

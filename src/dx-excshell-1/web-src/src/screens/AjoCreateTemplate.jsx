@@ -29,8 +29,8 @@ export function AjoCreateTemplate() {
               createFromBaseline: true
             }
           );
-
             console.log("AJO template create response:", res);
+            console.log("created templateId:", res?.templateId);
           } catch (e) {
             console.error("AJO template create failed:", e);
           }
