@@ -13,10 +13,11 @@
 //   - AEM binding discovery + optional hydration (aem:* fragment calls)
 //   - Simple token substitution for namespaces using hydrated binding objects
 //
-// IMPORTANT FIX:
-// - If binding-order context is missing (e.g. first binding appears after tokens or hydration is partial),
-//   we now fall back to a "default context" per namespace (first hydrated binding found) so previews
-//   do not show raw {{cf.*}}/{{prbProperties.*}}/{{styles.*}} tokens.
+// IMPORTANT FIX (2026-02-09):
+// - Previously, resolveStylesByBindings() stripped AEM binding tags from the HTML,
+//   which broke subsequent passes (cf/prbProperties) that rely on those tags as anchors
+//   to swap contexts by binding order.
+// - Now we KEEP AEM binding tags during all replacement passes, and strip them ONLY at the end.
 
 const { ok, badRequest, serverError, corsPreflight } = require("../../../_lib/http");
 const { fetchRaw } = require("../../../_lib/fetchRaw");
@@ -115,6 +116,18 @@ function stripAjoSyntax(html) {
   out = out.replace(liquidTagRe, "");
 
   return out;
+}
+
+/**
+ * Strip AEM binding tags AFTER all namespace/style substitutions.
+ * We only remove fragment calls whose id= starts with aem: (single or double quotes).
+ */
+function stripAemBindingTags(html) {
+  if (!html || typeof html !== "string") return html;
+
+  // Matches: {{ fragment ... id='aem:....' ... }} and variants with whitespace + double quotes
+  const aemTagRe = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])aem:[^'"]+\1[^}]*}}/gim;
+  return html.replace(aemTagRe, "");
 }
 
 /**
@@ -810,8 +823,8 @@ function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStream
     const before = html.slice(cursor, tagPos);
     out += replaceNamespaceVars(before, namespace, currentCtx || defaultCtx);
 
-    // strip binding tag from preview output (we only needed it for ordering)
-    out += "";
+    // IMPORTANT: KEEP the binding tag as an anchor for subsequent passes.
+    out += tag;
 
     cursor = tagPos + tag.length;
 
@@ -841,6 +854,7 @@ function deriveStylesContext({ prbCtx, cfCtx }) {
 
 /**
  * Replace {{styles.*}} by binding order, with default fallback.
+ * IMPORTANT: keep tags; strip at end.
  */
 function resolveStylesByBindings({
   stitchedHtml,
@@ -876,8 +890,8 @@ function resolveStylesByBindings({
 
     out += replaceNamespaceVars(stitchedHtml.slice(cursor, tagPos), "styles", currentStyles);
 
-    // strip binding tag from preview output
-    out += "";
+    // IMPORTANT: KEEP the binding tag so later passes can still anchor to it.
+    out += tag;
 
     cursor = tagPos + tag.length;
 
@@ -909,7 +923,7 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     dataByStreamKey: aemPrefetchDataByStreamKey,
   });
 
-  // styles first (derived from PRB/CF binding order)
+  // 1) styles first (derived from PRB/CF binding order) — KEEP TAGS
   out = resolveStylesByBindings({
     stitchedHtml: out,
     aemBindingsEncountered,
@@ -918,7 +932,7 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     defaultCfCtx,
   });
 
-  // then normal namespaces
+  // 2) namespaces — KEEP TAGS (anchors)
   out = renderNamespaceByBindingOrder({
     html: out,
     namespace: "prbProperties",
@@ -935,7 +949,10 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     defaultCtx: defaultCfCtx,
   });
 
-  // final sanitize for preview HTML
+  // 3) Now strip the AEM binding tags ONLY after all passes have used them.
+  out = stripAemBindingTags(out);
+
+  // 4) final sanitize for preview HTML
   return stripAjoSyntax(out);
 }
 
