@@ -12,6 +12,12 @@
 //   - AJO fragment resolution/stitching (ajo:* fragments) (recursive)
 //   - AEM binding discovery + optional hydration (aem:* fragment calls)
 //   - Simple token substitution for namespaces using hydrated binding objects
+//
+// NEW (Blob mimic):
+// - Best-effort evaluation for the common “richtext/bodyCopy liquid blob” used to:
+//   - inject inline <p style="..."> using styles context
+//   - number references by placeholder tokens (##1, ##2, …) with de-dupe
+// - We detect the blob pattern and replace it with computed HTML before stripping leftover {% %}.
 
 const { ok, badRequest, serverError, corsPreflight } = require("../../../_lib/http");
 const { fetchRaw } = require("../../../_lib/fetchRaw");
@@ -77,6 +83,187 @@ function safeJsonSnippet(obj, maxChars = 1200) {
   } catch {
     return String(obj);
   }
+}
+
+/* =============================================================================
+ * Preview sanitizer + “known blob” evaluator
+ * ============================================================================= */
+
+/**
+ * Detect + evaluate the common richtext/bodyCopy liquid blob.
+ *
+ * We intentionally DO NOT attempt to interpret general Liquid/AJO syntax.
+ * We only detect the well-known pattern and replace it with computed HTML.
+ */
+function looksLikeRichTextBodyCopyBlob(s) {
+  if (!s || typeof s !== "string") return false;
+  // Heuristics: the blob typically has "mirrorUrl", "refWrapper", "bodyCopy", and triple-stash output.
+  const hasMirror = s.includes("let mirrorUrl");
+  const hasRefWrapper = s.includes("refWrapper");
+  const hasBodyCopy = s.includes("bodyCopy");
+  const hasTriple = s.includes("{{{bodyCopy}}}") || s.includes("{{{ bodyCopy }}}");
+  return !!(hasMirror && hasRefWrapper && hasBodyCopy && hasTriple);
+}
+
+function buildInlinePStyleTag(stylesCtx) {
+  const s = stylesCtx && typeof stylesCtx === "object" ? stylesCtx : null;
+
+  // Keep behavior close to your blob (string concat). If fields are missing, we just omit values.
+  const fontSize = s?.font_size_heading_med ?? "";
+  const color = s?.color_text_body ?? "";
+  const family = s?.font_family ?? "";
+  const lineHeight = s?.email_body_copy_line_height ?? "";
+
+  // Your blob used <p style='...'> (single quotes). Keep it.
+  return (
+    "<p style='" +
+    "font-size:" +
+    fontSize +
+    ";" +
+    "color:" +
+    color +
+    ";" +
+    "font-family:" +
+    family +
+    ";" +
+    "line-height:" +
+    lineHeight +
+    ";" +
+    "'>"
+  );
+}
+
+/**
+ * Mimic the blob’s intent:
+ * - Replace the first "<p>" with "<p style='...'>"
+ * - Replace "##N" placeholders with de-duped reference indices based on cf.references[].referenceNote
+ *
+ * Notes:
+ * - This is best-effort. If cf/bodyCopy/references are missing, returns "".
+ * - The blob loops bodyCopy array and concatenates results.
+ */
+function renderBodyCopyLikeAjo({ cfCtx, stylesCtx, refWrapper = "##", refSplit = "~~" }) {
+  const cf = cfCtx && typeof cfCtx === "object" ? cfCtx : null;
+  if (!cf) return "";
+
+  const bodyCopies = Array.isArray(cf?.bodyCopy) ? cf.bodyCopy : [];
+  if (!bodyCopies.length) return "";
+
+  const references = Array.isArray(cf?.references) ? cf.references : [];
+
+  const cssBuilder = buildInlinePStyleTag(stylesCtx);
+
+  let refCount = 0;
+  let allReferences = ""; // "note~~note~~..."
+  const getRefArray = () => (allReferences ? allReferences.split(refSplit).filter(Boolean) : []);
+
+  const outParts = [];
+
+  for (const bodyCopyRaw of bodyCopies) {
+    let bodyCopy = String(bodyCopyRaw ?? "");
+    // Blob behavior: replace the first literal "<p>" with computed styled <p ...>
+    bodyCopy = bodyCopy.replace("<p>", cssBuilder);
+
+    // Replace placeholders by scanning references in order (localRefCount)
+    let localRefCount = 0;
+    for (const ref of references) {
+      localRefCount += 1;
+      const placeholderTarget = `${refWrapper}${localRefCount}`;
+
+      const refNote = ref?.referenceNote ?? "";
+      if (!refNote) continue;
+
+      const refArray = getRefArray();
+      const existingIndex = refArray.indexOf(refNote);
+
+      if (existingIndex >= 0) {
+        // already exists — use its index+1
+        bodyCopy = bodyCopy.split(placeholderTarget).join(String(existingIndex + 1));
+      } else {
+        // new — increment global refCount and append
+        refCount += 1;
+        bodyCopy = bodyCopy.split(placeholderTarget).join(String(refCount));
+        allReferences = allReferences + refNote + refSplit;
+      }
+    }
+
+    outParts.push(bodyCopy);
+  }
+
+  return outParts.join("");
+}
+
+/**
+ * Replace any detected richtext/bodyCopy liquid blob inside a segment.
+ * We keep this scoped to segments to preserve binding-order context.
+ */
+function replaceRichTextBlobsInSegment(segment, { cfCtx, stylesCtx }) {
+  if (!segment || typeof segment !== "string") return segment;
+  if (!looksLikeRichTextBodyCopyBlob(segment)) return segment;
+
+  // We replace the *entire blob block* with computed HTML.
+  // Best-effort regex:
+  // - start: "{% let mirrorUrl" (possibly whitespace)
+  // - end: "{{{bodyCopy}}}" (allow spaces) and optional trailing whitespace
+  //
+  // If your blob has more after triple stash, this leaves that behind; but
+  // stripAjoSyntax() will remove remaining {% %} tags anyway.
+  const blobRe = /{%\s*let\s+mirrorUrl[\s\S]*?\{\{\{\s*bodyCopy\s*\}\}\}/gim;
+
+  return segment.replace(blobRe, () => {
+    return renderBodyCopyLikeAjo({ cfCtx, stylesCtx });
+  });
+}
+
+/**
+ * Evaluate known liquid blobs using binding order context.
+ * We scan stitchedHtml in the order of AEM bindings so we can know “current cf/styles”
+ * at each region of the template.
+ */
+function evaluateKnownLiquidByBindings({ stitchedHtml, aemBindingsEncountered, aemPrefetchDataByStreamKey }) {
+  if (!stitchedHtml) return stitchedHtml;
+
+  const binds = (Array.isArray(aemBindingsEncountered) ? aemBindingsEncountered : [])
+    .filter((b) => b?.result === "prbProperties" || b?.result === "cf")
+    .slice()
+    .sort((a, b) => Number(a.index) - Number(b.index));
+
+  if (!binds.length) {
+    // No binding context; still attempt global replace (rare, but harmless)
+    return replaceRichTextBlobsInSegment(stitchedHtml, { cfCtx: null, stylesCtx: null });
+  }
+
+  let cursor = 0;
+  let out = "";
+
+  let currentPrb = null;
+  let currentCf = null;
+  let currentStyles = null;
+
+  for (const b of binds) {
+    const tag = b.rawTag;
+    const tagPos = stitchedHtml.indexOf(tag, cursor);
+    if (tagPos < 0) continue;
+
+    const before = stitchedHtml.slice(cursor, tagPos);
+    out += replaceRichTextBlobsInSegment(before, { cfCtx: currentCf, stylesCtx: currentStyles });
+
+    // Keep the binding tag for later passes (they strip it)
+    out += tag;
+
+    cursor = tagPos + tag.length;
+
+    const streamKey = `${b.index}:${b.result}`;
+    const ctx = aemPrefetchDataByStreamKey?.[streamKey] ?? null;
+
+    if (b.result === "prbProperties") currentPrb = ctx;
+    if (b.result === "cf") currentCf = ctx;
+
+    currentStyles = deriveStylesContext({ prbCtx: currentPrb, cfCtx: currentCf });
+  }
+
+  out += replaceRichTextBlobsInSegment(stitchedHtml.slice(cursor), { cfCtx: currentCf, stylesCtx: currentStyles });
+  return out;
 }
 
 /**
@@ -859,6 +1046,13 @@ function resolveStylesByBindings({ stitchedHtml, aemBindingsEncountered, aemPref
 function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aemPrefetchDataByStreamKey }) {
   let out = stitchedHtml;
 
+  // ✅ First, mimic known AJO blob behavior (richtext/bodyCopy) using binding-order context.
+  out = evaluateKnownLiquidByBindings({
+    stitchedHtml: out,
+    aemBindingsEncountered,
+    aemPrefetchDataByStreamKey,
+  });
+
   // styles first (it is derived from PRB/CF binding order)
   out = resolveStylesByBindings({
     stitchedHtml: out,
@@ -881,7 +1075,7 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     dataByStreamKey: aemPrefetchDataByStreamKey,
   });
 
-  // ✅ final sanitize for preview HTML
+  // ✅ final sanitize for preview HTML (removes leftover {% %} + ACR blocks)
   return stripAjoSyntax(out);
 }
 

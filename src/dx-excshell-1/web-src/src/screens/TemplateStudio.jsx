@@ -331,6 +331,10 @@ function safeJson(obj, space = 2) {
  * Optional preview-only sanitizer (belt + suspenders).
  * If the action returns renderedHtml sanitized, this is mostly redundant.
  * It also protects the fallback path (stitchedHtml + local resolution).
+ *
+ * NOTE:
+ * - The action now evaluates the “richtext/bodyCopy blob” and then strips leftover {% %}.
+ * - Here we still strip leftover {% %} for fallback safety.
  */
 function stripAjoSyntax(html) {
   if (!html || typeof html !== "string") return html;
@@ -633,7 +637,7 @@ export function TemplateStudio() {
         return;
       }
 
-      // ✅ sanitize preview output (action should already sanitize renderedHtml, but this protects fallback path)
+      // ✅ sanitize preview output (action already sanitizes renderedHtml, but this protects fallback path)
       setPreviewHtml(stripAjoSyntax(best));
 
       // Optional: if action returns cache keys and hydrated stream objects, you can merge into cache editor.
