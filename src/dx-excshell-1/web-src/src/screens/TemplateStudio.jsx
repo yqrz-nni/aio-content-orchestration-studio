@@ -107,7 +107,6 @@ function hydrateFromHtml(html) {
     const prbRe = /{{\s*fragment\b[^}]*\bid=(['"])aem:([^'"]+)\1[^}]*\bresult=(['"])prbProperties\3[^}]*}}/i;
     const m = html.match(prbRe);
     if (m && m[2]) {
-      // m[2] is "<ID>?repoId=..."
       const idPart = m[2].split("?")[0];
       out.prbCfId = idPart || null;
     }
@@ -156,7 +155,6 @@ function hydrateFromHtml(html) {
     const re = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])(ajo:([^'"]+))\1[^}]*}}/gim;
     let m;
     while ((m = re.exec(html)) !== null) {
-      // m[2] is "ajo:<id>", m[3] is "<id>"
       vfCalls.push({ start: m.index, end: re.lastIndex, vfId: m[3] || null });
     }
   }
@@ -180,7 +178,7 @@ function hydrateFromHtml(html) {
 }
 
 /* =============================================================================
- * Helpers: variable resolution for preview (cf namespace in binding order)
+ * Helpers: variable resolution for preview (namespace in binding order)
  * ============================================================================= */
 
 function escapeHtml(input) {
@@ -199,6 +197,9 @@ function coerceValue(val) {
   if (typeof val === "object") {
     // ImageRef-like
     if (typeof val._path === "string") return val._path;
+
+    // Some refs can be shaped like { _path: { _path: "..." } }
+    if (val._path && typeof val._path === "object" && typeof val._path._path === "string") return val._path._path;
 
     // MultiFormatString-like
     if (typeof val.html === "string") return val.html;
@@ -268,8 +269,7 @@ function resolveNamespaceByBindings({ stitchedHtml, namespace, aemBindingsEncoun
     const before = stitchedHtml.slice(cursor, tagPos);
     out += replaceNamespaceVars(before, namespace, currentCtx);
 
-    // Keep the binding tag in output (harmless for iframe). You can strip later if desired.
-    out += tag;
+    out += tag; // keep tag (harmless in iframe)
 
     cursor = tagPos + tag.length;
 
@@ -282,17 +282,49 @@ function resolveNamespaceByBindings({ stitchedHtml, namespace, aemBindingsEncoun
 }
 
 function resolvePreviewHtmlFromRenderResult(renderResult, fallbackHtml) {
+  // Prefer renderedHtml produced by the action (it resolves prbProperties.* + cf.* in binding order)
+  if (typeof renderResult?.renderedHtml === "string" && renderResult.renderedHtml.trim()) {
+    return renderResult.renderedHtml;
+  }
+
   const stitchedHtml = renderResult?.stitchedHtml ?? renderResult?.html ?? fallbackHtml ?? "";
 
-  // Today, your biggest win is resolving cf.* in correct module order.
-  const resolvedCf = resolveNamespaceByBindings({
+  // Fallback: resolve prbProperties then cf using binding order (same order as action)
+  const resolvedPrb = resolveNamespaceByBindings({
     stitchedHtml,
+    namespace: "prbProperties",
+    aemBindingsEncountered: renderResult?.aemBindingsEncountered,
+    aemPrefetchDataByStreamKey: renderResult?.aemPrefetchDataByStreamKey,
+  });
+
+  const resolvedCf = resolveNamespaceByBindings({
+    stitchedHtml: resolvedPrb,
     namespace: "cf",
     aemBindingsEncountered: renderResult?.aemBindingsEncountered,
     aemPrefetchDataByStreamKey: renderResult?.aemPrefetchDataByStreamKey,
   });
 
-  return resolvedCf || stitchedHtml || fallbackHtml || "";
+  return resolvedCf || resolvedPrb || stitchedHtml || fallbackHtml || "";
+}
+
+/* =============================================================================
+ * Helpers: JSON editor parsing for optional renderContext stream/cache
+ * ============================================================================= */
+
+function safeParseJson(text, fallback) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return fallback;
+  }
+}
+
+function safeJson(obj, space = 2) {
+  try {
+    return JSON.stringify(obj, null, space);
+  } catch {
+    return String(obj);
+  }
 }
 
 /* =============================================================================
@@ -313,10 +345,10 @@ export function TemplateStudio() {
   // canonicalHtml: what you would PUT back to AJO
   const [canonicalHtml, setCanonicalHtml] = useState("");
 
-  // previewHtml: what you show in iframe (stitched + cf vars resolved)
+  // previewHtml: what you show in iframe (renderedHtml preferred, then stitched + vars resolved)
   const [previewHtml, setPreviewHtml] = useState("");
 
-  // Keep last render payload for debugging / future bindingStream+cache reuse
+  // Keep last render payload for debugging / AEM prefetch visibility
   const [lastRenderResult, setLastRenderResult] = useState(null);
 
   // Template session identity
@@ -343,6 +375,21 @@ export function TemplateStudio() {
   const [isUpdatingPrb, setIsUpdatingPrb] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [renderError, setRenderError] = useState("");
+
+  // Optional advanced renderContext controls (don’t change your normal workflow)
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [bindingStreamText, setBindingStreamText] = useState("[]");
+  const [cacheText, setCacheText] = useState("{}");
+
+  const bindingStream = useMemo(() => {
+    const v = safeParseJson(bindingStreamText, []);
+    return Array.isArray(v) ? v : [];
+  }, [bindingStreamText]);
+
+  const cache = useMemo(() => {
+    const v = safeParseJson(cacheText, {});
+    return v && typeof v === "object" ? v : {};
+  }, [cacheText]);
 
   // ---------------------------------------------------------------------------
   // Simple “operation queue” so rapid clicks don’t interleave PUT-like updates
@@ -520,8 +567,8 @@ export function TemplateStudio() {
   /**
    * Render preview:
    * - Uses ajo-template-render action to resolve nested AJO fragments + prefetch AEM bindings.
-   * - Then resolves {{cf.*}} / {{{cf.*}}} by binding order using aemPrefetchDataByStreamKey.
-   * - Fallback: stitchedHtml, then canonicalHtml.
+   * - Prefer action's renderedHtml; fallback to stitchedHtml + local namespace resolution.
+   * - Optional: pass bindingStream/cache through renderContext for reuse/hydration skipping.
    */
   async function renderPreview() {
     try {
@@ -533,8 +580,6 @@ export function TemplateStudio() {
         return;
       }
 
-      // (Optional) You can start reusing cache/stream here later.
-      // For now, just pass through your existing renderContext fields.
       const renderContext = {
         prb: {
           id: selectedPrb?.id,
@@ -543,6 +588,10 @@ export function TemplateStudio() {
           name: selectedPrb?.raw?.name,
         },
         repoId,
+
+        // advanced (optional)
+        bindingStream,
+        cache,
       };
 
       const res = await actionWebInvoke(actions["ajo-template-render"], headers, {
@@ -552,14 +601,7 @@ export function TemplateStudio() {
 
       setLastRenderResult(res || null);
 
-      // Prefer: resolved stitched -> stitched -> canonical
-      const resolved = resolvePreviewHtmlFromRenderResult(res, canonicalHtml);
-      const best =
-        typeof resolved === "string" && resolved.trim()
-          ? resolved
-          : typeof res?.stitchedHtml === "string" && res.stitchedHtml.trim()
-            ? res.stitchedHtml
-            : canonicalHtml;
+      const best = resolvePreviewHtmlFromRenderResult(res, canonicalHtml);
 
       if (!best || typeof best !== "string") {
         setPreviewHtml("<html><body><p>Render succeeded but returned no HTML.</p></body></html>");
@@ -567,6 +609,31 @@ export function TemplateStudio() {
       }
 
       setPreviewHtml(best);
+
+      // Optional: if action returns cache keys and hydrated stream objects, you can merge into cache editor.
+      // This is safe and purely a UX improvement; it does not affect canonicalHtml.
+      if (res?.aemCacheKeys && res?.aemPrefetchDataByStreamKey && Array.isArray(res?.aemBindingsEncountered)) {
+        const keys = res.aemCacheKeys || [];
+        const byStreamKey = res.aemPrefetchDataByStreamKey || {};
+        const encountered = res.aemBindingsEncountered || [];
+
+        const nextCache = { ...(cache || {}) };
+
+        for (const b of encountered) {
+          const model =
+            b?.result === "cf" ? "unifiedPromotionalContent" : b?.result === "prbProperties" ? "prbProperties" : null;
+          if (!model || !b?.aemId) continue;
+
+          const ck = `${model}:${b.aemId}`;
+          if (!keys.includes(ck)) continue;
+
+          const sk = `${b.index}:${b.result}`;
+          const item = byStreamKey?.[sk];
+          if (item && typeof item === "object") nextCache[ck] = item;
+        }
+
+        setCacheText(safeJson(nextCache, 2));
+      }
     } catch (e) {
       console.error("Render preview failed:", e);
       setRenderError(e?.message || "Render failed");
@@ -603,7 +670,9 @@ export function TemplateStudio() {
 
   // Optional: show AEM warnings in UI (from last render)
   const aemWarnings = Array.isArray(lastRenderResult?.aemWarnings) ? lastRenderResult.aemWarnings : [];
+  const resolutionWarnings = Array.isArray(lastRenderResult?.resolutionWarnings) ? lastRenderResult.resolutionWarnings : [];
   const aemPrefetch = Array.isArray(lastRenderResult?.aemPrefetch) ? lastRenderResult.aemPrefetch : [];
+  const perf = lastRenderResult?.perf || null;
 
   return (
     <View>
@@ -612,12 +681,7 @@ export function TemplateStudio() {
       {/* Global config bar */}
       <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
         <Flex gap="size-200" alignItems="end" wrap>
-          <TextField
-            label="Template name"
-            value={templateName}
-            onChange={setTemplateName}
-            width="size-3600"
-          />
+          <TextField label="Template name" value={templateName} onChange={setTemplateName} width="size-3600" />
           <Button variant="cta" onPress={createTemplateFromBaseline}>
             Create from baseline
           </Button>
@@ -664,6 +728,12 @@ export function TemplateStudio() {
               {isRendering ? "Rendering…" : "Render preview"}
             </Button>
           </Flex>
+
+          <Divider orientation="vertical" size="S" />
+
+          <Button variant="secondary" onPress={() => setShowAdvanced((v) => !v)}>
+            {showAdvanced ? "Hide advanced" : "Show advanced"}
+          </Button>
         </Flex>
 
         <View marginTop="size-150">
@@ -674,6 +744,43 @@ export function TemplateStudio() {
         {aemWarnings.length ? (
           <View marginTop="size-150">
             <StatusLight variant="negative">{aemWarnings[0]}</StatusLight>
+          </View>
+        ) : null}
+
+        {showAdvanced ? (
+          <View marginTop="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-200">
+            <Heading level={4}>Advanced renderContext (optional)</Heading>
+            <Text UNSAFE_style={{ opacity: 0.8 }}>
+              These are passed to the render action under <code>renderContext.bindingStream</code> and{" "}
+              <code>renderContext.cache</code>. If you leave them empty, the action will hydrate normally.
+            </Text>
+
+            <Divider size="S" marginY="size-150" />
+
+            <Grid columns={["1fr", "1fr"]} gap="size-200">
+              <View>
+                <Heading level={5}>bindingStream</Heading>
+                <TextField
+                  aria-label="bindingStream"
+                  value={bindingStreamText}
+                  onChange={setBindingStreamText}
+                  isMultiline
+                  height="size-3000"
+                  width="100%"
+                />
+              </View>
+              <View>
+                <Heading level={5}>cache</Heading>
+                <TextField
+                  aria-label="cache"
+                  value={cacheText}
+                  onChange={setCacheText}
+                  isMultiline
+                  height="size-3000"
+                  width="100%"
+                />
+              </View>
+            </Grid>
           </View>
         ) : null}
       </View>
@@ -706,17 +813,14 @@ export function TemplateStudio() {
         <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
           <Flex justifyContent="space-between" alignItems="center">
             <Heading level={4}>Canvas</Heading>
-            <Button
-              variant="cta"
-              onPress={addModule}
-              isDisabled={!templateId || !selectedVfId || !selectedContentId}
-            >
+            <Button variant="cta" onPress={addModule} isDisabled={!templateId || !selectedVfId || !selectedContentId}>
               Add module
             </Button>
           </Flex>
 
           <Text marginTop="size-100" UNSAFE_style={{ opacity: 0.8 }}>
-            Tip: PRB is global; Content CF is per-module. Modules are tracked separately from HTML (better for reorder/replace later).
+            Tip: PRB is global; Content CF is per-module. Modules are tracked separately from HTML (better for
+            reorder/replace later).
           </Text>
 
           <Divider size="S" marginY="size-200" />
@@ -776,18 +880,67 @@ export function TemplateStudio() {
 
               <Item key="aem">
                 <View height="62vh" overflow="auto">
+                  {/* Summary */}
+                  <View marginBottom="size-150">
+                    <Heading level={5}>Render diagnostics</Heading>
+                    {perf ? (
+                      <Text UNSAFE_style={{ opacity: 0.85 }}>
+                        streamHits={perf.streamHits}, cacheHits={perf.cacheHits}, hydrated={perf.hydratedCount}, totalBindings=
+                        {perf.totalBindings}
+                      </Text>
+                    ) : (
+                      <Text UNSAFE_style={{ opacity: 0.85 }}>No perf yet. Render preview to populate.</Text>
+                    )}
+                  </View>
+
+                  {/* Warnings */}
+                  {(resolutionWarnings.length || aemWarnings.length) ? (
+                    <View marginBottom="size-150">
+                      <Heading level={5}>Warnings</Heading>
+                      <Divider size="S" marginY="size-100" />
+                      {[...resolutionWarnings, ...aemWarnings].slice(0, 20).map((w, i) => (
+                        <View key={`w-${i}`} marginBottom="size-50">
+                          <StatusLight variant="negative">{w}</StatusLight>
+                        </View>
+                      ))}
+                    </View>
+                  ) : null}
+
+                  {/* Prefetch rows */}
                   {!aemPrefetch.length ? (
                     <Text>No AEM prefetch rows yet. Render preview to populate.</Text>
                   ) : (
-                    aemPrefetch.map((p, i) => (
-                      <View key={`${p.index}:${p.result}:${i}`} marginBottom="size-100">
-                        <Text>
-                          {p.ok ? "✅" : "❌"} {p.index}:{p.result} → {p.model} ({p.aemId}){" "}
-                          {!p.ok ? `— ${p.reason || ""}` : ""}
-                        </Text>
-                      </View>
-                    ))
+                    <View>
+                      <Heading level={5}>AEM Prefetch</Heading>
+                      <Divider size="S" marginY="size-100" />
+                      {aemPrefetch.map((p, i) => (
+                        <View key={`${p.index}:${p.result}:${i}`} marginBottom="size-100">
+                          <Text>
+                            {p.ok ? "✅" : "❌"} {p.index}:{p.result} → {p.model} ({p.aemId}){" "}
+                            {!p.ok ? `— ${p.reason || ""}` : `— ${p.source || ""}`}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
                   )}
+
+                  {/* Raw render result (collapsed-ish) */}
+                  {lastRenderResult ? (
+                    <View marginTop="size-200">
+                      <Heading level={5}>Raw render result</Heading>
+                      <Divider size="S" marginY="size-100" />
+                      <View
+                        borderWidth="thin"
+                        borderColor="light"
+                        borderRadius="small"
+                        padding="size-200"
+                        overflow="auto"
+                        height="size-2400"
+                      >
+                        <pre style={{ whiteSpace: "pre-wrap" }}>{safeJson(lastRenderResult, 2)}</pre>
+                      </View>
+                    </View>
+                  ) : null}
                 </View>
               </Item>
             </TabPanels>

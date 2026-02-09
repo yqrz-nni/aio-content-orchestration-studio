@@ -3,14 +3,15 @@
 // Render (preview) action with:
 // 1) Optional UI-provided AEM bindingStream (no AEM calls when values provided)
 // 2) Optional UI-provided AEM cache (reuse hydrated objects across renders)
-// 3) Conditional AEM GraphQL hydration only for missing bindings
+// 3) Conditional AEM GraphQL hydration only for missing/insufficient bindings
 // 4) Introspection disabled by default (opt-in via params.enableAemIntrospection=true)
+// 5) Best-effort renderedHtml: resolves {{cf.*}} and {{prbProperties.*}} by binding order
 //
 // Notes:
 // - This action DOES NOT attempt to “fully execute” AJO handlebars; it focuses on:
 //   - AJO fragment resolution/stitching (ajo:* fragments) (recursive)
 //   - AEM binding discovery + optional hydration (aem:* fragment calls)
-// - You can extend later to actually evaluate expressions; this is the cheap/flexible groundwork.
+//   - Simple token substitution for namespaces using hydrated binding objects
 
 const { ok, badRequest, serverError, corsPreflight } = require("../../../_lib/http");
 const { fetchRaw } = require("../../../_lib/fetchRaw");
@@ -284,10 +285,6 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
  * AEM bindings (AJO handlebars: {{fragment id='aem:<ID>?repoId=...' result='cf'}})
  * ============================================================================= */
 
-/**
- * Extract AEM fragment bindings from the HTML in-order.
- * IMPORTANT: `index` is appearance order; we preserve it.
- */
 function extractAemBindings(html) {
   if (!html || typeof html !== "string") return [];
 
@@ -351,7 +348,6 @@ function extractAemBindings(html) {
 }
 
 function normalizeRenderContext(params) {
-  // UI currently sends renderContext object. Be permissive.
   const rc = params?.renderContext && typeof params.renderContext === "object" ? params.renderContext : {};
   const bindingStream = Array.isArray(rc.bindingStream) ? rc.bindingStream : null;
   const cache = rc.cache && typeof rc.cache === "object" ? rc.cache : null;
@@ -359,7 +355,6 @@ function normalizeRenderContext(params) {
 }
 
 function streamKeyForBinding(binding) {
-  // We match by appearance index + result name (most stable if user reuses 'cf' many times)
   const idx = Number(binding?.index);
   const r = binding?.result || "";
   return `${idx}:${r}`;
@@ -370,9 +365,37 @@ function cacheKeyForModel(model, aemId) {
   return `${model}:${aemId}`;
 }
 
+function modelFromResult(result) {
+  if (result === "prbProperties") return "prbProperties";
+  if (result === "cf") return "unifiedPromotionalContent";
+  return null;
+}
+
 /**
- * Build AEM GraphQL endpoint + headers.
+ * Sufficient checks to avoid “PRB arrived but missing brandStyle/brands”
  */
+function isSufficientBindingValue(model, value) {
+  if (!value || typeof value !== "object") return false;
+  if (!value._id) return false;
+
+  if (model === "prbProperties") {
+    if (!value.brandStyle || typeof value.brandStyle !== "object") return false;
+    if (!Array.isArray(value.brands)) return false;
+    return true;
+  }
+
+  if (model === "unifiedPromotionalContent") {
+    if (!value.headlineText && !value.eyebrowText && !value.primaryImage) return false;
+    return true;
+  }
+
+  return true;
+}
+
+/* =============================================================================
+ * Build AEM GraphQL endpoint + headers.
+ * ============================================================================= */
+
 async function buildAemGraphqlClient(params) {
   const useProxy = params.USE_AEM_PROXY === "true";
 
@@ -422,9 +445,6 @@ async function buildAemGraphqlClient(params) {
   return { ok: true, gqlUrl, headers, reason: null };
 }
 
-/**
- * Fetch GraphQL JSON and throw (with attached data) if errors[] is present.
- */
 async function postGraphql({ gqlUrl, headers, query, variables, operationName }) {
   const payload = { query };
   if (variables) payload.variables = variables;
@@ -448,7 +468,6 @@ async function postGraphql({ gqlUrl, headers, query, variables, operationName })
 
 /**
  * Introspection (OPTIONAL, disabled by default).
- * If you enable it, we’ll try to discover the correct field/arg names.
  */
 async function introspectQueryFields({ gqlUrl, headers }) {
   const query = `
@@ -518,8 +537,8 @@ function buildByFieldQuery({ fieldName, argName, selectionSet, opName }) {
 }
 
 /**
- * Unified promo selection set (your known-good fast-path).
- * Keep it aligned to what your VFs reference.
+ * Unified promo selection set (known-good).
+ * Only ImageRef needs `... on ImageRef`.
  */
 function buildUnifiedSelectionSetKnownGood() {
   return `
@@ -584,28 +603,192 @@ function buildUnifiedSelectionSetKnownGood() {
 }
 
 /**
- * Determine which AEM model a binding refers to based on `result`.
- * You can extend this mapping as you add more result namespaces.
+ * PRB selection set (fixed):
+ * - NO `... on BrandStyleRef` (AEM CF GraphQL will reject that unless the field is actually a union)
+ * - Keep `... on ImageRef` for brand icon (DAM image ref union)
  */
-function modelFromResult(result) {
-  if (result === "prbProperties") return "prbProperties";
-  if (result === "cf") return "unifiedPromotionalContent";
-  return null;
+function buildPrbSelectionSet() {
+  return `
+    _id
+    _path
+    name
+    prbNumber
+    startingDate
+    expirationDate
+
+    brandStyle {
+      _id
+      _path
+      _variation
+      ajoTemplateId
+      email_banner_content_section_padding
+      email_banner_content_bottom_margin
+      email_banner_content_top_margin
+      email_banner_content_right_margin
+      email_banner_content_left_margin
+      email_body_copy_line_height
+      email_headline_line_height
+      font_family
+      font_size_heading_xs
+      font_size_heading_sm
+      font_size_heading_med
+      font_size_heading_lg
+      font_size_heading_x1
+      component_button_border_radius
+      divider_weight
+      divider_color
+      color_text_body
+      color_text_white
+      color_text_link_secondary
+      color_text_link_primary
+      color_background_tertiary
+      color_background_secondary
+      color_background_primary
+      color_text_tertiary
+      color_text_secondary
+      color_text_primary
+    }
+
+    brands {
+      isiLink
+      piLink
+      indication
+      homepageUrl
+      icon {
+        ... on ImageRef { _path }
+      }
+      displayName
+      name
+    }
+  `;
+}
+
+/* =============================================================================
+ * Best-effort token replacement for namespaces, by binding order
+ * ============================================================================= */
+
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function getByPath(obj, path) {
+  const parts = String(path || "").split(".").filter(Boolean);
+  let cur = obj;
+  for (const p of parts) {
+    if (cur == null) return undefined;
+    cur = cur[p];
+  }
+  return cur;
 }
 
 /**
- * Core: Resolve AEM binding values cheaply:
- * - First: bindingStream value (UI-provided, in order)
- * - Second: renderContext.cache by model:id
- * - Third: GraphQL hydrate (optional / only for misses)
- *
- * Returns:
- * - aemBindingsEncountered (in-order)
- * - aemPrefetch (rows in-order with ok/reason)
- * - aemPrefetchDataByStreamKey (keyed by `${index}:${result}`) for evaluation stage
- * - cacheHits / streamHits / hydratedCount
- * - aemCacheKeys (stable list of model:id for UI caching)
+ * Coercion rules to make preview feel closer to AJO:
+ * - If a value is an object with `_path` string => return that
+ * - If `_path` is nested like `{ _path: { _path: "..." } }` => return inner
+ * - If `{ html: "..." }` or `{ plaintext: "..." }` => return those
+ * - Else JSON.stringify(object)
  */
+function coerceValue(val) {
+  if (val == null) return "";
+  if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") return String(val);
+
+  if (typeof val === "object") {
+    // common AEM ref patterns
+    if (typeof val._path === "string") return val._path;
+    if (val._path && typeof val._path === "object" && typeof val._path._path === "string") return val._path._path;
+
+    if (typeof val.html === "string") return val.html;
+    if (typeof val.plaintext === "string") return val.plaintext;
+
+    try {
+      return JSON.stringify(val);
+    } catch {
+      return "";
+    }
+  }
+
+  return "";
+}
+
+function replaceNamespaceVars(segment, namespace, ctx) {
+  if (!segment || !ctx) return segment;
+
+  const triple = new RegExp(`\\{\\{\\{\\s*${namespace}\\.([a-zA-Z0-9_$.]+)\\s*\\}\\}\\}`, "g");
+  const dbl = new RegExp(`\\{\\{\\s*${namespace}\\.([a-zA-Z0-9_$.]+)\\s*\\}\\}`, "g");
+
+  let out = segment.replace(triple, (_m, path) => {
+    const v = coerceValue(getByPath(ctx, path));
+    return v; // raw
+  });
+
+  out = out.replace(dbl, (_m, path) => {
+    const v = coerceValue(getByPath(ctx, path));
+    return escapeHtml(v);
+  });
+
+  return out;
+}
+
+function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStreamKey }) {
+  if (!html) return html;
+
+  const binds = (Array.isArray(bindings) ? bindings : [])
+    .filter((b) => b?.result === namespace && typeof b?.rawTag === "string")
+    .slice()
+    .sort((a, b) => Number(a.index) - Number(b.index));
+
+  if (!binds.length) return html;
+
+  let cursor = 0;
+  let out = "";
+  let currentCtx = null;
+
+  for (const b of binds) {
+    const tag = b.rawTag;
+    const tagPos = html.indexOf(tag, cursor);
+    if (tagPos < 0) continue;
+
+    const before = html.slice(cursor, tagPos);
+    out += replaceNamespaceVars(before, namespace, currentCtx);
+
+    out += tag; // keep tag
+
+    cursor = tagPos + tag.length;
+
+    const skey = `${b.index}:${b.result}`;
+    currentCtx = dataByStreamKey?.[skey] ?? null;
+  }
+
+  out += replaceNamespaceVars(html.slice(cursor), namespace, currentCtx);
+  return out;
+}
+
+function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aemPrefetchDataByStreamKey }) {
+  let out = stitchedHtml;
+  out = renderNamespaceByBindingOrder({
+    html: out,
+    namespace: "prbProperties",
+    bindings: aemBindingsEncountered,
+    dataByStreamKey: aemPrefetchDataByStreamKey,
+  });
+  out = renderNamespaceByBindingOrder({
+    html: out,
+    namespace: "cf",
+    bindings: aemBindingsEncountered,
+    dataByStreamKey: aemPrefetchDataByStreamKey,
+  });
+  return out;
+}
+
+/* =============================================================================
+ * Core: Resolve AEM binding values (stream/cache/hydrate)
+ * ============================================================================= */
+
 async function resolveAemBindingValues({ stitchedHtml, params }) {
   const aemBindingsEncountered = extractAemBindings(stitchedHtml);
   const aemWarnings = [];
@@ -644,7 +827,6 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
     }
   }
 
-  // First pass: fill from stream/cache; collect misses for GraphQL
   const misses = [];
 
   for (const b of aemBindingsEncountered) {
@@ -653,36 +835,66 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
     const ck = cacheKeyForModel(model, b.aemId);
     if (ck) aemCacheKeys.push(ck);
 
-    // 1) Stream hit
+    // 1) Stream hit (ONLY if sufficient)
     const streamEntry = streamMap.get(skey);
     if (streamEntry && streamEntry.value && typeof streamEntry.value === "object") {
-      streamHits++;
-      aemPrefetchDataByStreamKey[skey] = streamEntry.value;
+      if (model && isSufficientBindingValue(model, streamEntry.value)) {
+        streamHits++;
+        aemPrefetchDataByStreamKey[skey] = streamEntry.value;
+
+        aemPrefetch.push({
+          index: b.index,
+          result: b.result,
+          aemId: b.aemId,
+          ok: true,
+          source: "bindingStream",
+          model,
+        });
+        continue;
+      }
 
       aemPrefetch.push({
         index: b.index,
         result: b.result,
         aemId: b.aemId,
-        ok: true,
-        source: "bindingStream",
+        ok: false,
+        source: "bindingStreamInsufficient",
         model,
+        reason: "bindingStream value missing required fields; will hydrate",
       });
+
+      if (model && b.aemId) misses.push({ binding: b, model, skey });
       continue;
     }
 
-    // 2) Cache hit (model:id)
+    // 2) Cache hit (ONLY if sufficient)
     if (cache && ck && cache[ck] && typeof cache[ck] === "object") {
-      cacheHits++;
-      aemPrefetchDataByStreamKey[skey] = cache[ck];
+      if (model && isSufficientBindingValue(model, cache[ck])) {
+        cacheHits++;
+        aemPrefetchDataByStreamKey[skey] = cache[ck];
+
+        aemPrefetch.push({
+          index: b.index,
+          result: b.result,
+          aemId: b.aemId,
+          ok: true,
+          source: "cache",
+          model,
+        });
+        continue;
+      }
 
       aemPrefetch.push({
         index: b.index,
         result: b.result,
         aemId: b.aemId,
-        ok: true,
-        source: "cache",
+        ok: false,
+        source: "cacheInsufficient",
         model,
+        reason: "cache value missing required fields; will hydrate",
       });
+
+      if (model && b.aemId) misses.push({ binding: b, model, skey });
       continue;
     }
 
@@ -697,12 +909,9 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
       reason: !model ? `Unknown result '${b.result}' (no model mapping)` : "Not provided (stream/cache miss)",
     });
 
-    if (model && b.aemId) {
-      misses.push({ binding: b, model, skey });
-    }
+    if (model && b.aemId) misses.push({ binding: b, model, skey });
   }
 
-  // If no misses or we want “no-hydrate” mode, bail here.
   const allowHydrate =
     params.allowAemHydrate === undefined
       ? true
@@ -712,7 +921,6 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
     if (!allowHydrate && misses.length) {
       aemWarnings.push(`AEM hydration skipped by allowAemHydrate=false; ${misses.length} bindings remain unresolved.`);
     }
-    // Ensure stable order
     aemPrefetch.sort((x, y) => (x.index ?? 0) - (y.index ?? 0));
     return {
       aemBindingsEncountered,
@@ -726,7 +934,6 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
     };
   }
 
-  // Build AEM client
   const client = await buildAemGraphqlClient(params);
   if (!client.ok) {
     aemWarnings.push(`AEM hydration skipped: ${client.reason}`);
@@ -743,7 +950,6 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
     };
   }
 
-  // Introspection is OFF by default. Opt-in only.
   const enableIntrospection = params.enableAemIntrospection === true || params.enableAemIntrospection === "true";
   let queryFields = null;
 
@@ -760,78 +966,11 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
     }
   }
 
-  // Selection sets
-  //
-  // ✅ PATCH HERE:
-  // - brands.indication: MultiFormatString -> requires subselection
-  // - brands.icon: Reference/ImageRef -> requires subselection like Unified primaryImage/ctaImage
-  const selectionForPrb = `
-    _id
-    _path
-    name
-    prbNumber
-    startingDate
-    expirationDate
-    brandStyle {
-      ajoTemplateId
-      email_banner_content_section_padding
-      email_banner_content_bottom_margin
-      email_banner_content_top_margin
-      email_banner_content_right_margin
-      email_banner_content_left_margin
-      email_body_copy_line_height
-      email_headline_line_height
-      font_family
-      font_size_heading_xs
-      font_size_heading_sm
-      font_size_heading_med
-      font_size_heading_lg
-      font_size_heading_x1
-      component_button_border_radius
-      divider_weight
-      divider_color
-      color_text_body
-      color_text_white
-      color_text_link_secondary
-      color_text_link_primary
-      color_background_tertiary
-      color_background_secondary
-      color_background_primary
-      color_text_tertiary
-      color_text_secondary
-      color_text_primary
-    }
-    brands {
-      isiLink
-      piLink
-
-      indication {
-        ... on MultiFormatString {
-          plaintext
-          html
-        }
-      }
-
-      homepageUrl
-
-      icon {
-        ... on ImageRef {
-          _path
-        }
-      }
-
-      displayName
-      name
-    }
-  `;
-
+  const selectionForPrb = buildPrbSelectionSet();
   const selectionUnified = buildUnifiedSelectionSetKnownGood();
-
-  // Hydrate in parallel (capped)
   const concurrency = Number(params.aemConcurrency || 4);
 
   const results = await mapLimit(misses, concurrency, async ({ binding, model, skey }) => {
-    // Choose field/arg (introspection only if enabled)
     let fieldName = null;
     let argName = null;
 
@@ -887,7 +1026,6 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
     }
   });
 
-  // Apply results back into aemPrefetch + aemPrefetchDataByStreamKey
   const byRowKey = new Map(aemPrefetch.map((r) => [`${r.index}:${r.result}`, r]));
 
   for (const r of results) {
@@ -965,11 +1103,18 @@ async function main(params) {
       const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
       const aem = await resolveAemBindingValues({ stitchedHtml: stitched.stitchedHtml, params });
 
+      const renderedHtml = buildRenderedHtmlBestEffort({
+        stitchedHtml: stitched.stitchedHtml,
+        aemBindingsEncountered: aem.aemBindingsEncountered,
+        aemPrefetchDataByStreamKey: aem.aemPrefetchDataByStreamKey,
+      });
+
       return ok({
         mode: "html",
         templateId,
         html,
         stitchedHtml: stitched.stitchedHtml,
+        renderedHtml,
         etag: null,
 
         fragmentsResolved: stitched.fragmentsResolvedAll,
@@ -979,7 +1124,6 @@ async function main(params) {
         aemPrefetch: aem.aemPrefetch,
         aemCacheKeys: aem.aemCacheKeys,
         aemWarnings: aem.aemWarnings,
-
         aemPrefetchDataByStreamKey: aem.aemPrefetchDataByStreamKey,
 
         perf: {
@@ -1020,11 +1164,18 @@ async function main(params) {
     const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
     const aem = await resolveAemBindingValues({ stitchedHtml: stitched.stitchedHtml, params });
 
+    const renderedHtml = buildRenderedHtmlBestEffort({
+      stitchedHtml: stitched.stitchedHtml,
+      aemBindingsEncountered: aem.aemBindingsEncountered,
+      aemPrefetchDataByStreamKey: aem.aemPrefetchDataByStreamKey,
+    });
+
     return ok({
       mode: "templateId",
       templateId,
       html,
       stitchedHtml: stitched.stitchedHtml,
+      renderedHtml,
       etag,
 
       fragmentsResolved: stitched.fragmentsResolvedAll,
