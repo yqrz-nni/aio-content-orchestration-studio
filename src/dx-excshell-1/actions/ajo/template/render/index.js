@@ -251,7 +251,6 @@ function extractAemBindings(html) {
   if (!html || typeof html !== "string") return [];
 
   const bindings = [];
-
   const tagRe = /{{\s*fragment\b([^}]*)}}/gim;
 
   let m;
@@ -261,8 +260,8 @@ function extractAemBindings(html) {
 
     const idMatch = inside.match(/\bid\s*=\s*(['"])(aem:[^'"]+)\1/i);
     if (!idMatch) continue;
-    const rawId = idMatch[2];
 
+    const rawId = idMatch[2];
     if (!rawId.toLowerCase().startsWith("aem:")) continue;
 
     const resultMatch = inside.match(/\bresult\s*=\s*(['"])([^'"]+)\1/i);
@@ -283,6 +282,7 @@ function extractAemBindings(html) {
       // ignore
     }
 
+    // Parse extra args (best effort). We ignore id= and result=.
     const args = {};
     const argRe = /\b([a-zA-Z_][a-zA-Z0-9_-]*)\s*=\s*(?:(['"])(.*?)\2|([^\s}]+))/g;
     let am;
@@ -364,7 +364,8 @@ async function buildAemGraphqlClient(params) {
 }
 
 /**
- * Fetch GraphQL JSON, but preserve and return data.errors if present.
+ * Fetch GraphQL JSON and throw (with attached data) if errors[] is present.
+ * (AEM GraphQL often returns HTTP 200 with errors[].)
  */
 async function postGraphql({ gqlUrl, headers, query, variables, operationName }) {
   const payload = { query };
@@ -398,26 +399,14 @@ async function introspectQueryFields({ gqlUrl, headers }) {
           name
           args {
             name
-            type {
-              kind
-              name
-              ofType {
-                kind
-                name
-                ofType {
-                  kind
-                  name
-                }
-              }
-            }
+            type { kind name ofType { kind name ofType { kind name } } }
           }
         }
       }
     }
   `;
   const data = await postGraphql({ gqlUrl, headers, query, operationName: "IntrospectQueryFields" });
-  const fields = data?.data?.__type?.fields || [];
-  return fields;
+  return data?.data?.__type?.fields || [];
 }
 
 function pickBestByIdField(fields, modelName) {
@@ -431,10 +420,7 @@ function pickBestByIdField(fields, modelName) {
   ];
 
   const byName = new Map(fields.map((f) => [f.name, f]));
-
-  for (const n of preferredNames) {
-    if (byName.has(n)) return byName.get(n);
-  }
+  for (const n of preferredNames) if (byName.has(n)) return byName.get(n);
 
   const lowerModel = modelName.toLowerCase();
   const candidates = fields.filter((f) => {
@@ -453,12 +439,10 @@ function pickArgNameForByField(field, have) {
     if (argNames.includes("_id")) return "_id";
     if (argNames.includes("id")) return "id";
   }
-
   if (have.path) {
     if (argNames.includes("_path")) return "_path";
     if (argNames.includes("path")) return "path";
   }
-
   return argNames[0] || null;
 }
 
@@ -484,7 +468,7 @@ function safeJsonSnippet(obj, maxChars = 1200) {
 }
 
 /* =========================
- * Unified model selection fix
+ * Unified model selection + cross-schema fallback
  * ========================= */
 
 /**
@@ -498,15 +482,7 @@ async function introspectType({ gqlUrl, headers, typeName }) {
         kind
         fields {
           name
-          type {
-            kind
-            name
-            ofType {
-              kind
-              name
-              ofType { kind name }
-            }
-          }
+          type { kind name ofType { kind name ofType { kind name } } }
         }
       }
     }
@@ -541,29 +517,14 @@ function pickScalarFieldNames(typeInfo, preferred = []) {
   return out;
 }
 
-/**
- * Build the unified selection set, ensuring subselections for MultiFormatString + Reference.
- */
-async function buildUnifiedSelectionSet({ gqlUrl, headers }) {
-  // Safe baseline:
-  // - bodyCopy is [MultiFormatString] => bodyCopy { html plaintext }
-  // - primaryImage is Reference => primaryImage { path }  (your schema doesn't have _path)
-  let bodyCopySub = "html plaintext";
-  let primaryImageSub = "path";
+function extractUndefinedFieldName(graphQLErrors = []) {
+  const msg = graphQLErrors?.[0]?.message || "";
+  const m = msg.match(/Field '([^']+)' in type '([^']+)' is undefined/i);
+  if (!m) return null;
+  return { field: m[1], type: m[2] };
+}
 
-  try {
-    const mfs = await introspectType({ gqlUrl, headers, typeName: "MultiFormatString" });
-    const ref = await introspectType({ gqlUrl, headers, typeName: "Reference" });
-
-    const mfsFields = pickScalarFieldNames(mfs, ["html", "plaintext", "json", "raw"]);
-    if (mfsFields.length) bodyCopySub = mfsFields.slice(0, 3).join(" ");
-
-    const refFields = pickScalarFieldNames(ref, ["path", "_path", "_publishUrl", "_authorUrl", "_id", "id"]);
-    if (refFields.length) primaryImageSub = refFields.slice(0, 3).join(" ");
-  } catch {
-    // Introspection might be blocked; fall back to baseline
-  }
-
+function buildUnifiedSelectionSetFromSubs({ bodyCopySub, primaryImageSub }) {
   return `
         _id
         _path
@@ -580,7 +541,35 @@ async function buildUnifiedSelectionSet({ gqlUrl, headers }) {
 }
 
 /**
+ * Build the unified selection set using introspection if possible.
+ * IMPORTANT: baseline is _path (because your current endpoint errors on "path").
+ * If introspection works, we’ll pick the correct ref fields automatically.
+ */
+async function buildUnifiedSelectionSet({ gqlUrl, headers }) {
+  let bodyCopySub = "html plaintext";
+  let primaryImageSub = "_path"; // baseline: safer for your current schema
+
+  try {
+    const mfs = await introspectType({ gqlUrl, headers, typeName: "MultiFormatString" });
+    const ref = await introspectType({ gqlUrl, headers, typeName: "Reference" });
+
+    const mfsFields = pickScalarFieldNames(mfs, ["html", "plaintext", "json", "raw"]);
+    if (mfsFields.length) bodyCopySub = mfsFields.slice(0, 3).join(" ");
+
+    // Prefer whichever exists, but bias to _path first to match current environment.
+    const refFields = pickScalarFieldNames(ref, ["_path", "path", "_publishUrl", "_authorUrl", "_id", "id"]);
+    if (refFields.length) primaryImageSub = refFields.slice(0, 3).join(" ");
+  } catch {
+    // Introspection might be blocked; fall back to baseline
+  }
+
+  return buildUnifiedSelectionSetFromSubs({ bodyCopySub, primaryImageSub });
+}
+
+/**
  * Prefetch AEM objects for encountered bindings.
+ * - prbProperties: fixed selection
+ * - unifiedPromotionalContent: introspected selection OR fallback retry across candidate Reference fields
  */
 async function prefetchAemBindings({ stitchedHtml, params }) {
   const aemBindingsEncountered = extractAemBindings(stitchedHtml);
@@ -622,12 +611,10 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
         prbNumber
         startingDate
         expirationDate
-        brandStyle {
-          font_family
-        }
+        brandStyle { font_family }
   `;
 
-  // IMPORTANT: unified selection is built dynamically (fixes subselection errors)
+  // built once if needed
   let selectionForUnified = null;
 
   function modelFromResult(result) {
@@ -658,6 +645,7 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
     const cacheKey = `${model}:${b.aemId}`;
     aemCacheKeys.push(cacheKey);
 
+    // Pick the best query field + arg name
     let fieldName = null;
     let argName = null;
 
@@ -667,17 +655,92 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
       argName = field ? pickArgNameForByField(field, { id: true }) : null;
     }
 
+    // Fallback assumptions
     if (!fieldName) fieldName = `${model}ById`;
     if (!argName) argName = "_id";
 
+    // UNIFIED: robust selection + retry across candidate Reference fields if needed
     if (model === "unifiedPromotionalContent") {
       if (!selectionForUnified) {
         selectionForUnified = await buildUnifiedSelectionSet({ gqlUrl: client.gqlUrl, headers: client.headers });
       }
+
+      const unifiedBodyCopySubs = ["html plaintext"];
+      const unifiedPrimaryImageSubs = ["_path", "path", "_publishUrl", "_authorUrl", "_id", "id"];
+
+      const candidates = [];
+
+      // candidate 0: whatever buildUnifiedSelectionSet produced (introspection or baseline)
+      candidates.push(selectionForUnified);
+
+      // candidate fallbacks:
+      for (const bc of unifiedBodyCopySubs) {
+        for (const pi of unifiedPrimaryImageSubs) {
+          const sel = buildUnifiedSelectionSetFromSubs({ bodyCopySub: bc, primaryImageSub: pi });
+          if (!candidates.includes(sel)) candidates.push(sel);
+        }
+      }
+
+      let lastErr = null;
+      let item = null;
+      let usedSelection = null;
+
+      for (const selectionSet of candidates) {
+        const opName = `Get_${model}_ById`;
+        const query = buildByFieldQuery({ fieldName, argName, selectionSet, opName });
+
+        try {
+          const data = await postGraphql({
+            gqlUrl: client.gqlUrl,
+            headers: client.headers,
+            query,
+            variables: { id: b.aemId },
+            operationName: opName,
+          });
+
+          item = data?.data?.[fieldName]?.item || null;
+          usedSelection = selectionSet;
+
+          // If request validated and returned (even null), stop retrying unless it was validation error.
+          // We stop here regardless; null item gets handled below.
+          break;
+        } catch (e) {
+          lastErr = e;
+
+          // Only keep retrying on "FieldUndefined" errors (schema mismatch)
+          const info = extractUndefinedFieldName(e?.data?.errors);
+          if (!info) break;
+        }
+      }
+
+      if (item) {
+        aemPrefetch.push({ index: b.index, result: b.result, aemId: b.aemId, ok: true, fieldName, argName });
+        aemPrefetchData[`${b.index}:${b.result}`] = item;
+      } else if (!lastErr) {
+        aemPrefetch.push({ index: b.index, result: b.result, aemId: b.aemId, ok: false, fieldName, argName });
+        aemWarnings.push(
+          `AEM fetch succeeded but returned no item for ${b.result} ${b.aemId} (field=${fieldName}, arg=${argName}).`
+        );
+      } else {
+        const errErrors = lastErr?.data?.errors || null;
+        aemPrefetch.push({ index: b.index, result: b.result, aemId: b.aemId, ok: false, fieldName, argName });
+        aemWarnings.push(
+          `Failed to fetch AEM ${b.result} ${b.aemId}: ${lastErr?.message || "Unknown error"}${
+            errErrors ? ` | errors=${safeJsonSnippet(errErrors)}` : ""
+          }`
+        );
+
+        // Small extra debug hint
+        if (usedSelection) {
+          aemWarnings.push(`Last unified selection attempted (truncated): ${usedSelection.trim().slice(0, 250)}…`);
+        }
+      }
+
+      continue;
     }
 
-    const selectionSet = model === "prbProperties" ? selectionForPrb : selectionForUnified;
-
+    // PRB: fixed selection
+    const selectionSet = selectionForPrb;
     const opName = `Get_${model}_ById`;
     const query = buildByFieldQuery({ fieldName, argName, selectionSet, opName });
 
@@ -721,9 +784,7 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
       });
 
       aemWarnings.push(
-        `Failed to fetch AEM ${b.result} ${b.aemId}: ${e.message}${
-          errErrors ? ` | errors=${safeJsonSnippet(errErrors)}` : ""
-        }`
+        `Failed to fetch AEM ${b.result} ${b.aemId}: ${e.message}${errErrors ? ` | errors=${safeJsonSnippet(errErrors)}` : ""}`
       );
     }
   }
@@ -826,7 +887,7 @@ async function main(params) {
       aemPrefetchData: aem.aemPrefetchData,
     });
   } catch (e) {
-    return serverError(e?.message || "Unhandled error", {
+    return serverError(e?.message || "Unexpected error", {
       stack: e?.stack,
     });
   }
