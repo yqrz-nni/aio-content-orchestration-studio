@@ -603,62 +603,65 @@ function buildUnifiedSelectionSetKnownGood() {
 }
 
 /**
- * PRB selection set (fixed):
- * - NO `... on BrandStyleRef` (AEM CF GraphQL will reject that unless the field is actually a union)
- * - Keep `... on ImageRef` for brand icon (DAM image ref union)
+ * PRB selection set (corrected to match known-good PRB query/response):
+ * - Removes invalid/non-existent fields (e.g. `indication`)
+ * - Adds required identity fields for brands + brandStyle
+ * - Keeps ImageRef fragment for icon
  */
 function buildPrbSelectionSet() {
   return `
     _id
     _path
-    name
     prbNumber
-    startingDate
+    name
     expirationDate
-
-    brandStyle {
-      _id
-      _path
-      _variation
-      ajoTemplateId
-      email_banner_content_section_padding
-      email_banner_content_bottom_margin
-      email_banner_content_top_margin
-      email_banner_content_right_margin
-      email_banner_content_left_margin
-      email_body_copy_line_height
-      email_headline_line_height
-      font_family
-      font_size_heading_xs
-      font_size_heading_sm
-      font_size_heading_med
-      font_size_heading_lg
-      font_size_heading_x1
-      component_button_border_radius
-      divider_weight
-      divider_color
-      color_text_body
-      color_text_white
-      color_text_link_secondary
-      color_text_link_primary
-      color_background_tertiary
-      color_background_secondary
-      color_background_primary
-      color_text_tertiary
-      color_text_secondary
-      color_text_primary
-    }
+    startingDate
 
     brands {
-      isiLink
-      piLink
-      indication
+      _path
+      _id
+      _variation
+      name
+      displayName
       homepageUrl
+      piLink
+      isiLink
       icon {
         ... on ImageRef { _path }
       }
-      displayName
-      name
+    }
+
+    brandStyle {
+      _path
+      _id
+      _variation
+      color_text_primary
+      color_text_secondary
+      color_text_tertiary
+      color_background_primary
+      color_background_secondary
+      color_background_tertiary
+      color_text_link_primary
+      color_text_link_secondary
+      color_text_white
+      color_text_body
+      divider_color
+      divider_weight
+      component_button_border_radius
+      font_size_heading_x1
+      font_size_heading_lg
+      font_size_heading_med
+      font_size_heading_sm
+      font_size_heading_xs
+      font_family
+      email_headline_line_height
+      email_body_copy_line_height
+      email_banner_content_left_margin
+      email_banner_content_right_margin
+      email_banner_content_top_margin
+      email_banner_content_bottom_margin
+      email_banner_content_section_padding
+      ajoTemplateId
     }
   `;
 }
@@ -768,20 +771,89 @@ function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStream
   return out;
 }
 
+/**
+ * Styles context derivation:
+ * - Default to PRB brandStyle when present
+ * - Allow CF override via forceBrandStylingLeaveBlankToInheritContextualBrandStyle object
+ */
+function deriveStylesContext({ prbCtx, cfCtx }) {
+  const prbStyle = prbCtx?.brandStyle && typeof prbCtx.brandStyle === "object" ? prbCtx.brandStyle : null;
+
+  const cfOverride =
+    cfCtx?.forceBrandStylingLeaveBlankToInheritContextualBrandStyle &&
+    typeof cfCtx.forceBrandStylingLeaveBlankToInheritContextualBrandStyle === "object"
+      ? cfCtx.forceBrandStylingLeaveBlankToInheritContextualBrandStyle
+      : null;
+
+  return cfOverride || prbStyle || null;
+}
+
+/**
+ * Replace {{styles.*}} by binding order, but "styles context" is derived from the
+ * most recent PRB + CF binding objects encountered as we scan the html.
+ */
+function resolveStylesByBindings({ stitchedHtml, aemBindingsEncountered, aemPrefetchDataByStreamKey }) {
+  if (!stitchedHtml) return stitchedHtml;
+
+  const binds = (Array.isArray(aemBindingsEncountered) ? aemBindingsEncountered : [])
+    .filter((b) => b?.result === "prbProperties" || b?.result === "cf")
+    .slice()
+    .sort((a, b) => Number(a.index) - Number(b.index));
+
+  let cursor = 0;
+  let out = "";
+
+  let currentPrb = null;
+  let currentCf = null;
+  let currentStyles = null;
+
+  for (const b of binds) {
+    const tag = b.rawTag;
+    const tagPos = stitchedHtml.indexOf(tag, cursor);
+    if (tagPos < 0) continue;
+
+    out += replaceNamespaceVars(stitchedHtml.slice(cursor, tagPos), "styles", currentStyles);
+    out += tag;
+    cursor = tagPos + tag.length;
+
+    const streamKey = `${b.index}:${b.result}`;
+    const ctx = aemPrefetchDataByStreamKey?.[streamKey] ?? null;
+
+    if (b.result === "prbProperties") currentPrb = ctx;
+    if (b.result === "cf") currentCf = ctx;
+
+    currentStyles = deriveStylesContext({ prbCtx: currentPrb, cfCtx: currentCf });
+  }
+
+  out += replaceNamespaceVars(stitchedHtml.slice(cursor), "styles", currentStyles);
+  return out;
+}
+
 function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aemPrefetchDataByStreamKey }) {
   let out = stitchedHtml;
+
+  // styles first (it is derived from PRB/CF binding order)
+  out = resolveStylesByBindings({
+    stitchedHtml: out,
+    aemBindingsEncountered,
+    aemPrefetchDataByStreamKey,
+  });
+
+  // then normal namespaces
   out = renderNamespaceByBindingOrder({
     html: out,
     namespace: "prbProperties",
     bindings: aemBindingsEncountered,
     dataByStreamKey: aemPrefetchDataByStreamKey,
   });
+
   out = renderNamespaceByBindingOrder({
     html: out,
     namespace: "cf",
     bindings: aemBindingsEncountered,
     dataByStreamKey: aemPrefetchDataByStreamKey,
   });
+
   return out;
 }
 
