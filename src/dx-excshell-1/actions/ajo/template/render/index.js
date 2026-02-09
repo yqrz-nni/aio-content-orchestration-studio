@@ -53,72 +53,6 @@ function stripAjoPrefix(id) {
   return trimmed.startsWith("ajo:") ? trimmed.slice("ajo:".length) : trimmed;
 }
 
-// -----------------------------------------------------------------------------
-// normalizeAemValue
-// Converts AEM GraphQL shapes into AJO-like runtime values
-// -----------------------------------------------------------------------------
-
-function normalizeAemValue(value) {
-  if (value == null) return value;
-
-  // primitives
-  if (
-    typeof value === "string" ||
-    typeof value === "number" ||
-    typeof value === "boolean"
-  ) {
-    return value;
-  }
-
-  // arrays → normalize items
-  if (Array.isArray(value)) {
-    return value.map(normalizeAemValue);
-  }
-
-  // objects
-  if (typeof value === "object") {
-
-    // -----------------------------------------------------------------------
-    // ImageRef
-    // -----------------------------------------------------------------------
-    // { _path: "/content/dam/..." }
-    if (typeof value._path === "string") {
-      return value._path;
-    }
-
-    // sometimes nested _path objects appear
-    if (
-      value._path &&
-      typeof value._path === "object" &&
-      typeof value._path._path === "string"
-    ) {
-      return value._path._path;
-    }
-
-    // -----------------------------------------------------------------------
-    // MultiFormatString
-    // -----------------------------------------------------------------------
-    // prefer plaintext → html
-    if (
-      Object.prototype.hasOwnProperty.call(value, "plaintext") ||
-      Object.prototype.hasOwnProperty.call(value, "html")
-    ) {
-      return value.plaintext ?? value.html ?? null;
-    }
-
-    // -----------------------------------------------------------------------
-    // generic object → recurse
-    // -----------------------------------------------------------------------
-    const out = {};
-    for (const k of Object.keys(value)) {
-      out[k] = normalizeAemValue(value[k]);
-    }
-    return out;
-  }
-
-  return value;
-}
-
 function buildFragmentGetUrl(baseUrl, fragmentId) {
   if (!baseUrl) return null;
 
@@ -906,7 +840,7 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
     if (streamEntry && streamEntry.value && typeof streamEntry.value === "object") {
       if (model && isSufficientBindingValue(model, streamEntry.value)) {
         streamHits++;
-        aemPrefetchDataByStreamKey[skey] = normalizeAemValue(streamEntry.value);
+        aemPrefetchDataByStreamKey[skey] = streamEntry.value;
 
         aemPrefetch.push({
           index: b.index,
@@ -937,7 +871,7 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
     if (cache && ck && cache[ck] && typeof cache[ck] === "object") {
       if (model && isSufficientBindingValue(model, cache[ck])) {
         cacheHits++;
-        aemPrefetchDataByStreamKey[skey] = normalizeAemValue(cache[ck]);
+        aemPrefetchDataByStreamKey[skey] = cache[ck];
 
         aemPrefetch.push({
           index: b.index,
@@ -1098,7 +1032,7 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
     if (!r) continue;
     if (r.ok) {
       hydratedCount++;
-      aemPrefetchDataByStreamKey[r.skey] = normalizeAemValue(r.item);
+      aemPrefetchDataByStreamKey[r.skey] = r.item;
 
       const row = byRowKey.get(r.skey);
       if (row) {
