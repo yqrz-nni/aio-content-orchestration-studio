@@ -26,20 +26,16 @@ function escapeRegExp(str) {
 // Attempt to build a "GET fragment by id" URL from existing config.
 // Prefer AJO_GET_FRAGMENT_URL if you add it; otherwise derive from AJO_FRAGMENTS_URL.
 function buildFragmentGetUrl(params, fragmentId) {
-  if (params.AJO_GET_FRAGMENT_URL) {
-    return `${params.AJO_GET_FRAGMENT_URL}/${fragmentId}`;
-  }
-  if (!params.AJO_FRAGMENTS_URL) return null;
+  const base = params.AJO_GET_FRAGMENT_URL;
+  if (!base) return null;
 
-  // If AJO_FRAGMENTS_URL is ".../fragments", then GET is typically ".../fragments/<id>"
-  // If your env var differs, set AJO_GET_FRAGMENT_URL explicitly.
-  return `${params.AJO_FRAGMENTS_URL.replace(/\/$/, "")}/${fragmentId}`;
+  return `${String(base).replace(/\/$/, "")}/${fragmentId}`;
 }
 
 async function fetchAjoFragmentContent({ params, authHeader, imsOrg, fragmentId }) {
   const url = buildFragmentGetUrl(params, fragmentId);
   if (!url) {
-    const e = new Error("Missing AJO_FRAGMENTS_URL (or AJO_GET_FRAGMENT_URL) for fragment resolution");
+    const e = new Error("Missing AJO_GET_FRAGMENT_URL for fragment resolution");
     e.status = 500;
     throw e;
   }
