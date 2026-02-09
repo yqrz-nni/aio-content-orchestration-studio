@@ -1,172 +1,99 @@
-// File: src/dx-excshell-1/actions/ajo/template/render/aajoFragments.js
+// File: src/dx-excshell-1/actions/ajo/template/render/utils.js
 
-const { fetchRaw } = require("../../../_lib/fetchRaw");
-const { stripAjoPrefix, buildFragmentGetUrl, escapeRegExp, mapLimit } = require("./utils");
-
-function extractAjoFragmentIds(html) {
-  if (!html || typeof html !== "string") return [];
-
-  const ids = new Set();
-  const re = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])(ajo:[^'"]+)\1/gi;
-
-  let m;
-  while ((m = re.exec(html)) !== null) {
-    if (m[2]) ids.add(m[2]);
-  }
-
-  return [...ids];
+function normalizeBearer(token) {
+  return token?.startsWith("Bearer ") ? token : `Bearer ${token}`;
 }
 
-async function fetchFragmentById({ baseUrl, fragmentIdRaw, headers }) {
-  const cleanId = stripAjoPrefix(fragmentIdRaw);
-  if (!cleanId) {
-    const e = new Error(`Invalid fragment id: ${fragmentIdRaw}`);
-    e.status = 400;
-    throw e;
-  }
-
-  const url = buildFragmentGetUrl(baseUrl, cleanId);
-  if (!url) {
-    const e = new Error("Missing AJO_GET_FRAGMENT_URL");
-    e.status = 500;
-    throw e;
-  }
-
-  const resp = await fetchRaw(url, {
-    method: "GET",
-    headers: {
-      ...headers,
-      accept: "application/vnd.adobe.ajo.fragment.v1.0+json",
-    },
-  });
-
+function buildCommonHeaders({ authHeader, imsOrg, apiKey, sandboxName }) {
   return {
-    id: resp?.data?.id || cleanId,
-    name: resp?.data?.name || null,
-    type: resp?.data?.type || null,
-    channels: resp?.data?.channels || null,
-    content:
-      resp?.data?.fragment?.content ??
-      resp?.data?.fragment?.processedContent ??
-      resp?.data?.fragment?.expression ??
-      resp?.data?.fragment?.content?.expression ??
-      null,
+    Authorization: authHeader,
+    "x-gw-ims-org-id": imsOrg,
+    "x-api-key": apiKey,
+    "x-sandbox-name": sandboxName,
   };
 }
 
-/**
- * Resolve all fragment ids referenced in html (parallelized).
- */
-async function resolveFragmentsFromHtml({ html, params, commonHeaders }) {
-  const resolutionWarnings = [];
-  let fragmentsResolved = [];
+function pickEtag(headers = {}) {
+  return headers.etag || headers.ETag || headers["etag"] || headers["ETag"] || null;
+}
 
-  if (!params.AJO_GET_FRAGMENT_URL) {
-    return {
-      fragmentsResolved,
-      resolutionWarnings: ["AJO_GET_FRAGMENT_URL is missing (cannot resolve fragments)."],
+function stripAjoPrefix(id) {
+  if (!id || typeof id !== "string") return null;
+  const trimmed = id.trim();
+  return trimmed.startsWith("ajo:") ? trimmed.slice("ajo:".length) : trimmed;
+}
+
+function buildFragmentGetUrl(baseUrl, fragmentId) {
+  if (!baseUrl) return null;
+
+  const u = new URL(baseUrl);
+  u.search = "";
+  u.hash = "";
+
+  const basePath = u.pathname.replace(/\/$/, "");
+  u.pathname = `${basePath}/${encodeURIComponent(fragmentId)}`;
+
+  return u.toString();
+}
+
+function escapeRegExp(s) {
+  return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function safeJsonSnippet(obj, maxChars = 1200) {
+  try {
+    const s = JSON.stringify(obj);
+    return s.length > maxChars ? s.slice(0, maxChars) + "…" : s;
+  } catch {
+    return String(obj);
+  }
+}
+
+/**
+ * Simple concurrency limiter (no deps).
+ * Runs `items` through `worker(item)` with at most `limit` in flight.
+ * Preserves result order by index.
+ */
+async function mapLimit(items, limit, worker) {
+  const list = Array.isArray(items) ? items : [];
+  const n = list.length;
+  if (!n) return [];
+
+  const lim = Math.max(1, Number(limit || 1));
+  const out = new Array(n);
+
+  let next = 0;
+  let active = 0;
+
+  return new Promise((resolve, reject) => {
+    const launch = () => {
+      while (active < lim && next < n) {
+        const idx = next++;
+        active++;
+
+        Promise.resolve()
+          .then(() => worker(list[idx], idx))
+          .then((res) => {
+            out[idx] = res;
+            active--;
+            if (next >= n && active === 0) resolve(out);
+            else launch();
+          })
+          .catch(reject);
+      }
     };
-  }
 
-  const fragmentIds = extractAjoFragmentIds(html);
-
-  const max = Number(params.maxFragmentsToResolve || 25);
-  const toResolve = fragmentIds.slice(0, Math.max(0, max));
-
-  const concurrency = Number(params.ajoFragmentConcurrency || 8);
-
-  const results = await mapLimit(toResolve, concurrency, async (fid) => {
-    try {
-      return await fetchFragmentById({
-        baseUrl: params.AJO_GET_FRAGMENT_URL,
-        fragmentIdRaw: fid,
-        headers: commonHeaders,
-      });
-    } catch (e) {
-      resolutionWarnings.push(`Failed to resolve fragment ${fid}: ${e.message}`);
-      return null;
-    }
+    launch();
   });
-
-  fragmentsResolved = results.filter(Boolean);
-
-  if (fragmentIds.length > toResolve.length) {
-    resolutionWarnings.push(
-      `Resolved ${toResolve.length}/${fragmentIds.length} fragments (capped by maxFragmentsToResolve=${max}).`
-    );
-  }
-
-  return { fragmentsResolved, resolutionWarnings };
-}
-
-/**
- * Replace {{ fragment id="ajo:..." ... }} occurrences with resolved HTML.
- * We replace the entire handlebars tag, not the surrounding comments.
- */
-function stitchFragmentsIntoHtml(html, fragmentsResolved) {
-  if (!html || !Array.isArray(fragmentsResolved) || fragmentsResolved.length === 0) {
-    return html;
-  }
-
-  let out = html;
-
-  for (const frag of fragmentsResolved) {
-    const rawId = `ajo:${frag.id}`;
-    const replacement = frag.content || "";
-
-    const re = new RegExp(
-      `{{\\s*fragment\\b[^}]*\\bid\\s*=\\s*(['"])${escapeRegExp(rawId)}\\1[^}]*}}`,
-      "gi"
-    );
-
-    out = out.replace(re, replacement);
-  }
-
-  return out;
-}
-
-/**
- * Resolve + stitch recursively up to a max depth (handles nested fragments).
- */
-async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
-  const maxDepth = Number(params.maxFragmentDepth || 3);
-
-  let currentHtml = html;
-  let allWarnings = [];
-  const byId = new Map();
-
-  for (let depth = 0; depth < maxDepth; depth++) {
-    const { fragmentsResolved, resolutionWarnings } = await resolveFragmentsFromHtml({
-      html: currentHtml,
-      params,
-      commonHeaders,
-    });
-
-    allWarnings = allWarnings.concat(resolutionWarnings || []);
-
-    if (!fragmentsResolved || fragmentsResolved.length === 0) break;
-
-    for (const f of fragmentsResolved) {
-      if (f && f.id && !byId.has(f.id)) byId.set(f.id, f);
-    }
-
-    const nextHtml = stitchFragmentsIntoHtml(currentHtml, fragmentsResolved);
-    if (nextHtml === currentHtml) break;
-
-    currentHtml = nextHtml;
-  }
-
-  return {
-    stitchedHtml: currentHtml,
-    fragmentsResolvedAll: [...byId.values()],
-    resolutionWarnings: allWarnings,
-  };
 }
 
 module.exports = {
-  extractAjoFragmentIds,
-  fetchFragmentById,
-  resolveFragmentsFromHtml,
-  stitchFragmentsIntoHtml,
-  resolveAndStitchRecursively,
+  normalizeBearer,
+  buildCommonHeaders,
+  pickEtag,
+  stripAjoPrefix,
+  buildFragmentGetUrl,
+  escapeRegExp,
+  safeJsonSnippet,
+  mapLimit,
 };

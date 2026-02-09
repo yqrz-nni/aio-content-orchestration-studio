@@ -56,15 +56,41 @@ function getByPath(obj, path) {
 
 /**
  * Coercion rules to make preview feel closer to AJO:
+ * - MultiFormatString-like objects: prefer `.html`
+ * - Arrays of MultiFormatString-like objects: join `.html`
+ * - ImageRef-like objects: prefer `_path`
  */
 function coerceValue(val) {
   if (val == null) return "";
   if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") return String(val);
 
+  // Array case (common for bodyCopy)
+  if (Array.isArray(val)) {
+    // Prefer joining html for arrays of MultiFormat-like objects
+    const htmlParts = val
+      .map((x) => {
+        if (x && typeof x === "object") {
+          if (typeof x.html === "string") return x.html;
+          if (typeof x.plaintext === "string") return escapeHtml(x.plaintext);
+        }
+        return "";
+      })
+      .filter(Boolean);
+
+    if (htmlParts.length) return htmlParts.join("");
+
+    try {
+      return JSON.stringify(val);
+    } catch {
+      return "";
+    }
+  }
+
   if (typeof val === "object") {
     if (typeof val._path === "string") return val._path;
     if (val._path && typeof val._path === "object" && typeof val._path._path === "string") return val._path._path;
 
+    // MultiFormatString-like
     if (typeof val.html === "string") return val.html;
     if (typeof val.plaintext === "string") return val.plaintext;
 
@@ -126,8 +152,6 @@ function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStream
   // If no binding tags for this namespace, still attempt a global replace using defaultCtx
   if (!binds.length) {
     if (!defaultCtx) return html;
-
-    // (future) mini-AJO blocks could exist even without explicit bindings in that segment
     const maybeExpanded = renderMiniAjo(html, defaultCtx);
     return replaceNamespaceVars(maybeExpanded, namespace, defaultCtx);
   }
@@ -142,20 +166,18 @@ function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStream
     if (tagPos < 0) continue;
 
     let before = html.slice(cursor, tagPos);
-
-    // Future: expand handlebars-like blocks scoped to current context
     before = renderMiniAjo(before, currentCtx || defaultCtx);
 
     out += replaceNamespaceVars(before, namespace, currentCtx || defaultCtx);
 
-    // strip binding tag from preview output (we only needed it for ordering)
+    // strip binding tag from preview output
     out += "";
 
     cursor = tagPos + tag.length;
 
     const skey = `${b.index}:${b.result}`;
     const nextCtx = dataByStreamKey?.[skey] ?? null;
-    currentCtx = nextCtx && typeof nextCtx === "object" ? nextCtx : currentCtx; // keep last good ctx
+    currentCtx = nextCtx && typeof nextCtx === "object" ? nextCtx : currentCtx;
   }
 
   let tail = html.slice(cursor);
@@ -219,8 +241,6 @@ function resolveStylesByBindings({
     if (tagPos < 0) continue;
 
     let seg = stitchedHtml.slice(cursor, tagPos);
-
-    // (future) mini-AJO blocks scoped to styles
     seg = renderMiniAjo(seg, currentStyles);
 
     out += replaceNamespaceVars(seg, "styles", currentStyles);
