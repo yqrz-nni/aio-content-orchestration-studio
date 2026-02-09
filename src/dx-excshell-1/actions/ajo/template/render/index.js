@@ -95,12 +95,12 @@ async function main(params) {
       etag = pickEtag(resp?.headers || null);
     }
 
-    // Response is now "render-centric" even before we stitch fragments.
     return ok({
       templateId,
-      html,
+      html, // keep for backwards compatibility while we iterate
+      renderedHtml: html, // UI should prefer this going forward
       etag,
-      // Next: renderedHtml, trace, fragmentGraph, etc.
+      // Next: trace, fragmentGraph, variableContext, etc.
     });
   } catch (e) {
     return serverError(e.message, {
