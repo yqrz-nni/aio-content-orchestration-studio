@@ -1,6 +1,6 @@
 // File: src/dx-excshell-1/web-src/src/screens/TemplateStudio.jsx
 
-import React, { useContext, useEffect, useMemo, useState } from "react";
+import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   Heading,
   View,
@@ -23,6 +23,10 @@ import actions from "../config.json";
 import actionWebInvoke from "../utils";
 import { ImsContext } from "../context/ImsContext";
 
+/* =============================================================================
+ * Helpers: headers, HTML mutations, hydration (best-effort)
+ * ============================================================================= */
+
 function buildHeaders(ims) {
   return {
     Authorization: ims?.token?.startsWith("Bearer ") ? ims.token : `Bearer ${ims?.token}`,
@@ -30,9 +34,35 @@ function buildHeaders(ims) {
   };
 }
 
-// Simple “append module” insertion (v1).
-// Later you’ll use deterministic insertion points / structure builders.
-function appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId }) {
+function buildLabelsForPrb(prbNumber) {
+  const labels = [];
+  if (prbNumber) labels.push(`PRB:${prbNumber}`);
+  return labels;
+}
+
+// Deterministic PRB replacement: replace any existing prbProperties AEM binding
+function applyPrbToTemplateHtml(html, { prbCfId, repoId }) {
+  if (!html) return html;
+
+  const newCall = `{{fragment id='aem:${prbCfId}?repoId=${repoId}' result='prbProperties'}}`;
+
+  const re =
+    /{{\s*fragment\s+id=(['"])aem:[^'"]+\?repoId=[^'"]+\1\s+result=(['"])prbProperties\2\s*}}/g;
+
+  if (!re.test(html)) {
+    console.warn("Baseline HTML did not contain prbProperties binding; refusing to inject automatically.");
+    return html;
+  }
+
+  return html.replace(re, newCall);
+}
+
+// v1 module insertion: append module block before the closing marker
+function appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars = {} }) {
+  const varAttrs = Object.entries(vars)
+    .map(([k, v]) => `${k}='${String(v ?? "")}'`)
+    .join(" ");
+
   const insertion = `
   <div class="acr-structure" data-structure-id="1-1-column" data-structure-name="richtext.structure_1_1_column">
     <table class="structure__table" align="center" cellpadding="0" cellspacing="0" border="0" width="640">
@@ -41,7 +71,7 @@ function appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId }) {
           <th class="colspan1">
             <div class="acr-fragment acr-component" data-component-id="text" data-contenteditable="false">
               <div class="text-container" data-contenteditable="true">
-                <p>{{fragment id='aem:${aemCfId}?repoId=${repoId}' result='cf' r1=r1 r2=r2 r3=r3 r4=r4 r5=r5 r6=r6 r7=r7 r8=r8 r9=r9 r10=r10}}</p>
+                <p>{{fragment id='aem:${aemCfId}?repoId=${repoId}' result='cf' ${varAttrs} r1=r1 r2=r2 r3=r3 r4=r4 r5=r5 r6=r6 r7=r7 r8=r8 r9=r9 r10=r10}}</p>
               </div>
             </div>
             {{ fragment id="ajo:${vfId}" mode="inline" }}
@@ -57,82 +87,278 @@ function appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId }) {
   return html + insertion;
 }
 
-// If you already have a placeholder fragment in baseline, replace it deterministically.
-// If not found, we refuse to inject automatically (baseline contract).
-function applyPrbToTemplateHtml(html, { prbCfId, repoId }) {
-  if (!html) return html;
+/**
+ * Hydrate state from an existing AJO template HTML.
+ * Best-effort parsing:
+ *  - PRB: result='prbProperties' binding => selectedPrbId
+ *  - Modules: pairs (aem result='cf') with nearest subsequent (ajo fragment) in order
+ * Notes:
+ *  - You reuse "cf" namespace repeatedly; that’s fine. Hydration uses appearance order.
+ */
+function hydrateFromHtml(html) {
+  const out = {
+    prbCfId: null,
+    modules: [], // [{ moduleId, vfId, contentId, vars }]
+  };
+  if (!html || typeof html !== "string") return out;
 
-  const newCall = `{{fragment id='aem:${prbCfId}?repoId=${repoId}' result='prbProperties'}}`;
-
-  // Replace any existing aem:* prbProperties call (handles single or double quotes).
-  const re =
-    /{{\s*fragment\s+id=(['"])aem:[^'"]+\?repoId=[^'"]+\1\s+result=(['"])prbProperties\2\s*}}/g;
-
-  if (!re.test(html)) {
-    console.warn("Baseline HTML did not contain prbProperties fragment call; refusing to inject automatically.");
-    return html;
+  // --- PRB ---
+  {
+    const prbRe = /{{\s*fragment\b[^}]*\bid=(['"])aem:([^'"]+)\1[^}]*\bresult=(['"])prbProperties\3[^}]*}}/i;
+    const m = html.match(prbRe);
+    if (m && m[2]) {
+      // m[2] is "<ID>?repoId=..."
+      const idPart = m[2].split("?")[0];
+      out.prbCfId = idPart || null;
+    }
   }
 
-  return html.replace(re, newCall);
+  // --- Gather all AEM CF bindings (result='cf') with index positions ---
+  const cfBindings = [];
+  {
+    const re = /{{\s*fragment\b([^}]*)}}/gim;
+    let m;
+    while ((m = re.exec(html)) !== null) {
+      const inside = m[1] || "";
+      const idMatch = inside.match(/\bid\s*=\s*(['"])aem:([^'"]+)\1/i);
+      const resultMatch = inside.match(/\bresult\s*=\s*(['"])([^'"]+)\1/i);
+      if (!idMatch || !resultMatch) continue;
+
+      const result = resultMatch[2];
+      if (result !== "cf") continue;
+
+      const raw = idMatch[2]; // "<ID>?repoId=..."
+      const contentId = (raw.split("?")[0] || "").trim() || null;
+      if (!contentId) continue;
+
+      // parse simple vars (firstName etc) excluding r1..r10 and id/result
+      const vars = {};
+      const argRe = /\b([a-zA-Z_][a-zA-Z0-9_-]*)\s*=\s*(?:(['"])(.*?)\2|([^\s}]+))/g;
+      let am;
+      while ((am = argRe.exec(inside)) !== null) {
+        const k = am[1];
+        if (!k) continue;
+        const lk = k.toLowerCase();
+        if (lk === "id" || lk === "result") continue;
+        if (/^r\d+$/.test(lk)) continue;
+
+        const v = am[3] !== undefined ? am[3] : am[4] !== undefined ? am[4] : "";
+        vars[k] = v;
+      }
+
+      cfBindings.push({ start: m.index, end: re.lastIndex, contentId, vars });
+    }
+  }
+
+  // --- Gather all AJO VF calls with index positions ---
+  const vfCalls = [];
+  {
+    const re = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])(ajo:([^'"]+))\1[^}]*}}/gim;
+    let m;
+    while ((m = re.exec(html)) !== null) {
+      // m[2] is "ajo:<id>", m[3] is "<id>"
+      vfCalls.push({ start: m.index, end: re.lastIndex, vfId: m[3] || null });
+    }
+  }
+
+  // --- Pair each CF binding with the nearest subsequent VF call before the next CF binding ---
+  for (let i = 0; i < cfBindings.length; i++) {
+    const cf = cfBindings[i];
+    const nextCfStart = i < cfBindings.length - 1 ? cfBindings[i + 1].start : Number.POSITIVE_INFINITY;
+
+    const vf = vfCalls.find((v) => v.start >= cf.end && v.start < nextCfStart) || null;
+
+    out.modules.push({
+      moduleId: `hydr_${i}_${Date.now()}`,
+      vfId: vf?.vfId || null,
+      contentId: cf.contentId,
+      vars: cf.vars || {},
+    });
+  }
+
+  return out;
+}
+
+/* =============================================================================
+ * Helpers: variable resolution for preview (cf namespace in binding order)
+ * ============================================================================= */
+
+function escapeHtml(input) {
+  return String(input ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function coerceValue(val) {
+  if (val == null) return "";
+  if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") return String(val);
+
+  if (typeof val === "object") {
+    // ImageRef-like
+    if (typeof val._path === "string") return val._path;
+
+    // MultiFormatString-like
+    if (typeof val.html === "string") return val.html;
+    if (typeof val.plaintext === "string") return val.plaintext;
+  }
+
+  try {
+    return JSON.stringify(val);
+  } catch {
+    return "";
+  }
+}
+
+function getByPath(obj, path) {
+  const parts = String(path || "").split(".").filter(Boolean);
+  let cur = obj;
+  for (const p of parts) {
+    if (cur == null) return undefined;
+    cur = cur[p];
+  }
+  return cur;
+}
+
+function replaceNamespaceVars(segment, namespace, ctx) {
+  if (!segment || !ctx) return segment;
+
+  const triple = new RegExp(`\\{\\{\\{\\s*${namespace}\\.([a-zA-Z0-9_$.]+)\\s*\\}\\}\\}`, "g");
+  const dbl = new RegExp(`\\{\\{\\s*${namespace}\\.([a-zA-Z0-9_$.]+)\\s*\\}\\}`, "g");
+
+  let out = segment.replace(triple, (_m, path) => {
+    const v = coerceValue(getByPath(ctx, path));
+    return v; // raw
+  });
+
+  out = out.replace(dbl, (_m, path) => {
+    const v = coerceValue(getByPath(ctx, path));
+    return escapeHtml(v);
+  });
+
+  return out;
 }
 
 /**
- * Build a client-side cache of AEM “value objects” we already have in the UI.
- * Server can use this to avoid AEM GraphQL hydration.
+ * Resolve a namespace by binding order:
+ * Every time we encounter the next AEM binding tag for that namespace, we swap the context
+ * to the hydrated object for that specific binding ("${index}:${result}").
  */
-function buildClientAemCache({ selectedPrb, modules, contentValueById }) {
-  const cache = {};
+function resolveNamespaceByBindings({ stitchedHtml, namespace, aemBindingsEncountered, aemPrefetchDataByStreamKey }) {
+  if (!stitchedHtml) return stitchedHtml;
 
-  // PRB cache
-  if (selectedPrb?.id && selectedPrb?.raw) {
-    cache[`prbProperties:${selectedPrb.id}`] = selectedPrb.raw;
+  const binds = (Array.isArray(aemBindingsEncountered) ? aemBindingsEncountered : [])
+    .filter((b) => b?.result === namespace && typeof b?.rawTag === "string" && Number.isFinite(Number(b?.index)))
+    .slice()
+    .sort((a, b) => Number(a.index) - Number(b.index));
+
+  if (!binds.length) return stitchedHtml;
+
+  let cursor = 0;
+  let out = "";
+  let currentCtx = null;
+
+  for (const b of binds) {
+    const tag = b.rawTag;
+    const tagPos = stitchedHtml.indexOf(tag, cursor);
+    if (tagPos < 0) continue;
+
+    const before = stitchedHtml.slice(cursor, tagPos);
+    out += replaceNamespaceVars(before, namespace, currentCtx);
+
+    // Keep the binding tag in output (harmless for iframe). You can strip later if desired.
+    out += tag;
+
+    cursor = tagPos + tag.length;
+
+    const streamKey = `${b.index}:${b.result}`;
+    currentCtx = aemPrefetchDataByStreamKey?.[streamKey] ?? null;
   }
 
-  // Module CF cache (unified promotional content)
-  for (const m of modules || []) {
-    const cfId = m?.contentId;
-    if (!cfId) continue;
-    const val = contentValueById?.[cfId] || null;
-    if (val) cache[`unifiedPromotionalContent:${cfId}`] = val;
-  }
-
-  return cache;
+  out += replaceNamespaceVars(stitchedHtml.slice(cursor), namespace, currentCtx);
+  return out;
 }
+
+function resolvePreviewHtmlFromRenderResult(renderResult, fallbackHtml) {
+  const stitchedHtml = renderResult?.stitchedHtml ?? renderResult?.html ?? fallbackHtml ?? "";
+
+  // Today, your biggest win is resolving cf.* in correct module order.
+  const resolvedCf = resolveNamespaceByBindings({
+    stitchedHtml,
+    namespace: "cf",
+    aemBindingsEncountered: renderResult?.aemBindingsEncountered,
+    aemPrefetchDataByStreamKey: renderResult?.aemPrefetchDataByStreamKey,
+  });
+
+  return resolvedCf || stitchedHtml || fallbackHtml || "";
+}
+
+/* =============================================================================
+ * Component
+ * ============================================================================= */
 
 export function TemplateStudio() {
   const ims = useContext(ImsContext);
   const headers = useMemo(() => buildHeaders(ims), [ims]);
 
-  // ---- Template session ----
+  // TODO: make repoId dynamic from env/selection
+  const repoId = "author-p131724-e1294209.adobeaemcloud.com";
+
+  // ---------------------------------------------------------------------------
+  // Source of truth: canonical HTML + editor state
+  // ---------------------------------------------------------------------------
+
+  // canonicalHtml: what you would PUT back to AJO
+  const [canonicalHtml, setCanonicalHtml] = useState("");
+
+  // previewHtml: what you show in iframe (stitched + cf vars resolved)
+  const [previewHtml, setPreviewHtml] = useState("");
+
+  // Keep last render payload for debugging / future bindingStream+cache reuse
+  const [lastRenderResult, setLastRenderResult] = useState(null);
+
+  // Template session identity
   const [templateId, setTemplateId] = useState(null);
   const [templateName, setTemplateName] = useState("Baseline Clone");
-  const [canonicalHtml, setCanonicalHtml] = useState("");
-  const [previewHtml, setPreviewHtml] = useState("");
+
+  // Global context (PRB)
+  const [prbOptions, setPrbOptions] = useState([]); // [{id,label,path,raw}]
+  const [selectedPrbId, setSelectedPrbId] = useState(null);
+  const [selectedPrb, setSelectedPrb] = useState(null);
+
+  // Libraries
+  const [vfItems, setVfItems] = useState([]); // [{id,name}]
+  const [contentOptions, setContentOptions] = useState([]); // [{id,label,path}]
+
+  // Canvas / editor selections
+  const [selectedVfId, setSelectedVfId] = useState(null);
+  const [selectedContentId, setSelectedContentId] = useState(null);
+
+  // Canvas module list (separate from HTML)
+  const [modules, setModules] = useState([]); // [{moduleId, vfId, contentId, vars}]
+
+  // UI flags
   const [isUpdatingPrb, setIsUpdatingPrb] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [renderError, setRenderError] = useState("");
 
-  // ---- Global context (PRB) ----
-  const [prbOptions, setPrbOptions] = useState([]); // [{id, label, path, raw}]
-  const [selectedPrbId, setSelectedPrbId] = useState(null);
-  const [selectedPrb, setSelectedPrb] = useState(null); // {id,label,path,raw}
+  // ---------------------------------------------------------------------------
+  // Simple “operation queue” so rapid clicks don’t interleave PUT-like updates
+  // ---------------------------------------------------------------------------
 
-  // ---- Libraries ----
-  const [vfItems, setVfItems] = useState([]); // [{id,name}]
-  const [contentOptions, setContentOptions] = useState([]); // [{id,label,path,raw?}]
-  const [contentValueById, setContentValueById] = useState({}); // id -> raw object
-  const [selectedVfId, setSelectedVfId] = useState(null);
-  const [selectedContentId, setSelectedContentId] = useState(null);
+  const opQueueRef = useRef(Promise.resolve());
+  function enqueue(asyncFn) {
+    opQueueRef.current = opQueueRef.current
+      .then(() => asyncFn())
+      .catch((e) => console.error("Queued op failed:", e));
+    return opQueueRef.current;
+  }
 
-  // ---- Canvas modules (v1: just list of selections) ----
-  const [modules, setModules] = useState([]); // [{moduleId, vfId, contentId}]
-
-  // TODO: make repoId dynamic from env/selection
-  const repoId = "author-p131724-e1294209.adobeaemcloud.com";
-
-  // ---------------------------
+  // ---------------------------------------------------------------------------
   // Actions
-  // ---------------------------
+  // ---------------------------------------------------------------------------
 
   async function createTemplateFromBaseline() {
     try {
@@ -163,7 +389,21 @@ export function TemplateStudio() {
         return;
       }
 
+      // Hydrate editor state from baseline HTML (PRB binding + modules if any)
+      const hydrated = hydrateFromHtml(html);
       setCanonicalHtml(html);
+
+      if (hydrated?.prbCfId) {
+        setSelectedPrbId(hydrated.prbCfId);
+        const prbObj = prbOptions.find((o) => o.id === hydrated.prbCfId) || null;
+        setSelectedPrb(prbObj);
+      }
+
+      if (Array.isArray(hydrated?.modules) && hydrated.modules.length) {
+        setModules(hydrated.modules);
+      } else {
+        setModules([]);
+      }
     } catch (e) {
       console.error("Create-from-baseline failed:", e);
     }
@@ -174,9 +414,6 @@ export function TemplateStudio() {
     setVfItems(res?.fragments || []);
   }
 
-  /**
-   * Global PRB list
-   */
   async function loadPrbList() {
     const res = await actionWebInvoke(actions["aem-prb-list"]);
     const items = res?.data?.prbPropertiesList?.items || [];
@@ -184,7 +421,6 @@ export function TemplateStudio() {
     setPrbOptions(
       items.map((it) => {
         const displayName = it.name || it.prbNumber || it._path || it._id;
-
         return {
           id: it._id,
           label: it.prbNumber && it.name ? `${it.prbNumber} — ${it.name}` : displayName,
@@ -195,10 +431,6 @@ export function TemplateStudio() {
     );
   }
 
-  /**
-   * Module content list (Unified Promotional Content)
-   * We keep the raw objects so we can pass values down to renderContext without AEM calls.
-   */
   async function loadContentList() {
     try {
       const res = await actionWebInvoke(actions["aem-gql-demo"]);
@@ -209,55 +441,48 @@ export function TemplateStudio() {
           id: it._id,
           label: it.headlineText || it._path || it._id,
           path: it._path,
-          raw: it, // ✅ store raw for future use
         }))
       );
-
-      const map = {};
-      for (const it of items) map[it._id] = it;
-      setContentValueById(map);
     } catch (e) {
       console.error("Load Content CFs failed:", e);
     }
   }
 
-  /**
-   * FIXED: only one setPrb() implementation.
-   * Applies PRB to canonical HTML + persists via template-update.
-   */
+  // ✅ FIXED: only one setPrb, and it’s concurrency-safe
   async function setPrb(prbId) {
     if (isUpdatingPrb) return;
 
     setSelectedPrbId(prbId);
-
     const prbObj = prbOptions.find((o) => o.id === prbId) || null;
     setSelectedPrb(prbObj);
 
-    if (!templateId || !prbObj) return;
+    if (!templateId || !prbObj || !canonicalHtml) return;
 
-    try {
-      setIsUpdatingPrb(true);
+    await enqueue(async () => {
+      try {
+        setIsUpdatingPrb(true);
 
-      const prbNumber = prbObj?.raw?.prbNumber;
+        const prbNumber = prbObj?.raw?.prbNumber;
 
-      const nextHtml = applyPrbToTemplateHtml(canonicalHtml, {
-        prbCfId: prbObj.id,
-        repoId,
-      });
+        const nextHtml = applyPrbToTemplateHtml(canonicalHtml, {
+          prbCfId: prbObj.id,
+          repoId,
+        });
 
-      setCanonicalHtml(nextHtml);
+        setCanonicalHtml(nextHtml);
 
-      await actionWebInvoke(actions["ajo-template-update"], headers, {
-        templateId,
-        name: prbNumber ? `${prbNumber} — ${templateName}` : templateName,
-        labels: prbNumber ? [`PRB:${prbNumber}`] : [],
-        html: nextHtml,
-      });
-    } catch (e) {
-      console.error("PRB update failed:", e);
-    } finally {
-      setIsUpdatingPrb(false);
-    }
+        await actionWebInvoke(actions["ajo-template-update"], headers, {
+          templateId,
+          name: prbNumber ? `${prbNumber} — ${templateName}` : templateName,
+          labels: buildLabelsForPrb(prbNumber),
+          html: nextHtml,
+        });
+      } catch (e) {
+        console.error("PRB update failed:", e);
+      } finally {
+        setIsUpdatingPrb(false);
+      }
+    });
   }
 
   function addModule() {
@@ -265,29 +490,38 @@ export function TemplateStudio() {
     if (!selectedVfId || !selectedContentId) return;
     if (!canonicalHtml) return;
 
-    const moduleId = `m_${Date.now()}`;
-    const nextModules = [...modules, { moduleId, vfId: selectedVfId, contentId: selectedContentId }];
-    setModules(nextModules);
+    enqueue(async () => {
+      const moduleId = `m_${Date.now()}`;
+      const nextModules = [
+        ...modules,
+        {
+          moduleId,
+          vfId: selectedVfId,
+          contentId: selectedContentId,
+          vars: { firstName: "" }, // example var; you can expand later
+        },
+      ];
+      setModules(nextModules);
 
-    const nextHtml = appendModuleToTemplateHtml(canonicalHtml, {
-      vfId: selectedVfId,
-      aemCfId: selectedContentId,
-      repoId,
+      const nextHtml = appendModuleToTemplateHtml(canonicalHtml, {
+        vfId: selectedVfId,
+        aemCfId: selectedContentId,
+        repoId,
+        vars: { firstName: "" },
+      });
+
+      setCanonicalHtml(nextHtml);
+
+      // If you want module adds to persist immediately, uncomment:
+      // await actionWebInvoke(actions["ajo-template-update"], headers, { templateId, html: nextHtml, name: templateName });
     });
-
-    setCanonicalHtml(nextHtml);
-
-    // Later, when you want module add to persist immediately:
-    // await actionWebInvoke(actions["ajo-template-update"], headers, { templateId, html: nextHtml });
   }
 
   /**
-   * Two-phase render:
-   * 1) Discover AEM binding appearance order (no AEM hydration).
-   * 2) Provide renderContext.bindingStream aligned to that order.
-   *
-   * Hydration fallback:
-   * - If any bindingStream entry has null value, we set allowAemHydrate=true on phase 2.
+   * Render preview:
+   * - Uses ajo-template-render action to resolve nested AJO fragments + prefetch AEM bindings.
+   * - Then resolves {{cf.*}} / {{{cf.*}}} by binding order using aemPrefetchDataByStreamKey.
+   * - Fallback: stitchedHtml, then canonicalHtml.
    */
   async function renderPreview() {
     try {
@@ -299,84 +533,77 @@ export function TemplateStudio() {
         return;
       }
 
-      const cache = buildClientAemCache({ selectedPrb, modules, contentValueById });
+      // (Optional) You can start reusing cache/stream here later.
+      // For now, just pass through your existing renderContext fields.
+      const renderContext = {
+        prb: {
+          id: selectedPrb?.id,
+          cfId: selectedPrb?.id,
+          prbNumber: selectedPrb?.raw?.prbNumber,
+          name: selectedPrb?.raw?.name,
+        },
+        repoId,
+      };
 
-      // Phase 1: discover binding order (NO hydration; cheap)
-      const discovery = await actionWebInvoke(actions["ajo-template-render"], headers, {
-        html: canonicalHtml,
-        allowAemHydrate: false,
-        renderContext: { repoId, cache },
-      });
-
-      const encountered = Array.isArray(discovery?.aemBindingsEncountered)
-        ? discovery.aemBindingsEncountered
-        : [];
-
-      // Align cf bindings to modules in order (fungible cf namespace)
-      let cfIdx = 0;
-
-      const bindingStream = encountered.map((b) => {
-        const idx = b.index;
-        const result = b.result;
-
-        if (result === "prbProperties") {
-          return {
-            index: idx,
-            result,
-            value: selectedPrb?.raw || null,
-          };
-        }
-
-        if (result === "cf") {
-          const mod = modules?.[cfIdx++] || null;
-          const cfId = mod?.contentId || null;
-          const value = (cfId && cache[`unifiedPromotionalContent:${cfId}`]) || null;
-
-          return {
-            index: idx,
-            result,
-            value,
-            meta: { contentId: cfId, moduleId: mod?.moduleId },
-          };
-        }
-
-        return { index: idx, result, value: null };
-      });
-
-      const hasMissing = bindingStream.some((x) => !x?.value);
-      const allowAemHydrate = hasMissing; // ✅ hydrate only if we’re missing values
-
-      // Phase 2: actual render
       const res = await actionWebInvoke(actions["ajo-template-render"], headers, {
         html: canonicalHtml,
-        allowAemHydrate,
-        renderContext: { repoId, cache, bindingStream },
+        renderContext,
       });
 
-      const rendered = res?.stitchedHtml ?? res?.renderedHtml ?? res?.html ?? null;
+      setLastRenderResult(res || null);
 
-      if (!rendered || typeof rendered !== "string") {
-        console.warn("Render action returned no rendered HTML:", res);
+      // Prefer: resolved stitched -> stitched -> canonical
+      const resolved = resolvePreviewHtmlFromRenderResult(res, canonicalHtml);
+      const best =
+        typeof resolved === "string" && resolved.trim()
+          ? resolved
+          : typeof res?.stitchedHtml === "string" && res.stitchedHtml.trim()
+            ? res.stitchedHtml
+            : canonicalHtml;
+
+      if (!best || typeof best !== "string") {
         setPreviewHtml("<html><body><p>Render succeeded but returned no HTML.</p></body></html>");
         return;
       }
 
-      setPreviewHtml(rendered);
+      setPreviewHtml(best);
     } catch (e) {
       console.error("Render preview failed:", e);
       setRenderError(e?.message || "Render failed");
+
+      // ✅ Fallback: still show *something* useful
+      setPreviewHtml(canonicalHtml || "<html><body><p>Render failed.</p></body></html>");
     } finally {
       setIsRendering(false);
     }
   }
 
-  // Auto-refresh preview when canonical HTML changes
+  // Auto-refresh preview when canonical HTML changes (slight debounce)
   useEffect(() => {
-    if (canonicalHtml) renderPreview();
+    if (!canonicalHtml) return;
+
+    const t = setTimeout(() => {
+      renderPreview();
+    }, 250);
+
+    return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canonicalHtml]);
 
+  // If PRB options load after we already have selectedPrbId, resolve selectedPrb object
+  useEffect(() => {
+    if (!selectedPrbId || selectedPrb) return;
+    const prbObj = prbOptions.find((o) => o.id === selectedPrbId) || null;
+    if (prbObj) setSelectedPrb(prbObj);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prbOptions]);
+
+  // ✅ Only declare prbStatus once
   const prbStatus = selectedPrbId ? "configured" : "missing";
+
+  // Optional: show AEM warnings in UI (from last render)
+  const aemWarnings = Array.isArray(lastRenderResult?.aemWarnings) ? lastRenderResult.aemWarnings : [];
+  const aemPrefetch = Array.isArray(lastRenderResult?.aemPrefetch) ? lastRenderResult.aemPrefetch : [];
 
   return (
     <View>
@@ -442,6 +669,13 @@ export function TemplateStudio() {
         <View marginTop="size-150">
           <Text>templateId: {templateId || "(not created yet)"}</Text>
         </View>
+
+        {/* Optional debugging */}
+        {aemWarnings.length ? (
+          <View marginTop="size-150">
+            <StatusLight variant="negative">{aemWarnings[0]}</StatusLight>
+          </View>
+        ) : null}
       </View>
 
       <Divider size="S" marginY="size-200" />
@@ -482,7 +716,7 @@ export function TemplateStudio() {
           </Flex>
 
           <Text marginTop="size-100" UNSAFE_style={{ opacity: 0.8 }}>
-            Tip: PRB is global; Content CF is per-module.
+            Tip: PRB is global; Content CF is per-module. Modules are tracked separately from HTML (better for reorder/replace later).
           </Text>
 
           <Divider size="S" marginY="size-200" />
@@ -492,6 +726,7 @@ export function TemplateStudio() {
               <Item key="preview">Preview</Item>
               <Item key="modules">Modules</Item>
               <Item key="html">AJO HTML</Item>
+              <Item key="aem">AEM</Item>
             </TabList>
             <TabPanels>
               <Item key="preview">
@@ -518,7 +753,7 @@ export function TemplateStudio() {
                     modules.map((m, idx) => (
                       <View key={m.moduleId} marginBottom="size-150">
                         <Text>
-                          {idx + 1}. VF: {m.vfId} | CF: {m.contentId}
+                          {idx + 1}. VF: {m.vfId || "(not paired)"} | CF: {m.contentId}
                         </Text>
                       </View>
                     ))
@@ -536,6 +771,23 @@ export function TemplateStudio() {
                   overflow="auto"
                 >
                   <pre style={{ whiteSpace: "pre-wrap" }}>{canonicalHtml || "(empty)"}</pre>
+                </View>
+              </Item>
+
+              <Item key="aem">
+                <View height="62vh" overflow="auto">
+                  {!aemPrefetch.length ? (
+                    <Text>No AEM prefetch rows yet. Render preview to populate.</Text>
+                  ) : (
+                    aemPrefetch.map((p, i) => (
+                      <View key={`${p.index}:${p.result}:${i}`} marginBottom="size-100">
+                        <Text>
+                          {p.ok ? "✅" : "❌"} {p.index}:{p.result} → {p.model} ({p.aemId}){" "}
+                          {!p.ok ? `— ${p.reason || ""}` : ""}
+                        </Text>
+                      </View>
+                    ))
+                  )}
                 </View>
               </Item>
             </TabPanels>

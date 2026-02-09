@@ -761,6 +761,10 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
   }
 
   // Selection sets
+  //
+  // ✅ PATCH HERE:
+  // - brands.indication: MultiFormatString -> requires subselection
+  // - brands.icon: Reference/ImageRef -> requires subselection like Unified primaryImage/ctaImage
   const selectionForPrb = `
     _id
     _path
@@ -800,9 +804,22 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
     brands {
       isiLink
       piLink
-      indication
+
+      indication {
+        ... on MultiFormatString {
+          plaintext
+          html
+        }
+      }
+
       homepageUrl
-      icon
+
+      icon {
+        ... on ImageRef {
+          _path
+        }
+      }
+
       displayName
       name
     }
@@ -963,13 +980,8 @@ async function main(params) {
         aemCacheKeys: aem.aemCacheKeys,
         aemWarnings: aem.aemWarnings,
 
-        // This is what your UI should cache + send back on next render:
-        // - Keyed by model:id (via aemCacheKeys list)
-        // You can build that client-side by pairing aemPrefetch rows with binding aemId+model and looking up
-        // aemPrefetchDataByStreamKey (below).
         aemPrefetchDataByStreamKey: aem.aemPrefetchDataByStreamKey,
 
-        // Helpful counters for perf validation
         perf: {
           streamHits: aem.streamHits,
           cacheHits: aem.cacheHits,
