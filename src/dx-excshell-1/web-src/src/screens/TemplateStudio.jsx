@@ -246,6 +246,8 @@ function replaceNamespaceVars(segment, namespace, ctx) {
  * Resolve a namespace by binding order:
  * Every time we encounter the next AEM binding tag for that namespace, we swap the context
  * to the hydrated object for that specific binding ("${index}:${result}").
+ *
+ * NOTE: We keep the binding tag in fallback mode because it's harmless for iframe preview.
  */
 function resolveNamespaceByBindings({ stitchedHtml, namespace, aemBindingsEncountered, aemPrefetchDataByStreamKey }) {
   if (!stitchedHtml) return stitchedHtml;
@@ -282,7 +284,7 @@ function resolveNamespaceByBindings({ stitchedHtml, namespace, aemBindingsEncoun
 }
 
 function resolvePreviewHtmlFromRenderResult(renderResult, fallbackHtml) {
-  // Prefer renderedHtml produced by the action (it resolves prbProperties.* + cf.* in binding order)
+  // Prefer renderedHtml produced by the action (it resolves prbProperties.* + cf.* + styles.*)
   if (typeof renderResult?.renderedHtml === "string" && renderResult.renderedHtml.trim()) {
     return renderResult.renderedHtml;
   }
@@ -332,28 +334,20 @@ function safeJson(obj, space = 2) {
  * If the action returns renderedHtml sanitized, this is mostly redundant.
  * It also protects the fallback path (stitchedHtml + local resolution).
  *
- * IMPORTANT:
- * - DO NOT remove generic {{ ... }} tokens; those include legitimate {{cf.*}}/{{prbProperties.*}} references.
- * - Only strip:
- *   1) ACR wrapped blocks
- *   2) Handlebars comments ({{!-- ... --}})
- *   3) Liquid tags ({% ... %})
+ * NOTE:
+ * - The action sanitizes comments/liquid; here we strip only ACR blocks + liquid for fallback safety.
+ * - We DO NOT strip generic {{ ... }} so cf/prb tokens remain resolvable.
  */
 function stripAjoSyntax(html) {
   if (!html || typeof html !== "string") return html;
   let out = html;
 
-  // 1) Remove ACR wrapped blocks:
-  // {{!-- [acr-start ... }}   ...anything...   {{!-- ... [acr-end ... }}
+  // Remove ACR wrapped blocks
   const acrBlockRe =
     /{{!--\s*\[acr-start[\s\S]*?}}[\s\S]*?{{!--[\s\S]*?\[acr-end[\s\S]*?}}/gim;
   out = out.replace(acrBlockRe, "");
 
-  // 2) Remove any remaining Handlebars comments: {{!-- ... --}}
-  const hbCommentRe = /{{!--[\s\S]*?--}}/g;
-  out = out.replace(hbCommentRe, "");
-
-  // 3) Remove Liquid tags: {% ... %}
+  // Remove Liquid tags
   const liquidTagRe = /{%\s*[\s\S]*?\s*%}/g;
   out = out.replace(liquidTagRe, "");
 
@@ -371,14 +365,10 @@ export function TemplateStudio() {
   // TODO: make repoId dynamic from env/selection
   const repoId = "author-p131724-e1294209.adobeaemcloud.com";
 
-  // ---------------------------------------------------------------------------
-  // Source of truth: canonical HTML + editor state
-  // ---------------------------------------------------------------------------
-
   // canonicalHtml: what you would PUT back to AJO
   const [canonicalHtml, setCanonicalHtml] = useState("");
 
-  // previewHtml: what you show in iframe (renderedHtml preferred, then stitched + vars resolved)
+  // previewHtml: what you show in iframe
   const [previewHtml, setPreviewHtml] = useState("");
 
   // Keep last render payload for debugging / AEM prefetch visibility
@@ -401,7 +391,7 @@ export function TemplateStudio() {
   const [selectedVfId, setSelectedVfId] = useState(null);
   const [selectedContentId, setSelectedContentId] = useState(null);
 
-  // Canvas module list (separate from HTML)
+  // Canvas module list
   const [modules, setModules] = useState([]); // [{moduleId, vfId, contentId, vars}]
 
   // UI flags
@@ -409,7 +399,7 @@ export function TemplateStudio() {
   const [isRendering, setIsRendering] = useState(false);
   const [renderError, setRenderError] = useState("");
 
-  // Optional advanced renderContext controls (don’t change your normal workflow)
+  // Optional advanced renderContext controls
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [bindingStreamText, setBindingStreamText] = useState("[]");
   const [cacheText, setCacheText] = useState("{}");
@@ -458,18 +448,13 @@ export function TemplateStudio() {
         return;
       }
 
-      // Immediately fetch canonical HTML from AJO
-      const getRes = await actionWebInvoke(actions["ajo-template-get"], headers, {
-        templateId: id,
-      });
-
+      const getRes = await actionWebInvoke(actions["ajo-template-get"], headers, { templateId: id });
       const html = getRes?.htmlBody;
       if (!html) {
         console.warn("Template fetched but no htmlBody found:", getRes);
         return;
       }
 
-      // Hydrate editor state from baseline HTML (PRB binding + modules if any)
       const hydrated = hydrateFromHtml(html);
       setCanonicalHtml(html);
 
@@ -479,11 +464,7 @@ export function TemplateStudio() {
         setSelectedPrb(prbObj);
       }
 
-      if (Array.isArray(hydrated?.modules) && hydrated.modules.length) {
-        setModules(hydrated.modules);
-      } else {
-        setModules([]);
-      }
+      setModules(Array.isArray(hydrated?.modules) ? hydrated.modules : []);
     } catch (e) {
       console.error("Create-from-baseline failed:", e);
     }
@@ -528,7 +509,7 @@ export function TemplateStudio() {
     }
   }
 
-  // ✅ FIXED: only one setPrb, and it’s concurrency-safe
+  // only one setPrb, concurrency-safe
   async function setPrb(prbId) {
     if (isUpdatingPrb) return;
 
@@ -578,7 +559,7 @@ export function TemplateStudio() {
           moduleId,
           vfId: selectedVfId,
           contentId: selectedContentId,
-          vars: { firstName: "" }, // example var; you can expand later
+          vars: { firstName: "" }, // example var
         },
       ];
       setModules(nextModules);
@@ -592,17 +573,11 @@ export function TemplateStudio() {
 
       setCanonicalHtml(nextHtml);
 
-      // If you want module adds to persist immediately, uncomment:
+      // Optional: persist immediately
       // await actionWebInvoke(actions["ajo-template-update"], headers, { templateId, html: nextHtml, name: templateName });
     });
   }
 
-  /**
-   * Render preview:
-   * - Uses ajo-template-render action to resolve nested AJO fragments + prefetch AEM bindings.
-   * - Prefer action's renderedHtml; fallback to stitchedHtml + local namespace resolution.
-   * - Optional: pass bindingStream/cache through renderContext for reuse/hydration skipping.
-   */
   async function renderPreview() {
     try {
       setRenderError("");
@@ -621,8 +596,6 @@ export function TemplateStudio() {
           name: selectedPrb?.raw?.name,
         },
         repoId,
-
-        // advanced (optional)
         bindingStream,
         cache,
       };
@@ -641,11 +614,9 @@ export function TemplateStudio() {
         return;
       }
 
-      // ✅ sanitize preview output (action already sanitizes renderedHtml, but this protects fallback path)
       setPreviewHtml(stripAjoSyntax(best));
 
-      // Optional: if action returns cache keys and hydrated stream objects, you can merge into cache editor.
-      // This is safe and purely a UX improvement; it does not affect canonicalHtml.
+      // Optional: merge hydrated values into cache editor for reuse
       if (res?.aemCacheKeys && res?.aemPrefetchDataByStreamKey && Array.isArray(res?.aemBindingsEncountered)) {
         const keys = res.aemCacheKeys || [];
         const byStreamKey = res.aemPrefetchDataByStreamKey || {};
@@ -671,8 +642,6 @@ export function TemplateStudio() {
     } catch (e) {
       console.error("Render preview failed:", e);
       setRenderError(e?.message || "Render failed");
-
-      // ✅ Fallback: still show *something* useful
       setPreviewHtml(stripAjoSyntax(canonicalHtml || "<html><body><p>Render failed.</p></body></html>"));
     } finally {
       setIsRendering(false);
@@ -699,10 +668,8 @@ export function TemplateStudio() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prbOptions]);
 
-  // ✅ Only declare prbStatus once
   const prbStatus = selectedPrbId ? "configured" : "missing";
 
-  // Optional: show AEM warnings in UI (from last render)
   const aemWarnings = Array.isArray(lastRenderResult?.aemWarnings) ? lastRenderResult.aemWarnings : [];
   const resolutionWarnings = Array.isArray(lastRenderResult?.resolutionWarnings) ? lastRenderResult.resolutionWarnings : [];
   const aemPrefetch = Array.isArray(lastRenderResult?.aemPrefetch) ? lastRenderResult.aemPrefetch : [];
@@ -774,7 +741,6 @@ export function TemplateStudio() {
           <Text>templateId: {templateId || "(not created yet)"}</Text>
         </View>
 
-        {/* Optional debugging */}
         {aemWarnings.length ? (
           <View marginTop="size-150">
             <StatusLight variant="negative">{aemWarnings[0]}</StatusLight>
@@ -914,7 +880,6 @@ export function TemplateStudio() {
 
               <Item key="aem">
                 <View height="62vh" overflow="auto">
-                  {/* Summary */}
                   <View marginBottom="size-150">
                     <Heading level={5}>Render diagnostics</Heading>
                     {perf ? (
@@ -927,7 +892,6 @@ export function TemplateStudio() {
                     )}
                   </View>
 
-                  {/* Warnings */}
                   {resolutionWarnings.length || aemWarnings.length ? (
                     <View marginBottom="size-150">
                       <Heading level={5}>Warnings</Heading>
@@ -940,7 +904,6 @@ export function TemplateStudio() {
                     </View>
                   ) : null}
 
-                  {/* Prefetch rows */}
                   {!aemPrefetch.length ? (
                     <Text>No AEM prefetch rows yet. Render preview to populate.</Text>
                   ) : (
@@ -958,7 +921,6 @@ export function TemplateStudio() {
                     </View>
                   )}
 
-                  {/* Raw render result (collapsed-ish) */}
                   {lastRenderResult ? (
                     <View marginTop="size-200">
                       <Heading level={5}>Raw render result</Heading>

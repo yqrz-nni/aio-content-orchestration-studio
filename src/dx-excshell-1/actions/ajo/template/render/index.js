@@ -5,13 +5,18 @@
 // 2) Optional UI-provided AEM cache (reuse hydrated objects across renders)
 // 3) Conditional AEM GraphQL hydration only for missing/insufficient bindings
 // 4) Introspection disabled by default (opt-in via params.enableAemIntrospection=true)
-// 5) Best-effort renderedHtml: resolves {{cf.*}} and {{prbProperties.*}} by binding order
+// 5) Best-effort renderedHtml: resolves {{cf.*}} and {{prbProperties.*}} and {{styles.*}} by binding order
 //
 // Notes:
 // - This action DOES NOT attempt to “fully execute” AJO handlebars; it focuses on:
 //   - AJO fragment resolution/stitching (ajo:* fragments) (recursive)
 //   - AEM binding discovery + optional hydration (aem:* fragment calls)
 //   - Simple token substitution for namespaces using hydrated binding objects
+//
+// IMPORTANT FIX:
+// - If binding-order context is missing (e.g. first binding appears after tokens or hydration is partial),
+//   we now fall back to a "default context" per namespace (first hydrated binding found) so previews
+//   do not show raw {{cf.*}}/{{prbProperties.*}}/{{styles.*}} tokens.
 
 const { ok, badRequest, serverError, corsPreflight } = require("../../../_lib/http");
 const { fetchRaw } = require("../../../_lib/fetchRaw");
@@ -97,15 +102,11 @@ function stripAjoSyntax(html) {
   let out = html;
 
   // 1) Remove ACR wrapped blocks:
-  // {{!-- [acr-start ... }}   ...anything...   {{!-- ... [acr-end ... }}
-  // - non-greedy, across newlines
-  // - keeps everything else (including {{cf.*}} tokens)
   const acrBlockRe =
     /{{!--\s*\[acr-start[\s\S]*?}}[\s\S]*?{{!--[\s\S]*?\[acr-end[\s\S]*?}}/gim;
   out = out.replace(acrBlockRe, "");
 
   // 2) Remove any remaining Handlebars comments: {{!-- ... --}}
-  // (Some templates include comments not wrapped in acr-start/acr-end)
   const hbCommentRe = /{{!--[\s\S]*?--}}/g;
   out = out.replace(hbCommentRe, "");
 
@@ -269,7 +270,10 @@ function stitchFragmentsIntoHtml(html, fragmentsResolved) {
     const rawId = `ajo:${frag.id}`;
     const replacement = frag.content || "";
 
-    const re = new RegExp(`{{\\s*fragment\\b[^}]*\\bid\\s*=\\s*(['"])${escapeRegExp(rawId)}\\1[^}]*}}`, "gi");
+    const re = new RegExp(
+      `{{\\s*fragment\\b[^}]*\\bid\\s*=\\s*(['"])${escapeRegExp(rawId)}\\1[^}]*}}`,
+      "gi"
+    );
 
     out = out.replace(re, replacement);
   }
@@ -638,9 +642,6 @@ function buildUnifiedSelectionSetKnownGood() {
 
 /**
  * PRB selection set (corrected to match known-good PRB query/response):
- * - Removes invalid/non-existent fields (e.g. `indication`)
- * - Adds required identity fields for brands + brandStyle
- * - Keeps ImageRef fragment for icon
  */
 function buildPrbSelectionSet() {
   return `
@@ -725,17 +726,12 @@ function getByPath(obj, path) {
 
 /**
  * Coercion rules to make preview feel closer to AJO:
- * - If a value is an object with `_path` string => return that
- * - If `_path` is nested like `{ _path: { _path: "..." } }` => return inner
- * - If `{ html: "..." }` or `{ plaintext: "..." }` => return those
- * - Else JSON.stringify(object)
  */
 function coerceValue(val) {
   if (val == null) return "";
   if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") return String(val);
 
   if (typeof val === "object") {
-    // common AEM ref patterns
     if (typeof val._path === "string") return val._path;
     if (val._path && typeof val._path === "object" && typeof val._path._path === "string") return val._path._path;
 
@@ -771,7 +767,25 @@ function replaceNamespaceVars(segment, namespace, ctx) {
   return out;
 }
 
-function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStreamKey }) {
+/**
+ * Determine a "default" context for a namespace:
+ * - first hydrated binding in appearance order (by index) that has a value
+ */
+function pickDefaultCtxForNamespace({ namespace, aemBindingsEncountered, dataByStreamKey }) {
+  const binds = (Array.isArray(aemBindingsEncountered) ? aemBindingsEncountered : [])
+    .filter((b) => b?.result === namespace)
+    .slice()
+    .sort((a, b) => Number(a.index) - Number(b.index));
+
+  for (const b of binds) {
+    const sk = `${b.index}:${b.result}`;
+    const v = dataByStreamKey?.[sk];
+    if (v && typeof v === "object") return v;
+  }
+  return null;
+}
+
+function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStreamKey, defaultCtx }) {
   if (!html) return html;
 
   const binds = (Array.isArray(bindings) ? bindings : [])
@@ -779,7 +793,10 @@ function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStream
     .slice()
     .sort((a, b) => Number(a.index) - Number(b.index));
 
-  if (!binds.length) return html;
+  // If no binding tags for this namespace, still attempt a global replace using defaultCtx
+  if (!binds.length) {
+    return defaultCtx ? replaceNamespaceVars(html, namespace, defaultCtx) : html;
+  }
 
   let cursor = 0;
   let out = "";
@@ -791,25 +808,24 @@ function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStream
     if (tagPos < 0) continue;
 
     const before = html.slice(cursor, tagPos);
-    out += replaceNamespaceVars(before, namespace, currentCtx);
+    out += replaceNamespaceVars(before, namespace, currentCtx || defaultCtx);
 
-    // ✅ strip binding tag from preview output (we only needed it for ordering)
+    // strip binding tag from preview output (we only needed it for ordering)
     out += "";
 
     cursor = tagPos + tag.length;
 
     const skey = `${b.index}:${b.result}`;
-    currentCtx = dataByStreamKey?.[skey] ?? null;
+    const nextCtx = dataByStreamKey?.[skey] ?? null;
+    currentCtx = nextCtx && typeof nextCtx === "object" ? nextCtx : currentCtx; // keep last good ctx
   }
 
-  out += replaceNamespaceVars(html.slice(cursor), namespace, currentCtx);
+  out += replaceNamespaceVars(html.slice(cursor), namespace, currentCtx || defaultCtx);
   return out;
 }
 
 /**
  * Styles context derivation:
- * - Default to PRB brandStyle when present
- * - Allow CF override via forceBrandStylingLeaveBlankToInheritContextualBrandStyle object
  */
 function deriveStylesContext({ prbCtx, cfCtx }) {
   const prbStyle = prbCtx?.brandStyle && typeof prbCtx.brandStyle === "object" ? prbCtx.brandStyle : null;
@@ -824,10 +840,15 @@ function deriveStylesContext({ prbCtx, cfCtx }) {
 }
 
 /**
- * Replace {{styles.*}} by binding order, but "styles context" is derived from the
- * most recent PRB + CF binding objects encountered as we scan the html.
+ * Replace {{styles.*}} by binding order, with default fallback.
  */
-function resolveStylesByBindings({ stitchedHtml, aemBindingsEncountered, aemPrefetchDataByStreamKey }) {
+function resolveStylesByBindings({
+  stitchedHtml,
+  aemBindingsEncountered,
+  aemPrefetchDataByStreamKey,
+  defaultPrbCtx,
+  defaultCfCtx,
+}) {
   if (!stitchedHtml) return stitchedHtml;
 
   const binds = (Array.isArray(aemBindingsEncountered) ? aemBindingsEncountered : [])
@@ -835,12 +856,18 @@ function resolveStylesByBindings({ stitchedHtml, aemBindingsEncountered, aemPref
     .slice()
     .sort((a, b) => Number(a.index) - Number(b.index));
 
+  // If no bindings at all, try a global styles replacement from defaults
+  if (!binds.length) {
+    const styles = deriveStylesContext({ prbCtx: defaultPrbCtx, cfCtx: defaultCfCtx });
+    return styles ? replaceNamespaceVars(stitchedHtml, "styles", styles) : stitchedHtml;
+  }
+
   let cursor = 0;
   let out = "";
 
   let currentPrb = null;
   let currentCf = null;
-  let currentStyles = null;
+  let currentStyles = deriveStylesContext({ prbCtx: defaultPrbCtx, cfCtx: defaultCfCtx }) || null;
 
   for (const b of binds) {
     const tag = b.rawTag;
@@ -849,7 +876,7 @@ function resolveStylesByBindings({ stitchedHtml, aemBindingsEncountered, aemPref
 
     out += replaceNamespaceVars(stitchedHtml.slice(cursor, tagPos), "styles", currentStyles);
 
-    // ✅ strip binding tag from preview output
+    // strip binding tag from preview output
     out += "";
 
     cursor = tagPos + tag.length;
@@ -857,10 +884,10 @@ function resolveStylesByBindings({ stitchedHtml, aemBindingsEncountered, aemPref
     const streamKey = `${b.index}:${b.result}`;
     const ctx = aemPrefetchDataByStreamKey?.[streamKey] ?? null;
 
-    if (b.result === "prbProperties") currentPrb = ctx;
-    if (b.result === "cf") currentCf = ctx;
+    if (b.result === "prbProperties" && ctx && typeof ctx === "object") currentPrb = ctx;
+    if (b.result === "cf" && ctx && typeof ctx === "object") currentCf = ctx;
 
-    currentStyles = deriveStylesContext({ prbCtx: currentPrb, cfCtx: currentCf });
+    currentStyles = deriveStylesContext({ prbCtx: currentPrb || defaultPrbCtx, cfCtx: currentCf || defaultCfCtx });
   }
 
   out += replaceNamespaceVars(stitchedHtml.slice(cursor), "styles", currentStyles);
@@ -870,11 +897,25 @@ function resolveStylesByBindings({ stitchedHtml, aemBindingsEncountered, aemPref
 function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aemPrefetchDataByStreamKey }) {
   let out = stitchedHtml;
 
-  // styles first (it is derived from PRB/CF binding order)
+  const defaultPrbCtx = pickDefaultCtxForNamespace({
+    namespace: "prbProperties",
+    aemBindingsEncountered,
+    dataByStreamKey: aemPrefetchDataByStreamKey,
+  });
+
+  const defaultCfCtx = pickDefaultCtxForNamespace({
+    namespace: "cf",
+    aemBindingsEncountered,
+    dataByStreamKey: aemPrefetchDataByStreamKey,
+  });
+
+  // styles first (derived from PRB/CF binding order)
   out = resolveStylesByBindings({
     stitchedHtml: out,
     aemBindingsEncountered,
     aemPrefetchDataByStreamKey,
+    defaultPrbCtx,
+    defaultCfCtx,
   });
 
   // then normal namespaces
@@ -883,6 +924,7 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     namespace: "prbProperties",
     bindings: aemBindingsEncountered,
     dataByStreamKey: aemPrefetchDataByStreamKey,
+    defaultCtx: defaultPrbCtx,
   });
 
   out = renderNamespaceByBindingOrder({
@@ -890,9 +932,10 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     namespace: "cf",
     bindings: aemBindingsEncountered,
     dataByStreamKey: aemPrefetchDataByStreamKey,
+    defaultCtx: defaultCfCtx,
   });
 
-  // ✅ final sanitize for preview HTML
+  // final sanitize for preview HTML
   return stripAjoSyntax(out);
 }
 
