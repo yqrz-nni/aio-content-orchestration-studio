@@ -332,9 +332,12 @@ function safeJson(obj, space = 2) {
  * If the action returns renderedHtml sanitized, this is mostly redundant.
  * It also protects the fallback path (stitchedHtml + local resolution).
  *
- * NOTE:
- * - The action now evaluates the “richtext/bodyCopy blob” and then strips leftover {% %}.
- * - Here we still strip leftover {% %} for fallback safety.
+ * IMPORTANT:
+ * - DO NOT remove generic {{ ... }} tokens; those include legitimate {{cf.*}}/{{prbProperties.*}} references.
+ * - Only strip:
+ *   1) ACR wrapped blocks
+ *   2) Handlebars comments ({{!-- ... --}})
+ *   3) Liquid tags ({% ... %})
  */
 function stripAjoSyntax(html) {
   if (!html || typeof html !== "string") return html;
@@ -342,14 +345,15 @@ function stripAjoSyntax(html) {
 
   // 1) Remove ACR wrapped blocks:
   // {{!-- [acr-start ... }}   ...anything...   {{!-- ... [acr-end ... }}
-  // - non-greedy, across newlines
-  // - keeps everything else (including {{cf.*}} tokens)
   const acrBlockRe =
     /{{!--\s*\[acr-start[\s\S]*?}}[\s\S]*?{{!--[\s\S]*?\[acr-end[\s\S]*?}}/gim;
-
   out = out.replace(acrBlockRe, "");
 
-  // 2) Remove Liquid tags: {% ... %}
+  // 2) Remove any remaining Handlebars comments: {{!-- ... --}}
+  const hbCommentRe = /{{!--[\s\S]*?--}}/g;
+  out = out.replace(hbCommentRe, "");
+
+  // 3) Remove Liquid tags: {% ... %}
   const liquidTagRe = /{%\s*[\s\S]*?\s*%}/g;
   out = out.replace(liquidTagRe, "");
 
