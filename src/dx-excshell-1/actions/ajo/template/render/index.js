@@ -1,22 +1,33 @@
 // File: src/dx-excshell-1/actions/ajo/template/render/index.js
+//
+// Render (preview) action with:
+// 1) Optional UI-provided AEM bindingStream (no AEM calls when values provided)
+// 2) Optional UI-provided AEM cache (reuse hydrated objects across renders)
+// 3) Conditional AEM GraphQL hydration only for missing bindings
+// 4) Introspection disabled by default (opt-in via params.enableAemIntrospection=true)
+//
+// Notes:
+// - This action DOES NOT attempt to “fully execute” AJO handlebars; it focuses on:
+//   - AJO fragment resolution/stitching (ajo:* fragments) (recursive)
+//   - AEM binding discovery + optional hydration (aem:* fragment calls)
+// - You can extend later to actually evaluate expressions; this is the cheap/flexible groundwork.
 
 const { ok, badRequest, serverError, corsPreflight } = require("../../../_lib/http");
 const { fetchRaw } = require("../../../_lib/fetchRaw");
 const { fetchJson } = require("../../../_lib/fetchJson");
 const { requireIms } = require("../../../_lib/ims");
 
-// Only needed if you choose NOT to use a proxy for AEM GraphQL.
+// Optional dependency if you do direct AEM (not proxy)
 let jwtAuth = null;
 try {
   jwtAuth = require("@adobe/jwt-auth");
 } catch {
-  // ok: if you always use proxy, this won't be needed
+  // ok
 }
 
-/* ============================================================================
- * Small utilities
- * ============================================================================
- */
+/* =============================================================================
+ * Utilities
+ * ============================================================================= */
 
 function normalizeBearer(token) {
   return token?.startsWith("Bearer ") ? token : `Bearer ${token}`;
@@ -55,7 +66,7 @@ function buildFragmentGetUrl(baseUrl, fragmentId) {
 }
 
 function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return String(s || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function safeJsonSnippet(obj, maxChars = 1200) {
@@ -105,10 +116,9 @@ async function mapLimit(items, limit, worker) {
   });
 }
 
-/* ============================================================================
- * AJO Fragment resolve + stitch
- * ============================================================================
- */
+/* =============================================================================
+ * AJO Fragment resolve + stitch (ajo:* fragments)
+ * ============================================================================= */
 
 function extractAjoFragmentIds(html) {
   if (!html || typeof html !== "string") return [];
@@ -236,7 +246,7 @@ function stitchFragmentsIntoHtml(html, fragmentsResolved) {
  * Resolve + stitch recursively up to a max depth (handles nested fragments).
  */
 async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
-  const maxDepth = Number(params.maxFragmentDepth || 3); // you said likely 3
+  const maxDepth = Number(params.maxFragmentDepth || 3);
 
   let currentHtml = html;
   let allWarnings = [];
@@ -253,19 +263,14 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
 
     if (!fragmentsResolved || fragmentsResolved.length === 0) break;
 
-    let anyNew = false;
     for (const f of fragmentsResolved) {
-      if (f && f.id && !byId.has(f.id)) {
-        byId.set(f.id, f);
-        anyNew = true;
-      }
+      if (f && f.id && !byId.has(f.id)) byId.set(f.id, f);
     }
 
     const nextHtml = stitchFragmentsIntoHtml(currentHtml, fragmentsResolved);
     if (nextHtml === currentHtml) break;
 
     currentHtml = nextHtml;
-    if (!anyNew && depth > 0) break;
   }
 
   return {
@@ -275,14 +280,13 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
   };
 }
 
-/* ============================================================================
+/* =============================================================================
  * AEM bindings (AJO handlebars: {{fragment id='aem:<ID>?repoId=...' result='cf'}})
- * ============================================================================
- */
+ * ============================================================================= */
 
 /**
  * Extract AEM fragment bindings from the HTML in-order.
- * IMPORTANT: `index` is the appearance order; we preserve it throughout.
+ * IMPORTANT: `index` is appearance order; we preserve it.
  */
 function extractAemBindings(html) {
   if (!html || typeof html !== "string") return [];
@@ -338,11 +342,32 @@ function extractAemBindings(html) {
       aemId,
       repoId,
       args,
+      rawTag: m[0],
     });
     index++;
   }
 
   return bindings;
+}
+
+function normalizeRenderContext(params) {
+  // UI currently sends renderContext object. Be permissive.
+  const rc = params?.renderContext && typeof params.renderContext === "object" ? params.renderContext : {};
+  const bindingStream = Array.isArray(rc.bindingStream) ? rc.bindingStream : null;
+  const cache = rc.cache && typeof rc.cache === "object" ? rc.cache : null;
+  return { renderContext: rc, bindingStream, cache };
+}
+
+function streamKeyForBinding(binding) {
+  // We match by appearance index + result name (most stable if user reuses 'cf' many times)
+  const idx = Number(binding?.index);
+  const r = binding?.result || "";
+  return `${idx}:${r}`;
+}
+
+function cacheKeyForModel(model, aemId) {
+  if (!model || !aemId) return null;
+  return `${model}:${aemId}`;
 }
 
 /**
@@ -363,10 +388,7 @@ async function buildAemGraphqlClient(params) {
     return { ok: false, reason: "Missing AEM_GQL_PATH_PROXY (USE_AEM_PROXY=true)", gqlUrl: null, headers: null };
   }
 
-  const gqlUrl = useProxy
-    ? params.AEM_GQL_PATH_PROXY
-    : new URL(params.AEM_GQL_PATH, params.AEM_AUTHOR).toString();
-
+  const gqlUrl = useProxy ? params.AEM_GQL_PATH_PROXY : new URL(params.AEM_GQL_PATH, params.AEM_AUTHOR).toString();
   const headers = { "content-type": "application/json" };
 
   if (!useProxy) {
@@ -402,7 +424,6 @@ async function buildAemGraphqlClient(params) {
 
 /**
  * Fetch GraphQL JSON and throw (with attached data) if errors[] is present.
- * (AEM GraphQL often returns HTTP 200 with errors[].)
  */
 async function postGraphql({ gqlUrl, headers, query, variables, operationName }) {
   const payload = { query };
@@ -426,7 +447,8 @@ async function postGraphql({ gqlUrl, headers, query, variables, operationName })
 }
 
 /**
- * Introspect query fields once per invocation to find the correct "ById" field + arg name.
+ * Introspection (OPTIONAL, disabled by default).
+ * If you enable it, we’ll try to discover the correct field/arg names.
  */
 async function introspectQueryFields({ gqlUrl, headers }) {
   const query = `
@@ -456,11 +478,11 @@ function pickBestByIdField(fields, modelName) {
     `${modelName}BySlug`,
   ];
 
-  const byName = new Map(fields.map((f) => [f.name, f]));
+  const byName = new Map((fields || []).map((f) => [f.name, f]));
   for (const n of preferredNames) if (byName.has(n)) return byName.get(n);
 
   const lowerModel = modelName.toLowerCase();
-  const candidates = fields.filter((f) => {
+  const candidates = (fields || []).filter((f) => {
     const ln = (f.name || "").toLowerCase();
     return ln.includes(lowerModel) && ln.includes("by");
   });
@@ -496,8 +518,8 @@ function buildByFieldQuery({ fieldName, argName, selectionSet, opName }) {
 }
 
 /**
- * Your known-good unified selection set (fast-path).
- * Matches the query you confirmed works.
+ * Unified promo selection set (your known-good fast-path).
+ * Keep it aligned to what your VFs reference.
  */
 function buildUnifiedSelectionSetKnownGood() {
   return `
@@ -562,45 +584,183 @@ function buildUnifiedSelectionSetKnownGood() {
 }
 
 /**
- * Prefetch AEM objects for encountered bindings (parallelized) while preserving order.
- * - prbProperties: fixed selection
- * - unifiedPromotionalContent: known-good selection set (fast-path)
+ * Determine which AEM model a binding refers to based on `result`.
+ * You can extend this mapping as you add more result namespaces.
  */
-async function prefetchAemBindings({ stitchedHtml, params }) {
-  const aemBindingsEncountered = extractAemBindings(stitchedHtml);
+function modelFromResult(result) {
+  if (result === "prbProperties") return "prbProperties";
+  if (result === "cf") return "unifiedPromotionalContent";
+  return null;
+}
 
+/**
+ * Core: Resolve AEM binding values cheaply:
+ * - First: bindingStream value (UI-provided, in order)
+ * - Second: renderContext.cache by model:id
+ * - Third: GraphQL hydrate (optional / only for misses)
+ *
+ * Returns:
+ * - aemBindingsEncountered (in-order)
+ * - aemPrefetch (rows in-order with ok/reason)
+ * - aemPrefetchDataByStreamKey (keyed by `${index}:${result}`) for evaluation stage
+ * - cacheHits / streamHits / hydratedCount
+ * - aemCacheKeys (stable list of model:id for UI caching)
+ */
+async function resolveAemBindingValues({ stitchedHtml, params }) {
+  const aemBindingsEncountered = extractAemBindings(stitchedHtml);
   const aemWarnings = [];
-  let aemPrefetch = [];
+
+  const { bindingStream, cache } = normalizeRenderContext(params);
+
+  const aemPrefetch = [];
   const aemCacheKeys = [];
-  const aemPrefetchData = {};
+  const aemPrefetchDataByStreamKey = {}; // `${index}:${result}` -> object
+
+  let streamHits = 0;
+  let cacheHits = 0;
+  let hydratedCount = 0;
 
   if (!aemBindingsEncountered.length) {
-    return { aemBindingsEncountered, aemPrefetch, aemCacheKeys, aemWarnings, aemPrefetchData };
+    return {
+      aemBindingsEncountered,
+      aemPrefetch,
+      aemCacheKeys,
+      aemWarnings,
+      aemPrefetchDataByStreamKey,
+      streamHits,
+      cacheHits,
+      hydratedCount,
+    };
   }
 
+  // Map stream by `${index}:${result}`.
+  const streamMap = new Map();
+  if (Array.isArray(bindingStream)) {
+    for (const entry of bindingStream) {
+      const idx = Number(entry?.index);
+      const res = entry?.result || null;
+      if (!Number.isFinite(idx) || !res) continue;
+      streamMap.set(`${idx}:${res}`, entry);
+    }
+  }
+
+  // First pass: fill from stream/cache; collect misses for GraphQL
+  const misses = [];
+
+  for (const b of aemBindingsEncountered) {
+    const skey = streamKeyForBinding(b);
+    const model = modelFromResult(b.result);
+    const ck = cacheKeyForModel(model, b.aemId);
+    if (ck) aemCacheKeys.push(ck);
+
+    // 1) Stream hit
+    const streamEntry = streamMap.get(skey);
+    if (streamEntry && streamEntry.value && typeof streamEntry.value === "object") {
+      streamHits++;
+      aemPrefetchDataByStreamKey[skey] = streamEntry.value;
+
+      aemPrefetch.push({
+        index: b.index,
+        result: b.result,
+        aemId: b.aemId,
+        ok: true,
+        source: "bindingStream",
+        model,
+      });
+      continue;
+    }
+
+    // 2) Cache hit (model:id)
+    if (cache && ck && cache[ck] && typeof cache[ck] === "object") {
+      cacheHits++;
+      aemPrefetchDataByStreamKey[skey] = cache[ck];
+
+      aemPrefetch.push({
+        index: b.index,
+        result: b.result,
+        aemId: b.aemId,
+        ok: true,
+        source: "cache",
+        model,
+      });
+      continue;
+    }
+
+    // 3) Miss (maybe hydrate)
+    aemPrefetch.push({
+      index: b.index,
+      result: b.result,
+      aemId: b.aemId,
+      ok: false,
+      source: "miss",
+      model,
+      reason: !model ? `Unknown result '${b.result}' (no model mapping)` : "Not provided (stream/cache miss)",
+    });
+
+    if (model && b.aemId) {
+      misses.push({ binding: b, model, skey });
+    }
+  }
+
+  // If no misses or we want “no-hydrate” mode, bail here.
+  const allowHydrate =
+    params.allowAemHydrate === undefined
+      ? true
+      : params.allowAemHydrate === true || params.allowAemHydrate === "true";
+
+  if (!misses.length || !allowHydrate) {
+    if (!allowHydrate && misses.length) {
+      aemWarnings.push(`AEM hydration skipped by allowAemHydrate=false; ${misses.length} bindings remain unresolved.`);
+    }
+    // Ensure stable order
+    aemPrefetch.sort((x, y) => (x.index ?? 0) - (y.index ?? 0));
+    return {
+      aemBindingsEncountered,
+      aemPrefetch,
+      aemCacheKeys,
+      aemWarnings,
+      aemPrefetchDataByStreamKey,
+      streamHits,
+      cacheHits,
+      hydratedCount,
+    };
+  }
+
+  // Build AEM client
   const client = await buildAemGraphqlClient(params);
   if (!client.ok) {
-    aemWarnings.push(`AEM prefetch skipped: ${client.reason}`);
-    for (const b of aemBindingsEncountered) {
-      aemPrefetch.push({ index: b.index, result: b.result, aemId: b.aemId, ok: false, reason: client.reason });
-    }
-    // ensure stable order
+    aemWarnings.push(`AEM hydration skipped: ${client.reason}`);
     aemPrefetch.sort((x, y) => (x.index ?? 0) - (y.index ?? 0));
-    return { aemBindingsEncountered, aemPrefetch, aemCacheKeys, aemWarnings, aemPrefetchData };
+    return {
+      aemBindingsEncountered,
+      aemPrefetch,
+      aemCacheKeys,
+      aemWarnings,
+      aemPrefetchDataByStreamKey,
+      streamHits,
+      cacheHits,
+      hydratedCount,
+    };
   }
 
+  // Introspection is OFF by default. Opt-in only.
+  const enableIntrospection = params.enableAemIntrospection === true || params.enableAemIntrospection === "true";
   let queryFields = null;
-  try {
-    queryFields = await introspectQueryFields({ gqlUrl: client.gqlUrl, headers: client.headers });
-  } catch (e) {
-    aemWarnings.push(
-      `AEM schema introspection failed; falling back to assumed ById field names. Reason: ${e.message}${
-        e?.data?.errors ? ` | errors=${safeJsonSnippet(e.data.errors)}` : ""
-      }`
-    );
-    queryFields = null;
+
+  if (enableIntrospection) {
+    try {
+      queryFields = await introspectQueryFields({ gqlUrl: client.gqlUrl, headers: client.headers });
+    } catch (e) {
+      aemWarnings.push(
+        `AEM schema introspection failed; falling back to assumed ById field names. Reason: ${e.message}${
+          e?.data?.errors ? ` | errors=${safeJsonSnippet(e.data.errors)}` : ""
+        }`
+      );
+      queryFields = null;
+    }
   }
 
+  // Selection sets
   const selectionForPrb = `
     _id
     _path
@@ -608,44 +768,53 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
     prbNumber
     startingDate
     expirationDate
-    brandStyle { font_family }
+    brandStyle {
+      ajoTemplateId
+      email_banner_content_section_padding
+      email_banner_content_bottom_margin
+      email_banner_content_top_margin
+      email_banner_content_right_margin
+      email_banner_content_left_margin
+      email_body_copy_line_height
+      email_headline_line_height
+      font_family
+      font_size_heading_xs
+      font_size_heading_sm
+      font_size_heading_med
+      font_size_heading_lg
+      font_size_heading_x1
+      component_button_border_radius
+      divider_weight
+      divider_color
+      color_text_body
+      color_text_white
+      color_text_link_secondary
+      color_text_link_primary
+      color_background_tertiary
+      color_background_secondary
+      color_background_primary
+      color_text_tertiary
+      color_text_secondary
+      color_text_primary
+    }
+    brands {
+      isiLink
+      piLink
+      indication
+      homepageUrl
+      icon
+      displayName
+      name
+    }
   `;
 
-  function modelFromResult(result) {
-    if (result === "prbProperties") return "prbProperties";
-    if (result === "cf") return "unifiedPromotionalContent";
-    return null;
-  }
+  const selectionUnified = buildUnifiedSelectionSetKnownGood();
 
-  // Build tasks in the same order as bindings (for stable cacheKeys + indexing)
-  const tasks = aemBindingsEncountered.map((b) => {
-    const model = modelFromResult(b.result);
-    const cacheKey = model && b.aemId ? `${model}:${b.aemId}` : null;
-    if (cacheKey) aemCacheKeys.push(cacheKey);
-    return { b, model };
-  });
-
+  // Hydrate in parallel (capped)
   const concurrency = Number(params.aemConcurrency || 4);
 
-  const results = await mapLimit(tasks, concurrency, async ({ b, model }) => {
-    if (!b.aemId) {
-      return { kind: "prefetch", row: { index: b.index, result: b.result, aemId: b.aemId, ok: false, reason: "Missing aemId" } };
-    }
-
-    if (!model) {
-      return {
-        kind: "prefetch",
-        row: {
-          index: b.index,
-          result: b.result,
-          aemId: b.aemId,
-          ok: false,
-          reason: `Unknown result '${b.result}' (no model mapping)`,
-        },
-      };
-    }
-
-    // Pick the best query field + arg name (based on introspection if possible)
+  const results = await mapLimit(misses, concurrency, async ({ binding, model, skey }) => {
+    // Choose field/arg (introspection only if enabled)
     let fieldName = null;
     let argName = null;
 
@@ -658,109 +827,98 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
     if (!fieldName) fieldName = `${model}ById`;
     if (!argName) argName = "_id";
 
-    // UNIFIED: known-good selection set
-    if (model === "unifiedPromotionalContent") {
-      const selectionSet = buildUnifiedSelectionSetKnownGood();
-      const opName = `Get_${model}_ById`;
-      const query = buildByFieldQuery({ fieldName, argName, selectionSet, opName });
+    const selectionSet = model === "unifiedPromotionalContent" ? selectionUnified : selectionForPrb;
+    const opName = `Get_${model}_ById`;
+    const query = buildByFieldQuery({ fieldName, argName, selectionSet, opName });
 
-      try {
-        const data = await postGraphql({
-          gqlUrl: client.gqlUrl,
-          headers: client.headers,
-          query,
-          variables: { id: b.aemId },
-          operationName: opName,
-        });
+    try {
+      const data = await postGraphql({
+        gqlUrl: client.gqlUrl,
+        headers: client.headers,
+        query,
+        variables: { id: binding.aemId },
+        operationName: opName,
+      });
 
-        const item = data?.data?.[fieldName]?.item || null;
-
-        const row = { index: b.index, result: b.result, aemId: b.aemId, ok: !!item, fieldName, argName };
-
-        if (item) {
-          return { kind: "data", key: `${b.index}:${b.result}`, item, row };
-        }
-
+      const item = data?.data?.[fieldName]?.item || null;
+      if (!item) {
         return {
-          kind: "warn",
-          warning: `AEM fetch succeeded but returned no item for ${b.result} ${b.aemId} (field=${fieldName}, arg=${argName}).`,
-          row,
-        };
-      } catch (e) {
-        const errErrors = e?.data?.errors || null;
-
-        return {
-          kind: "warn",
-          warning: `Failed to fetch AEM ${b.result} ${b.aemId}: ${e.message}${errErrors ? ` | errors=${safeJsonSnippet(errErrors)}` : ""}`,
-          row: { index: b.index, result: b.result, aemId: b.aemId, ok: false, fieldName, argName },
+          ok: false,
+          skey,
+          model,
+          binding,
+          fieldName,
+          argName,
+          warning: `AEM fetch returned no item for ${binding.result} ${binding.aemId} (field=${fieldName}, arg=${argName}).`,
         };
       }
-    }
 
-    // PRB: fixed selection
-    {
-      const selectionSet = selectionForPrb;
-      const opName = `Get_${model}_ById`;
-      const query = buildByFieldQuery({ fieldName, argName, selectionSet, opName });
-
-      try {
-        const data = await postGraphql({
-          gqlUrl: client.gqlUrl,
-          headers: client.headers,
-          query,
-          variables: { id: b.aemId },
-          operationName: opName,
-        });
-
-        const item = data?.data?.[fieldName]?.item || null;
-
-        const row = { index: b.index, result: b.result, aemId: b.aemId, ok: !!item, fieldName, argName };
-
-        if (item) {
-          return { kind: "data", key: `${b.index}:${b.result}`, item, row };
-        }
-
-        return {
-          kind: "warn",
-          warning: `AEM fetch succeeded but returned no item for ${b.result} ${b.aemId} (field=${fieldName}, arg=${argName}).`,
-          row,
-        };
-      } catch (e) {
-        const errErrors = e?.data?.errors || null;
-
-        return {
-          kind: "warn",
-          warning: `Failed to fetch AEM ${b.result} ${b.aemId}: ${e.message}${errErrors ? ` | errors=${safeJsonSnippet(errErrors)}` : ""}`,
-          row: { index: b.index, result: b.result, aemId: b.aemId, ok: false, fieldName, argName },
-        };
-      }
+      return { ok: true, skey, model, binding, item, fieldName, argName };
+    } catch (e) {
+      const errErrors = e?.data?.errors || null;
+      return {
+        ok: false,
+        skey,
+        model,
+        binding,
+        fieldName,
+        argName,
+        warning: `Failed to fetch AEM ${binding.result} ${binding.aemId}: ${e.message}${
+          errErrors ? ` | errors=${safeJsonSnippet(errErrors)}` : ""
+        }`,
+      };
     }
   });
 
-  // Fold results into outputs (stable order by binding index)
+  // Apply results back into aemPrefetch + aemPrefetchDataByStreamKey
+  const byRowKey = new Map(aemPrefetch.map((r) => [`${r.index}:${r.result}`, r]));
+
   for (const r of results) {
     if (!r) continue;
-    if (r.kind === "data") {
-      aemPrefetchData[r.key] = r.item;
-      aemPrefetch.push(r.row);
-    } else if (r.kind === "warn") {
-      aemWarnings.push(r.warning);
-      aemPrefetch.push(r.row);
-    } else if (r.kind === "prefetch") {
-      aemPrefetch.push(r.row);
+    if (r.ok) {
+      hydratedCount++;
+      aemPrefetchDataByStreamKey[r.skey] = r.item;
+
+      const row = byRowKey.get(r.skey);
+      if (row) {
+        row.ok = true;
+        row.source = "aemHydrate";
+        row.model = r.model;
+        row.fieldName = r.fieldName;
+        row.argName = r.argName;
+        delete row.reason;
+      }
+    } else {
+      if (r.warning) aemWarnings.push(r.warning);
+      const row = byRowKey.get(r.skey);
+      if (row) {
+        row.ok = false;
+        row.source = "aemHydrateFailed";
+        row.model = r.model;
+        row.fieldName = r.fieldName;
+        row.argName = r.argName;
+        row.reason = row.reason || "Hydration failed";
+      }
     }
   }
 
-  // Maintain appearance order no matter what finished first
   aemPrefetch.sort((x, y) => (x.index ?? 0) - (y.index ?? 0));
 
-  return { aemBindingsEncountered, aemPrefetch, aemCacheKeys, aemWarnings, aemPrefetchData };
+  return {
+    aemBindingsEncountered,
+    aemPrefetch,
+    aemCacheKeys,
+    aemWarnings,
+    aemPrefetchDataByStreamKey,
+    streamHits,
+    cacheHits,
+    hydratedCount,
+  };
 }
 
-/* ============================================================================
+/* =============================================================================
  * Main
- * ============================================================================
- */
+ * ============================================================================= */
 
 async function main(params) {
   if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
@@ -788,7 +946,7 @@ async function main(params) {
       const html = params.html;
 
       const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
-      const aem = await prefetchAemBindings({ stitchedHtml: stitched.stitchedHtml, params });
+      const aem = await resolveAemBindingValues({ stitchedHtml: stitched.stitchedHtml, params });
 
       return ok({
         mode: "html",
@@ -796,6 +954,7 @@ async function main(params) {
         html,
         stitchedHtml: stitched.stitchedHtml,
         etag: null,
+
         fragmentsResolved: stitched.fragmentsResolvedAll,
         resolutionWarnings: stitched.resolutionWarnings,
 
@@ -803,7 +962,20 @@ async function main(params) {
         aemPrefetch: aem.aemPrefetch,
         aemCacheKeys: aem.aemCacheKeys,
         aemWarnings: aem.aemWarnings,
-        aemPrefetchData: aem.aemPrefetchData,
+
+        // This is what your UI should cache + send back on next render:
+        // - Keyed by model:id (via aemCacheKeys list)
+        // You can build that client-side by pairing aemPrefetch rows with binding aemId+model and looking up
+        // aemPrefetchDataByStreamKey (below).
+        aemPrefetchDataByStreamKey: aem.aemPrefetchDataByStreamKey,
+
+        // Helpful counters for perf validation
+        perf: {
+          streamHits: aem.streamHits,
+          cacheHits: aem.cacheHits,
+          hydratedCount: aem.hydratedCount,
+          totalBindings: aem.aemBindingsEncountered?.length || 0,
+        },
       });
     }
 
@@ -834,7 +1006,7 @@ async function main(params) {
     const etag = pickEtag(templateResp?.headers || null);
 
     const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
-    const aem = await prefetchAemBindings({ stitchedHtml: stitched.stitchedHtml, params });
+    const aem = await resolveAemBindingValues({ stitchedHtml: stitched.stitchedHtml, params });
 
     return ok({
       mode: "templateId",
@@ -842,6 +1014,7 @@ async function main(params) {
       html,
       stitchedHtml: stitched.stitchedHtml,
       etag,
+
       fragmentsResolved: stitched.fragmentsResolvedAll,
       resolutionWarnings: stitched.resolutionWarnings,
 
@@ -849,7 +1022,14 @@ async function main(params) {
       aemPrefetch: aem.aemPrefetch,
       aemCacheKeys: aem.aemCacheKeys,
       aemWarnings: aem.aemWarnings,
-      aemPrefetchData: aem.aemPrefetchData,
+      aemPrefetchDataByStreamKey: aem.aemPrefetchDataByStreamKey,
+
+      perf: {
+        streamHits: aem.streamHits,
+        cacheHits: aem.cacheHits,
+        hydratedCount: aem.hydratedCount,
+        totalBindings: aem.aemBindingsEncountered?.length || 0,
+      },
     });
   } catch (e) {
     return serverError(e?.message || "Unexpected error", { stack: e?.stack });
