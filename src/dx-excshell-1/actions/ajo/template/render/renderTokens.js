@@ -1,39 +1,17 @@
-// File: src/dx-excshell-1/actions/ajo/template/render/renderTokens.js
-
-const { renderMiniAjo } = require("./miniAjoRuntime");
-
-/**
- * Preview sanitizer:
- * Remove AJO/Handlebars syntax from rendered preview HTML only.
- * (Canonical AJO HTML remains untouched; this is for iframe preview output.)
- *
- * IMPORTANT:
- * - DO NOT remove generic {{ ... }} tokens; those include legitimate {{cf.*}}/{{prbProperties.*}} references.
- * - Only strip:
- *   1) ACR wrapped blocks
- *   2) Handlebars comments ({{!-- ... --}})
- *   3) Liquid tags ({% ... %})
- */
-function stripAjoSyntax(html) {
-  if (!html || typeof html !== "string") return html;
-
-  let out = html;
-
-  // 1) Remove ACR wrapped blocks:
-  const acrBlockRe =
-    /{{!--\s*\[acr-start[\s\S]*?}}[\s\S]*?{{!--[\s\S]*?\[acr-end[\s\S]*?}}/gim;
-  out = out.replace(acrBlockRe, "");
-
-  // 2) Remove any remaining Handlebars comments: {{!-- ... --}}
-  const hbCommentRe = /{{!--[\s\S]*?--}}/g;
-  out = out.replace(hbCommentRe, "");
-
-  // 3) Remove Liquid tags: {% ... %}
-  const liquidTagRe = /{%\s*[\s\S]*?\s*%}/g;
-  out = out.replace(liquidTagRe, "");
-
-  return out;
-}
+// File: src/dx-excshell-1/actions/ajo/template/render/miniAjoRuntime.js
+//
+// Minimal evaluator for a small subset of AJO-style handlebars blocks.
+// Goals:
+//  - Support {{#each <path> as |alias|}} ... {{/each}} (WITH nesting)
+//  - Inside each block, resolve un-namespaced tokens like:
+//      {{{bodyCopy}}}, {{bodyCopy}}, {{{this}}}, {{{alias}}}, {{alias.html}}, etc.
+//  - Do NOT attempt full Handlebars; do NOT touch {{fragment ...}} tags.
+//  - Be safe: if parsing fails, leave input unchanged.
+//  - Best-effort preview: if the each list can't be resolved, leave the block untouched.
+//
+// IMPORTANT CONTEXT SHAPE:
+// renderTokens passes ctx shaped like { cf: {...}, prbProperties: {...}, styles: {...} }
+// so templates can do: {{#each cf.bodyCopy}} ... {{/each}}
 
 function escapeHtml(s) {
   return String(s ?? "")
@@ -55,18 +33,16 @@ function getByPath(obj, path) {
 }
 
 /**
- * Coercion rules to make preview feel closer to AJO:
- * - arrays concatenate their items’ coerced values
- * - object with html/plaintext favors html/plaintext
- * - object with _path favors _path
+ * AJO-like coercion for "printable" values:
+ * - primitives => String
+ * - object with html/plaintext => favor html, then plaintext
+ * - object with _path => _path
+ * - arrays => join coerced elements (no separator)
  */
 function coerceValue(val) {
   if (val == null) return "";
 
-  if (Array.isArray(val)) {
-    // No separator to avoid inserting unexpected whitespace into HTML
-    return val.map(coerceValue).join("");
-  }
+  if (Array.isArray(val)) return val.map(coerceValue).join("");
 
   if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") return String(val);
 
@@ -74,7 +50,6 @@ function coerceValue(val) {
     if (typeof val._path === "string") return val._path;
     if (val._path && typeof val._path === "object" && typeof val._path._path === "string") return val._path._path;
 
-    // MultiFormatString-like
     if (typeof val.html === "string") return val.html;
     if (typeof val.plaintext === "string") return val.plaintext;
 
@@ -88,321 +63,159 @@ function coerceValue(val) {
   return "";
 }
 
-function replaceNamespaceVars(segment, namespace, ctx) {
-  if (!segment || !ctx) return segment;
+/**
+ * Resolve a "token path" against:
+ * - alias var (if token begins with alias.)
+ * - localCtx (the current each item)
+ * - rootCtx (the namespace root passed from renderTokens, e.g. {cf, prbProperties, styles})
+ */
+function resolveTokenValue({ tokenPath, rootCtx, localCtx, aliasName, aliasObj }) {
+  const p = String(tokenPath || "").trim();
+  if (!p) return undefined;
 
-  const triple = new RegExp(`\\{\\{\\{\\s*${namespace}\\.([a-zA-Z0-9_$.]+)\\s*\\}\\}\\}`, "g");
-  const dbl = new RegExp(`\\{\\{\\s*${namespace}\\.([a-zA-Z0-9_$.]+)\\s*\\}\\}`, "g");
+  if (p === "this") return localCtx;
 
-  let out = segment.replace(triple, (_m, path) => {
-    const v = coerceValue(getByPath(ctx, path));
-    return v; // raw
+  if (aliasName && (p === aliasName || p.startsWith(aliasName + "."))) {
+    const sub = p === aliasName ? "" : p.slice(aliasName.length + 1);
+    return sub ? getByPath(aliasObj, sub) : aliasObj;
+  }
+
+  if (localCtx && typeof localCtx === "object") {
+    const vLocal = getByPath(localCtx, p);
+    if (vLocal !== undefined) return vLocal;
+
+    // Convenience: in a bodyCopy loop, {{{bodyCopy}}} should print the item
+    if (p === "bodyCopy") return localCtx;
+  }
+
+  return getByPath(rootCtx, p);
+}
+
+function replaceSimpleTokens(segment, { rootCtx, localCtx, aliasName, aliasObj }) {
+  if (!segment || typeof segment !== "string") return segment;
+
+  const triple = /\{\{\{\s*([a-zA-Z_][a-zA-Z0-9_$.]*)\s*\}\}\}/g;
+  const dbl = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_$.]*)\s*\}\}/g;
+
+  let out = segment.replace(triple, (_m, tokenPath) => {
+    const v = resolveTokenValue({ tokenPath, rootCtx, localCtx, aliasName, aliasObj });
+    return coerceValue(v);
   });
 
-  out = out.replace(dbl, (_m, path) => {
-    const v = coerceValue(getByPath(ctx, path));
-    return escapeHtml(v);
+  out = out.replace(dbl, (_m, tokenPath) => {
+    const v = resolveTokenValue({ tokenPath, rootCtx, localCtx, aliasName, aliasObj });
+    return escapeHtml(coerceValue(v));
   });
 
   return out;
 }
 
 /**
- * Determine a "default" context for a namespace:
- * - first hydrated binding in appearance order (by index) that has a value
+ * Find the matching {{/each}} for an opening {{#each ...}} starting at openEnd,
+ * correctly handling nested {{#each}} blocks.
  */
-function pickDefaultCtxForNamespace({ namespace, aemBindingsEncountered, dataByStreamKey }) {
-  const binds = (Array.isArray(aemBindingsEncountered) ? aemBindingsEncountered : [])
-    .filter((b) => b?.result === namespace)
-    .slice()
-    .sort((a, b) => Number(a.index) - Number(b.index));
+function findMatchingEachClose(html, openEnd) {
+  const tagRe = /{{\s*(#each\b[^}]*|\/each)\s*}}/g;
+  tagRe.lastIndex = openEnd;
 
-  for (const b of binds) {
-    const sk = `${b.index}:${b.result}`;
-    const v = dataByStreamKey?.[sk];
-    if (v && typeof v === "object") return v;
+  let depth = 1;
+  while (true) {
+    const m = tagRe.exec(html);
+    if (!m) return null;
+
+    const raw = m[1] || "";
+    if (raw.startsWith("#each")) depth += 1;
+    else if (raw === "/each") depth -= 1;
+
+    if (depth === 0) {
+      return { closeStart: m.index, closeEnd: tagRe.lastIndex };
+    }
   }
-  return null;
 }
 
-/**
- * Styles context derivation:
- */
-function deriveStylesContext({ prbCtx, cfCtx }) {
-  const prbStyle = prbCtx?.brandStyle && typeof prbCtx.brandStyle === "object" ? prbCtx.brandStyle : null;
+function renderEachBlocks(html, rootCtx, depth, maxDepth) {
+  if (!html || typeof html !== "string") return html;
+  if (depth >= maxDepth) return html;
 
-  const cfOverride =
-    cfCtx?.forceBrandStylingLeaveBlankToInheritContextualBrandStyle &&
-    typeof cfCtx.forceBrandStylingLeaveBlankToInheritContextualBrandStyle === "object"
-      ? cfCtx.forceBrandStylingLeaveBlankToInheritContextualBrandStyle
-      : null;
+  const eachOpenRe = /{{\s*#each\s+([a-zA-Z0-9_$.]+)(?:\s+as\s+\|\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\|)?\s*}}/g;
 
-  return cfOverride || prbStyle || null;
-}
-
-/**
- * Build the root context for the mini AJO runtime.
- *
- * CRITICAL:
- * Many templates assume the binding tag establishes an implicit "current" object,
- * and then reference fields un-namespaced (e.g. {{#each bodyCopy}}).
- *
- * So we:
- * - spread localCtx at the top-level for un-namespaced access
- * - expose it as {{this.*}} as well
- * - ALSO keep canonical namespaces { cf, prbProperties, styles } so {{#each cf.bodyCopy}} works too
- */
-function buildMiniAjoRootCtx({ cfCtx, prbCtx, stylesCtx, localCtx }) {
-  const local = localCtx && typeof localCtx === "object" ? localCtx : null;
-
-  return {
-    // allow templates to use {{this.*}} if they want
-    this: local || {},
-
-    // allow un-namespaced access like {{#each bodyCopy}} / {{headlineText}}
-    ...(local || {}),
-
-    // canonical namespaces
-    cf: cfCtx && typeof cfCtx === "object" ? cfCtx : {},
-    prbProperties: prbCtx && typeof prbCtx === "object" ? prbCtx : {},
-    styles: stylesCtx && typeof stylesCtx === "object" ? stylesCtx : {},
-  };
-}
-
-function renderNamespaceByBindingOrder({
-  html,
-  namespace,
-  bindings,
-  dataByStreamKey,
-  defaultCtx,
-  defaultPrbCtx,
-  defaultCfCtx,
-}) {
-  if (!html) return html;
-
-  const binds = (Array.isArray(bindings) ? bindings : [])
-    .filter((b) => b?.result === namespace && typeof b?.rawTag === "string")
-    .slice()
-    .sort((a, b) => Number(a.index) - Number(b.index));
-
-  // If no binding tags for this namespace, still attempt a global replace using defaultCtx
-  if (!binds.length) {
-    if (!defaultCtx) return html;
-
-    const miniRoot = buildMiniAjoRootCtx({
-      cfCtx: namespace === "cf" ? defaultCtx : defaultCfCtx,
-      prbCtx: namespace === "prbProperties" ? defaultCtx : defaultPrbCtx,
-      stylesCtx: deriveStylesContext({
-        prbCtx: namespace === "prbProperties" ? defaultCtx : defaultPrbCtx,
-        cfCtx: namespace === "cf" ? defaultCtx : defaultCfCtx,
-      }),
-      localCtx: defaultCtx,
-    });
-
-    const maybeExpanded = renderMiniAjo(html, miniRoot);
-    return replaceNamespaceVars(maybeExpanded, namespace, defaultCtx);
-  }
-
-  let cursor = 0;
   let out = "";
-  let currentCtx = null;
-
-  for (const b of binds) {
-    const tag = b.rawTag;
-    const tagPos = html.indexOf(tag, cursor);
-    if (tagPos < 0) continue;
-
-    let before = html.slice(cursor, tagPos);
-
-    const effectiveCtx = currentCtx || defaultCtx;
-
-    const miniRoot = buildMiniAjoRootCtx({
-      cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
-      prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
-      stylesCtx: deriveStylesContext({
-        prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
-        cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
-      }),
-      localCtx: effectiveCtx,
-    });
-
-    // Expand minimal AJO blocks (e.g., {{#each cf.bodyCopy}} OR {{#each bodyCopy}}) BEFORE namespaced replacements
-    before = renderMiniAjo(before, miniRoot);
-
-    out += replaceNamespaceVars(before, namespace, effectiveCtx);
-
-    // strip binding tag from preview output (we only needed it for ordering)
-    out += "";
-
-    cursor = tagPos + tag.length;
-
-    const skey = `${b.index}:${b.result}`;
-    const nextCtx = dataByStreamKey?.[skey] ?? null;
-    currentCtx = nextCtx && typeof nextCtx === "object" ? nextCtx : currentCtx; // keep last good ctx
-  }
-
-  let tail = html.slice(cursor);
-
-  const effectiveCtx = currentCtx || defaultCtx;
-  const miniRoot = buildMiniAjoRootCtx({
-    cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
-    prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
-    stylesCtx: deriveStylesContext({
-      prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
-      cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
-    }),
-    localCtx: effectiveCtx,
-  });
-
-  tail = renderMiniAjo(tail, miniRoot);
-  out += replaceNamespaceVars(tail, namespace, effectiveCtx);
-
-  return out;
-}
-
-/**
- * Replace {{styles.*}} by binding order, with default fallback.
- */
-function resolveStylesByBindings({
-  stitchedHtml,
-  aemBindingsEncountered,
-  aemPrefetchDataByStreamKey,
-  defaultPrbCtx,
-  defaultCfCtx,
-}) {
-  if (!stitchedHtml) return stitchedHtml;
-
-  const binds = (Array.isArray(aemBindingsEncountered) ? aemBindingsEncountered : [])
-    .filter((b) => b?.result === "prbProperties" || b?.result === "cf")
-    .slice()
-    .sort((a, b) => Number(a.index) - Number(b.index));
-
-  // If no bindings at all, try a global styles replacement from defaults
-  if (!binds.length) {
-    const styles = deriveStylesContext({ prbCtx: defaultPrbCtx, cfCtx: defaultCfCtx });
-    if (!styles) return stitchedHtml;
-
-    const miniRoot = buildMiniAjoRootCtx({
-      cfCtx: defaultCfCtx,
-      prbCtx: defaultPrbCtx,
-      stylesCtx: styles,
-      localCtx: styles,
-    });
-
-    const maybeExpanded = renderMiniAjo(stitchedHtml, miniRoot);
-    return replaceNamespaceVars(maybeExpanded, "styles", styles);
-  }
-
   let cursor = 0;
-  let out = "";
 
-  let currentPrb = null;
-  let currentCf = null;
-  let currentStyles = deriveStylesContext({ prbCtx: defaultPrbCtx, cfCtx: defaultCfCtx }) || null;
+  while (true) {
+    const m = eachOpenRe.exec(html);
+    if (!m) break;
 
-  for (const b of binds) {
-    const tag = b.rawTag;
-    const tagPos = stitchedHtml.indexOf(tag, cursor);
-    if (tagPos < 0) continue;
+    const openStart = m.index;
+    const openEnd = eachOpenRe.lastIndex;
 
-    let seg = stitchedHtml.slice(cursor, tagPos);
+    const path = m[1] || "";
+    const aliasName = m[2] || null;
 
-    const miniRoot = buildMiniAjoRootCtx({
-      cfCtx: currentCf || defaultCfCtx,
-      prbCtx: currentPrb || defaultPrbCtx,
-      stylesCtx: currentStyles,
-      localCtx: currentStyles,
-    });
+    const close = findMatchingEachClose(html, openEnd);
+    if (!close) {
+      out += html.slice(cursor);
+      return out;
+    }
 
-    seg = renderMiniAjo(seg, miniRoot);
-    out += replaceNamespaceVars(seg, "styles", currentStyles);
+    const { closeStart, closeEnd } = close;
 
-    // strip binding tag from preview output
-    out += "";
+    out += html.slice(cursor, openStart);
 
-    cursor = tagPos + tag.length;
+    const inner = html.slice(openEnd, closeStart);
+    const listVal = getByPath(rootCtx, path);
 
-    const streamKey = `${b.index}:${b.result}`;
-    const ctx = aemPrefetchDataByStreamKey?.[streamKey] ?? null;
+    // Best-effort: if we can't resolve, keep original block intact
+    if (listVal == null) {
+      out += html.slice(openStart, closeEnd);
+      cursor = closeEnd;
+      eachOpenRe.lastIndex = cursor;
+      continue;
+    }
 
-    if (b.result === "prbProperties" && ctx && typeof ctx === "object") currentPrb = ctx;
-    if (b.result === "cf" && ctx && typeof ctx === "object") currentCf = ctx;
+    const list = Array.isArray(listVal) ? listVal : [listVal];
 
-    currentStyles = deriveStylesContext({ prbCtx: currentPrb || defaultPrbCtx, cfCtx: currentCf || defaultCfCtx });
+    let renderedInner = "";
+    for (const item of list) {
+      // recurse first so nested loops render properly
+      let innerExpanded = renderEachBlocks(inner, rootCtx, depth + 1, maxDepth);
+
+      innerExpanded = replaceSimpleTokens(innerExpanded, {
+        rootCtx,
+        localCtx: item,
+        aliasName,
+        aliasObj: item,
+      });
+
+      renderedInner += innerExpanded;
+    }
+
+    out += renderedInner;
+
+    cursor = closeEnd;
+    eachOpenRe.lastIndex = cursor;
   }
 
-  let tail = stitchedHtml.slice(cursor);
+  out += html.slice(cursor);
+  return out;
+}
 
-  const tailRoot = buildMiniAjoRootCtx({
-    cfCtx: currentCf || defaultCfCtx,
-    prbCtx: currentPrb || defaultPrbCtx,
-    stylesCtx: currentStyles,
-    localCtx: currentStyles,
+function renderMiniAjo(htmlSegment, ctx) {
+  if (!htmlSegment || typeof htmlSegment !== "string") return htmlSegment;
+
+  const rootCtx = ctx && typeof ctx === "object" ? ctx : {};
+
+  let out = renderEachBlocks(htmlSegment, rootCtx, 0, 8);
+
+  // Replace any leftover simple tokens at root scope
+  out = replaceSimpleTokens(out, {
+    rootCtx,
+    localCtx: null,
+    aliasName: null,
+    aliasObj: null,
   });
-
-  tail = renderMiniAjo(tail, tailRoot);
-  out += replaceNamespaceVars(tail, "styles", currentStyles);
 
   return out;
 }
 
-function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aemPrefetchDataByStreamKey }) {
-  let out = stitchedHtml;
-
-  const defaultPrbCtx = pickDefaultCtxForNamespace({
-    namespace: "prbProperties",
-    aemBindingsEncountered,
-    dataByStreamKey: aemPrefetchDataByStreamKey,
-  });
-
-  const defaultCfCtx = pickDefaultCtxForNamespace({
-    namespace: "cf",
-    aemBindingsEncountered,
-    dataByStreamKey: aemPrefetchDataByStreamKey,
-  });
-
-  // styles first (derived from PRB/CF binding order)
-  out = resolveStylesByBindings({
-    stitchedHtml: out,
-    aemBindingsEncountered,
-    aemPrefetchDataByStreamKey,
-    defaultPrbCtx,
-    defaultCfCtx,
-  });
-
-  // then normal namespaces
-  out = renderNamespaceByBindingOrder({
-    html: out,
-    namespace: "prbProperties",
-    bindings: aemBindingsEncountered,
-    dataByStreamKey: aemPrefetchDataByStreamKey,
-    defaultCtx: defaultPrbCtx,
-    defaultPrbCtx,
-    defaultCfCtx,
-  });
-
-  out = renderNamespaceByBindingOrder({
-    html: out,
-    namespace: "cf",
-    bindings: aemBindingsEncountered,
-    dataByStreamKey: aemPrefetchDataByStreamKey,
-    defaultCtx: defaultCfCtx,
-    defaultPrbCtx,
-    defaultCfCtx,
-  });
-
-  // final sanitize for preview HTML
-  return stripAjoSyntax(out);
-}
-
-module.exports = {
-  stripAjoSyntax,
-  buildRenderedHtmlBestEffort,
-
-  // exported for potential tests / reuse
-  replaceNamespaceVars,
-  renderNamespaceByBindingOrder,
-  resolveStylesByBindings,
-  pickDefaultCtxForNamespace,
-  deriveStylesContext,
-};
+module.exports = { renderMiniAjo };
