@@ -6,7 +6,6 @@ const { fetchJson } = require("../../../_lib/fetchJson");
 const { requireIms } = require("../../../_lib/ims");
 
 // Only needed if you choose NOT to use a proxy for AEM GraphQL.
-// (Matches your aem-gql-demo / prb-list pattern.)
 let jwtAuth = null;
 try {
   jwtAuth = require("@adobe/jwt-auth");
@@ -52,10 +51,6 @@ function stripAjoPrefix(id) {
 
 /**
  * Build a clean GET-by-id URL from a base that might include query params.
- * Example base:
- *   https://platform.adobe.io/ajo/content/fragments?orderBy=-modifiedAt&limit=20
- * For GET-by-id we must drop query params:
- *   https://platform.adobe.io/ajo/content/fragments/<id>
  */
 function buildFragmentGetUrl(baseUrl, fragmentId) {
   if (!baseUrl) return null;
@@ -72,10 +67,6 @@ function buildFragmentGetUrl(baseUrl, fragmentId) {
 
 /**
  * Find AJO fragment ids referenced in template HTML.
- * Matches:
- *  - {{ fragment id="ajo:<uuid>" ... }}
- *  - {{fragment id='ajo:<uuid>' ...}}
- * Returns array of raw ids like "ajo:<uuid>".
  */
 function extractAjoFragmentIds(html) {
   if (!html || typeof html !== "string") return [];
@@ -207,10 +198,6 @@ function stitchFragmentsIntoHtml(html, fragmentsResolved) {
 
 /**
  * Resolve + stitch recursively up to a max depth (handles nested fragments).
- * Returns:
- *  - stitchedHtml
- *  - fragmentsResolvedAll (deduped by id)
- *  - resolutionWarnings
  */
 async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
   const maxDepth = Number(params.maxFragmentDepth || 5);
@@ -259,24 +246,12 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
 
 /**
  * Extract AEM fragment bindings from the HTML in-order.
- *
- * Captures:
- *  - aem id (uuid)
- *  - repoId
- *  - result ('prbProperties' | 'cf' | other)
- *  - args: any extra key=value pairs on the tag (best-effort)
- *
- * Example:
- *   {{fragment id='aem:<ID>?repoId=...' result='cf' firstName='' r1=r1 r2=r2}}
  */
 function extractAemBindings(html) {
   if (!html || typeof html !== "string") return [];
 
   const bindings = [];
 
-  // NOTE:
-  // - We keep this regex strict on id= and result=, but flexible about arg order.
-  // - We assume single OR double quotes for id and result values.
   const tagRe = /{{\s*fragment\b([^}]*)}}/gim;
 
   let m;
@@ -284,18 +259,15 @@ function extractAemBindings(html) {
   while ((m = tagRe.exec(html)) !== null) {
     const inside = m[1] || "";
 
-    // id='aem:<uuid>?repoId=...'
     const idMatch = inside.match(/\bid\s*=\s*(['"])(aem:[^'"]+)\1/i);
     if (!idMatch) continue;
     const rawId = idMatch[2];
 
-    // only handle aem:
     if (!rawId.toLowerCase().startsWith("aem:")) continue;
 
     const resultMatch = inside.match(/\bresult\s*=\s*(['"])([^'"]+)\1/i);
     const result = resultMatch ? resultMatch[2] : null;
 
-    // Parse the aem:<uuid>?repoId=... form
     let aemId = null;
     let repoId = null;
     try {
@@ -311,11 +283,6 @@ function extractAemBindings(html) {
       // ignore
     }
 
-    // Parse extra args (best effort). We ignore id= and result=.
-    // Handles:
-    //   key='value'
-    //   key="value"
-    //   key=value
     const args = {};
     const argRe = /\b([a-zA-Z_][a-zA-Z0-9_-]*)\s*=\s*(?:(['"])(.*?)\2|([^\s}]+))/g;
     let am;
@@ -343,16 +310,10 @@ function extractAemBindings(html) {
 
 /**
  * Build AEM GraphQL endpoint + headers.
- * Mirrors your aem-gql-demo / prb-list pattern.
- *
- * Supports two modes:
- * - proxy mode: params.USE_AEM_PROXY === "true" and params.AEM_GQL_PATH_PROXY is set
- * - direct mode: mint JWT and call AEM_AUTHOR + AEM_GQL_PATH
  */
 async function buildAemGraphqlClient(params) {
   const useProxy = params.USE_AEM_PROXY === "true";
 
-  // If you don't provide AEM config to this action, we simply won't prefetch.
   if (!params.AEM_GQL_PATH) {
     return { ok: false, reason: "Missing AEM_GQL_PATH", gqlUrl: null, headers: null };
   }
@@ -372,7 +333,6 @@ async function buildAemGraphqlClient(params) {
   const headers = { "content-type": "application/json" };
 
   if (!useProxy) {
-    // Need JWT auth
     if (!jwtAuth) return { ok: false, reason: "Missing @adobe/jwt-auth dependency", gqlUrl: null, headers: null };
 
     if (!params.IMS_HOST) return { ok: false, reason: "Missing IMS_HOST", gqlUrl: null, headers: null };
@@ -417,7 +377,6 @@ async function postGraphql({ gqlUrl, headers, query, variables, operationName })
     body: JSON.stringify(payload),
   });
 
-  // AEM GraphQL often returns HTTP 200 with errors[]
   if (data?.errors?.length) {
     const err = new Error("AEM GraphQL returned errors");
     err.status = 502;
@@ -430,7 +389,6 @@ async function postGraphql({ gqlUrl, headers, query, variables, operationName })
 
 /**
  * Introspect query fields once per invocation to find the correct "ById" field + arg name.
- * (Some environments differ: _id vs id, ById vs ByPath, etc.)
  */
 async function introspectQueryFields({ gqlUrl, headers }) {
   const query = `
@@ -463,7 +421,6 @@ async function introspectQueryFields({ gqlUrl, headers }) {
 }
 
 function pickBestByIdField(fields, modelName) {
-  // We try common names first, then fall back to any field containing modelName + "By"
   const preferredNames = [
     `${modelName}ById`,
     `${modelName}By_id`,
@@ -489,23 +446,19 @@ function pickBestByIdField(fields, modelName) {
 }
 
 function pickArgNameForByField(field, have) {
-  // have: { id: true, path: true/false }
   const args = field?.args || [];
   const argNames = args.map((a) => a.name);
 
-  // Prefer _id / id when we have an ID
   if (have.id) {
     if (argNames.includes("_id")) return "_id";
     if (argNames.includes("id")) return "id";
   }
 
-  // If we had path support in future:
   if (have.path) {
     if (argNames.includes("_path")) return "_path";
     if (argNames.includes("path")) return "path";
   }
 
-  // Fallback: first arg if exists
   return argNames[0] || null;
 }
 
@@ -569,8 +522,7 @@ async function introspectType({ gqlUrl, headers, typeName }) {
 }
 
 /**
- * From an introspected __type, pick "scalar-ish" field names (SCALAR/ENUM),
- * preferring common richtext/image-ish fields when present.
+ * From an introspected __type, pick "scalar-ish" field names (SCALAR/ENUM).
  */
 function pickScalarFieldNames(typeInfo, preferred = []) {
   const fields = typeInfo?.fields || [];
@@ -591,14 +543,13 @@ function pickScalarFieldNames(typeInfo, preferred = []) {
 
 /**
  * Build the unified selection set, ensuring subselections for MultiFormatString + Reference.
- * If schema introspection is allowed, we tailor it to what's actually available.
  */
 async function buildUnifiedSelectionSet({ gqlUrl, headers }) {
-  // Safe baseline that fixes your exact validation errors:
+  // Safe baseline:
   // - bodyCopy is [MultiFormatString] => bodyCopy { html plaintext }
-  // - primaryImage is Reference => primaryImage { _path }
+  // - primaryImage is Reference => primaryImage { path }  (your schema doesn't have _path)
   let bodyCopySub = "html plaintext";
-  let primaryImageSub = "_path";
+  let primaryImageSub = "path";
 
   try {
     const mfs = await introspectType({ gqlUrl, headers, typeName: "MultiFormatString" });
@@ -607,7 +558,7 @@ async function buildUnifiedSelectionSet({ gqlUrl, headers }) {
     const mfsFields = pickScalarFieldNames(mfs, ["html", "plaintext", "json", "raw"]);
     if (mfsFields.length) bodyCopySub = mfsFields.slice(0, 3).join(" ");
 
-    const refFields = pickScalarFieldNames(ref, ["_path", "_id", "_publishUrl", "_authorUrl", "path", "id"]);
+    const refFields = pickScalarFieldNames(ref, ["path", "_path", "_publishUrl", "_authorUrl", "_id", "id"]);
     if (refFields.length) primaryImageSub = refFields.slice(0, 3).join(" ");
   } catch {
     // Introspection might be blocked; fall back to baseline
@@ -630,10 +581,6 @@ async function buildUnifiedSelectionSet({ gqlUrl, headers }) {
 
 /**
  * Prefetch AEM objects for encountered bindings.
- * We do NOT inject into HTML yet; we just:
- * - verify bindings parse correctly
- * - verify AEM GraphQL can fetch them
- * - return detailed error information if it cannot
  */
 async function prefetchAemBindings({ stitchedHtml, params }) {
   const aemBindingsEncountered = extractAemBindings(stitchedHtml);
@@ -641,7 +588,7 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
   const aemWarnings = [];
   const aemPrefetch = [];
   const aemCacheKeys = [];
-  const aemPrefetchData = {}; // limited map for debugging
+  const aemPrefetchData = {};
 
   if (!aemBindingsEncountered.length) {
     return { aemBindingsEncountered, aemPrefetch, aemCacheKeys, aemWarnings, aemPrefetchData };
@@ -656,7 +603,6 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
     return { aemBindingsEncountered, aemPrefetch, aemCacheKeys, aemWarnings, aemPrefetchData };
   }
 
-  // Determine which query fields exist in this environment
   let queryFields = null;
   try {
     queryFields = await introspectQueryFields({ gqlUrl: client.gqlUrl, headers: client.headers });
@@ -669,7 +615,6 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
     queryFields = null;
   }
 
-  // Hard-coded selections for now (you said it’s OK to assume only these two models)
   const selectionForPrb = `
         _id
         _path
@@ -713,7 +658,6 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
     const cacheKey = `${model}:${b.aemId}`;
     aemCacheKeys.push(cacheKey);
 
-    // Pick the best query field + arg name
     let fieldName = null;
     let argName = null;
 
@@ -723,11 +667,9 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
       argName = field ? pickArgNameForByField(field, { id: true }) : null;
     }
 
-    // Fallback to your assumed "ById(_id:)" naming
     if (!fieldName) fieldName = `${model}ById`;
     if (!argName) argName = "_id";
 
-    // Build unified selection once per invocation
     if (model === "unifiedPromotionalContent") {
       if (!selectionForUnified) {
         selectionForUnified = await buildUnifiedSelectionSet({ gqlUrl: client.gqlUrl, headers: client.headers });
@@ -790,15 +732,9 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
 }
 
 /**
- * Render action:
- * Supports TWO modes:
- * 1) HTML mode (TemplateStudio preview): params.html
- * 2) templateId mode: fetch template from AJO by params.templateId
- *
- * Fragment resolution is ALWAYS ON; we return stitchedHtml.
- *
- * NEW (debug + next-step): we ALSO parse AEM bindings and attempt AEM GraphQL prefetch,
- * returning *detailed* GraphQL errors when things fail, so you can quickly fix schema/args.
+ * Render action main:
+ * - HTML mode: params.html
+ * - templateId mode: params.templateId
  */
 async function main(params) {
   if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
@@ -821,13 +757,11 @@ async function main(params) {
 
     const templateId = typeof params.templateId === "string" ? params.templateId : null;
 
-    // -------- Mode A: HTML provided directly (current UI behavior) --------
+    // -------- Mode A: HTML provided directly --------
     if (typeof params.html === "string" && params.html.trim()) {
       const html = params.html;
 
       const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
-
-      // NEW: parse + prefetch AEM bindings (does not alter HTML yet)
       const aem = await prefetchAemBindings({ stitchedHtml: stitched.stitchedHtml, params });
 
       return ok({
@@ -839,13 +773,10 @@ async function main(params) {
         fragmentsResolved: stitched.fragmentsResolvedAll,
         resolutionWarnings: stitched.resolutionWarnings,
 
-        // NEW AEM debug outputs
         aemBindingsEncountered: aem.aemBindingsEncountered,
         aemPrefetch: aem.aemPrefetch,
         aemCacheKeys: aem.aemCacheKeys,
         aemWarnings: aem.aemWarnings,
-
-        // Keep small debug payload; can be removed later
         aemPrefetchData: aem.aemPrefetchData,
       });
     }
@@ -875,9 +806,8 @@ async function main(params) {
     }
 
     const etag = pickEtag(templateResp?.headers || null);
-    const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
 
-    // NEW: parse + prefetch AEM bindings
+    const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
     const aem = await prefetchAemBindings({ stitchedHtml: stitched.stitchedHtml, params });
 
     return ok({
@@ -889,7 +819,6 @@ async function main(params) {
       fragmentsResolved: stitched.fragmentsResolvedAll,
       resolutionWarnings: stitched.resolutionWarnings,
 
-      // NEW AEM debug outputs
       aemBindingsEncountered: aem.aemBindingsEncountered,
       aemPrefetch: aem.aemPrefetch,
       aemCacheKeys: aem.aemCacheKeys,
@@ -897,11 +826,8 @@ async function main(params) {
       aemPrefetchData: aem.aemPrefetchData,
     });
   } catch (e) {
-    return serverError("Unhandled exception", {
-      message: e?.message,
-      status: e?.status,
+    return serverError(e?.message || "Unhandled error", {
       stack: e?.stack,
-      data: e?.data,
     });
   }
 }
