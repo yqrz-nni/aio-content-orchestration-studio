@@ -88,3 +88,35 @@ runtimeManifest:
             AEM_GQL_PATH: $AEM_GQL_PATH
             AEM_GQL_PATH_PROXY: $AEM_GQL_PATH_PROXY
             USE_AEM_PROXY: $USE_AEM_PROXY
+        aem-prb-get:
+          function: actions/aem/prb-get/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs:
+            IMS_HOST: $IMS_HOST
+            METASCOPES: $METASCOPES
+            TECH_ACCOUNT_ID: $TECH_ACCOUNT_ID
+            ORG_ID: $ORG_ID
+            CLIENT_ID: $CLIENT_ID
+            CLIENT_SECRET: $CLIENT_SECRET
+            PRIVATE_KEY: $PRIVATE_KEY
+            AEM_AUTHOR: $AEM_AUTHOR
+            AEM_GQL_PATH: $AEM_GQL_PATH
+            AEM_GQL_PATH_PROXY: $AEM_GQL_PATH_PROXY
+            USE_AEM_PROXY: $USE_AEM_PROXY
+        aem-unifiedpromo-get:
+          function: actions/aem/unifiedpromo-get/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs:
+            IMS_HOST: $IMS_HOST
+            METASCOPES: $METASCOPES
+            TECH_ACCOUNT_ID: $TECH_ACCOUNT_ID
+            ORG_ID: $ORG_ID
+            CLIENT_ID: $CLIENT_ID
+            CLIENT_SECRET: $CLIENT_SECRET
+            PRIVATE_KEY: $PRIVATE_KEY
+            AEM_AUTHOR: $AEM_AUTHOR
+            AEM_GQL_PATH: $AEM_GQL_PATH
+            AEM_GQL_PATH_PROXY: $AEM_GQL_PATH_PROXY
+            USE_AEM_PROXY: $USE_AEM_PROXY
