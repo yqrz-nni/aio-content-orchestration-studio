@@ -19,6 +19,122 @@ function pickEtag(headers = {}) {
   return headers.etag || headers.ETag || headers["etag"] || headers["ETag"] || null;
 }
 
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Attempt to build a "GET fragment by id" URL from existing config.
+// Prefer AJO_GET_FRAGMENT_URL if you add it; otherwise derive from AJO_FRAGMENTS_URL.
+function buildFragmentGetUrl(params, fragmentId) {
+  if (params.AJO_GET_FRAGMENT_URL) {
+    return `${params.AJO_GET_FRAGMENT_URL}/${fragmentId}`;
+  }
+  if (!params.AJO_FRAGMENTS_URL) return null;
+
+  // If AJO_FRAGMENTS_URL is ".../fragments", then GET is typically ".../fragments/<id>"
+  // If your env var differs, set AJO_GET_FRAGMENT_URL explicitly.
+  return `${params.AJO_FRAGMENTS_URL.replace(/\/$/, "")}/${fragmentId}`;
+}
+
+async function fetchAjoFragmentContent({ params, authHeader, imsOrg, fragmentId }) {
+  const url = buildFragmentGetUrl(params, fragmentId);
+  if (!url) {
+    const e = new Error("Missing AJO_FRAGMENTS_URL (or AJO_GET_FRAGMENT_URL) for fragment resolution");
+    e.status = 500;
+    throw e;
+  }
+
+  if (!params.AJO_API_KEY) {
+    const e = new Error("Missing AJO_API_KEY");
+    e.status = 500;
+    throw e;
+  }
+  if (!params.SANDBOX_NAME) {
+    const e = new Error("Missing SANDBOX_NAME");
+    e.status = 500;
+    throw e;
+  }
+
+  // NOTE: Accept header may need adjustment depending on your tenant/version.
+  // If you see 406/415 errors, we’ll tweak this.
+  const resp = await fetchRaw(url, {
+    method: "GET",
+    headers: {
+      Authorization: authHeader,
+      "x-gw-ims-org-id": imsOrg,
+      "x-api-key": params.AJO_API_KEY,
+      "x-sandbox-name": params.SANDBOX_NAME,
+      accept: "application/vnd.adobe.ajo.fragment.v1+json",
+    },
+  });
+
+  const data = resp?.data || null;
+  const content =
+    data?.fragment?.content ??
+    data?.content ??
+    null;
+
+  return {
+    id: fragmentId,
+    name: data?.name ?? null,
+    content,
+  };
+}
+
+async function inlineAjoFragments({ html, params, authHeader, imsOrg, maxDepth = 5 }) {
+  if (!html || typeof html !== "string") return { renderedHtml: html, trace: [] };
+
+  // Match: {{ fragment id="ajo:<uuid>" ... }}
+  // Also match single quotes, and allow arbitrary attrs.
+  const fragmentCallRe = /{{\s*fragment\s+[^}]*\bid\s*=\s*(["'])ajo:([^"']+)\1[^}]*}}/g;
+
+  const cache = new Map(); // fragmentId -> {id,name,content}
+  const trace = [];
+
+  let rendered = html;
+
+  for (let depth = 1; depth <= maxDepth; depth++) {
+    const matches = [...rendered.matchAll(fragmentCallRe)];
+    if (!matches.length) break;
+
+    // Unique fragment IDs this pass
+    const ids = [...new Set(matches.map((m) => m[2]))];
+
+    // Fetch any that aren’t cached
+    for (const id of ids) {
+      if (cache.has(id)) continue;
+
+      const frag = await fetchAjoFragmentContent({
+        params,
+        authHeader,
+        imsOrg,
+        fragmentId: id,
+      });
+
+      cache.set(id, frag);
+
+      trace.push({
+        type: "ajo-fragment",
+        id,
+        name: frag.name,
+        resolved: Boolean(frag.content),
+      });
+    }
+
+    // Replace all calls found in this pass
+    rendered = rendered.replace(fragmentCallRe, (fullMatch, quote, id) => {
+      const frag = cache.get(id);
+      if (!frag?.content) {
+        // Keep something visible + non-breaking for preview.
+        return `<!-- AJO fragment unresolved: ajo:${id} -->`;
+      }
+      return frag.content;
+    });
+  }
+
+  return { renderedHtml: rendered, trace };
+}
+
 /**
  * V1 "Render" action:
  * - Today: just fetches the template and returns the HTML body.
@@ -95,13 +211,40 @@ async function main(params) {
       etag = pickEtag(resp?.headers || null);
     }
 
-    return ok({
-      templateId,
-      html, // keep for backwards compatibility while we iterate
-      renderedHtml: html, // UI should prefer this going forward
-      etag,
-      // Next: trace, fragmentGraph, variableContext, etc.
-    });
+    // If we have AJO fragment calls, we can inline them for preview.
+    // This requires IMS context (token + org) because fragment fetch is authenticated.
+    let renderedHtml = html;
+    let trace = [];
+
+    const shouldInline =
+      params.inlineAjoFragments === true ||
+      params.inlineAjoFragments === "true" ||
+      // default ON for demo
+      params.inlineAjoFragments === undefined;
+
+    if (shouldInline) {
+      const ims = requireIms(params);
+      const authHeader = normalizeBearer(ims.token);
+
+      const stitched = await inlineAjoFragments({
+        html,
+        params,
+        authHeader,
+        imsOrg: ims.imsOrg,
+        maxDepth: Number(params.maxInlineDepth || 5),
+      });
+
+      renderedHtml = stitched.renderedHtml;
+      trace = stitched.trace;
+    }
+
+  return ok({
+    templateId,
+    html,            // original (pre-stitch)
+    renderedHtml,    // stitched (AJO fragments inlined)
+    etag,
+    trace,           // what got resolved
+  });
   } catch (e) {
     return serverError(e.message, {
       url: e.url,
