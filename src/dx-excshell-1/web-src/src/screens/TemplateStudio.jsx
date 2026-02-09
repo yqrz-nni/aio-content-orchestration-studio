@@ -1,3 +1,5 @@
+// File: src/dx-excshell-1/web-src/src/screens/TemplateStudio.jsx
+
 import React, { useContext, useEffect, useMemo, useState } from "react";
 import {
   Heading,
@@ -14,7 +16,7 @@ import {
   Divider,
   TextField,
   ComboBox,
-  StatusLight
+  StatusLight,
 } from "@adobe/react-spectrum";
 
 import actions from "../config.json";
@@ -55,41 +57,47 @@ function appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId }) {
   return html + insertion;
 }
 
-function buildLabelsForPrb(prbNumber) {
-  const labels = [];
-  if (prbNumber) labels.push(`PRB:${prbNumber}`);
-  return labels;
-}
-
 // If you already have a placeholder fragment in baseline, replace it deterministically.
-// If not found, we can prepend it (safe v1 behavior).
+// If not found, we refuse to inject automatically (baseline contract).
 function applyPrbToTemplateHtml(html, { prbCfId, repoId }) {
   if (!html) return html;
 
   const newCall = `{{fragment id='aem:${prbCfId}?repoId=${repoId}' result='prbProperties'}}`;
 
-  // Baseline guarantee: we should *always* find an existing prbProperties fragment call.
   // Replace any existing aem:* prbProperties call (handles single or double quotes).
   const re =
     /{{\s*fragment\s+id=(['"])aem:[^'"]+\?repoId=[^'"]+\1\s+result=(['"])prbProperties\2\s*}}/g;
 
   if (!re.test(html)) {
-    console.warn(
-      "Baseline HTML did not contain prbProperties fragment call; refusing to inject automatically."
-    );
+    console.warn("Baseline HTML did not contain prbProperties fragment call; refusing to inject automatically.");
     return html;
   }
 
   return html.replace(re, newCall);
 }
 
+/**
+ * Build a client-side cache of AEM “value objects” we already have in the UI.
+ * Server can use this to avoid AEM GraphQL hydration.
+ */
+function buildClientAemCache({ selectedPrb, modules, contentValueById }) {
+  const cache = {};
 
-  function computeTemplateNameWithPrb({ baseName, prbNumber, prbName }) {
-    if (!prbNumber) return baseName || "Baseline Clone";
-    const suffix = prbName ? ` — ${prbName}` : "";
-    // Example: "US26OZ00001 — Baseline Clone — Holiday Push"
-    return `${prbNumber} — ${baseName || "Baseline Clone"}${suffix}`;
+  // PRB cache
+  if (selectedPrb?.id && selectedPrb?.raw) {
+    cache[`prbProperties:${selectedPrb.id}`] = selectedPrb.raw;
   }
+
+  // Module CF cache (unified promotional content)
+  for (const m of modules || []) {
+    const cfId = m?.contentId;
+    if (!cfId) continue;
+    const val = contentValueById?.[cfId] || null;
+    if (val) cache[`unifiedPromotionalContent:${cfId}`] = val;
+  }
+
+  return cache;
+}
 
 export function TemplateStudio() {
   const ims = useContext(ImsContext);
@@ -101,18 +109,18 @@ export function TemplateStudio() {
   const [canonicalHtml, setCanonicalHtml] = useState("");
   const [previewHtml, setPreviewHtml] = useState("");
   const [isUpdatingPrb, setIsUpdatingPrb] = useState(false);
-  const [isUpdating, setIsUpdating] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [renderError, setRenderError] = useState("");
 
   // ---- Global context (PRB) ----
-  const [prbOptions, setPrbOptions] = useState([]); // [{id, label, path}]
+  const [prbOptions, setPrbOptions] = useState([]); // [{id, label, path, raw}]
   const [selectedPrbId, setSelectedPrbId] = useState(null);
   const [selectedPrb, setSelectedPrb] = useState(null); // {id,label,path,raw}
 
   // ---- Libraries ----
   const [vfItems, setVfItems] = useState([]); // [{id,name}]
-  const [contentOptions, setContentOptions] = useState([]); // [{id,label,path}]
+  const [contentOptions, setContentOptions] = useState([]); // [{id,label,path,raw?}]
+  const [contentValueById, setContentValueById] = useState({}); // id -> raw object
   const [selectedVfId, setSelectedVfId] = useState(null);
   const [selectedContentId, setSelectedContentId] = useState(null);
 
@@ -126,40 +134,40 @@ export function TemplateStudio() {
   // Actions
   // ---------------------------
 
-async function createTemplateFromBaseline() {
-  try {
-    const res = await actionWebInvoke(actions["ajo-template-create"], headers, {
-      name: templateName,
-      description: "Created from baseline via App Builder",
-      createFromBaseline: true,
-      prbNumber: selectedPrb?.raw?.prbNumber || null,
-      prbName: selectedPrb?.raw?.name || null,
-    });
+  async function createTemplateFromBaseline() {
+    try {
+      const res = await actionWebInvoke(actions["ajo-template-create"], headers, {
+        name: templateName,
+        description: "Created from baseline via App Builder",
+        createFromBaseline: true,
+        prbNumber: selectedPrb?.raw?.prbNumber || null,
+        prbName: selectedPrb?.raw?.name || null,
+      });
 
-    const id = res?.templateId;
-    setTemplateId(id);
+      const id = res?.templateId;
+      setTemplateId(id);
 
-    if (!id) {
-      console.warn("Template created but no templateId returned:", res);
-      return;
+      if (!id) {
+        console.warn("Template created but no templateId returned:", res);
+        return;
+      }
+
+      // Immediately fetch canonical HTML from AJO
+      const getRes = await actionWebInvoke(actions["ajo-template-get"], headers, {
+        templateId: id,
+      });
+
+      const html = getRes?.htmlBody;
+      if (!html) {
+        console.warn("Template fetched but no htmlBody found:", getRes);
+        return;
+      }
+
+      setCanonicalHtml(html);
+    } catch (e) {
+      console.error("Create-from-baseline failed:", e);
     }
-
-    // Immediately fetch canonical HTML from AJO
-    const getRes = await actionWebInvoke(actions["ajo-template-get"], headers, {
-      templateId: id,
-    });
-
-    const html = getRes?.htmlBody;
-    if (!html) {
-      console.warn("Template fetched but no htmlBody found:", getRes);
-      return;
-    }
-
-    setCanonicalHtml(html);
-  } catch (e) {
-    console.error("Create-from-baseline failed:", e);
   }
-}
 
   async function loadVfs() {
     const res = await actionWebInvoke(actions["ajo-vf-demo"], headers);
@@ -167,13 +175,7 @@ async function createTemplateFromBaseline() {
   }
 
   /**
-   * You’ll want TWO CF lists:
-   * - PRB Properties list (global)
-   * - Unified Promotional Content list (module content)
-   *
-   * For now, wire these to actions you’ll create/extend:
-   * - aem-prb-list
-   * - aem-unifiedpromo-list
+   * Global PRB list
    */
   async function loadPrbList() {
     const res = await actionWebInvoke(actions["aem-prb-list"]);
@@ -185,18 +187,18 @@ async function createTemplateFromBaseline() {
 
         return {
           id: it._id,
-          // Show both if we have both (helps paste PRB # but see friendly name)
-          label:
-            it.prbNumber && it.name
-              ? `${it.prbNumber} — ${it.name}`
-              : displayName,
+          label: it.prbNumber && it.name ? `${it.prbNumber} — ${it.name}` : displayName,
           path: it._path,
-          raw: it, // optional, but useful later
+          raw: it,
         };
       })
     );
   }
 
+  /**
+   * Module content list (Unified Promotional Content)
+   * We keep the raw objects so we can pass values down to renderContext without AEM calls.
+   */
   async function loadContentList() {
     try {
       const res = await actionWebInvoke(actions["aem-gql-demo"]);
@@ -207,24 +209,22 @@ async function createTemplateFromBaseline() {
           id: it._id,
           label: it.headlineText || it._path || it._id,
           path: it._path,
+          raw: it, // ✅ store raw for future use
         }))
       );
+
+      const map = {};
+      for (const it of items) map[it._id] = it;
+      setContentValueById(map);
     } catch (e) {
       console.error("Load Content CFs failed:", e);
     }
   }
 
-  async function setPrb(prbId) {
-    setSelectedPrbId(prbId);
-
-    const prbObj = prbOptions.find((o) => o.id === prbId) || null;
-    setSelectedPrb(prbObj);
-
-    if (!templateId || !prbObj) return;
-
-    await updateTemplateForPrb(prbObj);
-  }
-
+  /**
+   * FIXED: only one setPrb() implementation.
+   * Applies PRB to canonical HTML + persists via template-update.
+   */
   async function setPrb(prbId) {
     if (isUpdatingPrb) return;
 
@@ -239,7 +239,6 @@ async function createTemplateFromBaseline() {
       setIsUpdatingPrb(true);
 
       const prbNumber = prbObj?.raw?.prbNumber;
-      const prbName = prbObj?.raw?.name;
 
       const nextHtml = applyPrbToTemplateHtml(canonicalHtml, {
         prbCfId: prbObj.id,
@@ -250,11 +249,10 @@ async function createTemplateFromBaseline() {
 
       await actionWebInvoke(actions["ajo-template-update"], headers, {
         templateId,
-        name: `${prbNumber} — ${templateName}`,
-        labels: [`PRB:${prbNumber}`],
+        name: prbNumber ? `${prbNumber} — ${templateName}` : templateName,
+        labels: prbNumber ? [`PRB:${prbNumber}`] : [],
         html: nextHtml,
       });
-
     } catch (e) {
       console.error("PRB update failed:", e);
     } finally {
@@ -267,63 +265,99 @@ async function createTemplateFromBaseline() {
     if (!selectedVfId || !selectedContentId) return;
     if (!canonicalHtml) return;
 
-    enqueueTemplateUpdate(async () => {
-      const moduleId = `m_${Date.now()}`;
-      const nextModules = [...modules, { moduleId, vfId: selectedVfId, contentId: selectedContentId }];
-      setModules(nextModules);
+    const moduleId = `m_${Date.now()}`;
+    const nextModules = [...modules, { moduleId, vfId: selectedVfId, contentId: selectedContentId }];
+    setModules(nextModules);
 
-      const nextHtml = appendModuleToTemplateHtml(canonicalHtml, {
-        vfId: selectedVfId,
-        aemCfId: selectedContentId,
-        repoId,
-      });
-
-      setCanonicalHtml(nextHtml);
-
-      // Later, when you want module add to persist immediately:
-      // await actionWebInvoke(actions["ajo-template-update"], headers, { templateId, html: nextHtml });
+    const nextHtml = appendModuleToTemplateHtml(canonicalHtml, {
+      vfId: selectedVfId,
+      aemCfId: selectedContentId,
+      repoId,
     });
+
+    setCanonicalHtml(nextHtml);
+
+    // Later, when you want module add to persist immediately:
+    // await actionWebInvoke(actions["ajo-template-update"], headers, { templateId, html: nextHtml });
   }
 
+  /**
+   * Two-phase render:
+   * 1) Discover AEM binding appearance order (no AEM hydration).
+   * 2) Provide renderContext.bindingStream aligned to that order.
+   *
+   * Hydration fallback:
+   * - If any bindingStream entry has null value, we set allowAemHydrate=true on phase 2.
+   */
   async function renderPreview() {
     try {
       setRenderError("");
       setIsRendering(true);
 
       if (!canonicalHtml) {
-        setPreviewHtml(
-          "<html><body><p>No HTML loaded yet.</p></body></html>"
-        );
+        setPreviewHtml("<html><body><p>No HTML loaded yet.</p></body></html>");
         return;
       }
 
-      const renderContext = {
-        prb: {
-          id: selectedPrb?.id,
-          cfId: selectedPrb?.id, // (same as CF id in your current model)
-          prbNumber: selectedPrb?.raw?.prbNumber,
-          name: selectedPrb?.raw?.name,
-        },
-        repoId,
-      };
+      const cache = buildClientAemCache({ selectedPrb, modules, contentValueById });
 
-      const res = await actionWebInvoke(actions["ajo-template-render"], headers, {
+      // Phase 1: discover binding order (NO hydration; cheap)
+      const discovery = await actionWebInvoke(actions["ajo-template-render"], headers, {
         html: canonicalHtml,
-        renderContext,
+        allowAemHydrate: false,
+        renderContext: { repoId, cache },
       });
 
-      // Be tolerant about response shape while we’re iterating
-      const rendered =
-        res?.stitchedHtml ??
-        res?.renderedHtml ??
-        res?.html ??
-        null;
+      const encountered = Array.isArray(discovery?.aemBindingsEncountered)
+        ? discovery.aemBindingsEncountered
+        : [];
+
+      // Align cf bindings to modules in order (fungible cf namespace)
+      let cfIdx = 0;
+
+      const bindingStream = encountered.map((b) => {
+        const idx = b.index;
+        const result = b.result;
+
+        if (result === "prbProperties") {
+          return {
+            index: idx,
+            result,
+            value: selectedPrb?.raw || null,
+          };
+        }
+
+        if (result === "cf") {
+          const mod = modules?.[cfIdx++] || null;
+          const cfId = mod?.contentId || null;
+          const value = (cfId && cache[`unifiedPromotionalContent:${cfId}`]) || null;
+
+          return {
+            index: idx,
+            result,
+            value,
+            meta: { contentId: cfId, moduleId: mod?.moduleId },
+          };
+        }
+
+        return { index: idx, result, value: null };
+      });
+
+      const hasMissing = bindingStream.some((x) => !x?.value);
+      const allowAemHydrate = hasMissing; // ✅ hydrate only if we’re missing values
+
+      // Phase 2: actual render
+      const res = await actionWebInvoke(actions["ajo-template-render"], headers, {
+        html: canonicalHtml,
+        allowAemHydrate,
+        renderContext: { repoId, cache, bindingStream },
+      });
+
+      const rendered = res?.stitchedHtml ?? res?.renderedHtml ?? res?.html ?? null;
 
       if (!rendered || typeof rendered !== "string") {
         console.warn("Render action returned no rendered HTML:", res);
-        setPreviewHtml(
-          "<html><body><p>Render succeeded but returned no HTML.</p></body></html>"
-        );
+        setPreviewHtml("<html><body><p>Render succeeded but returned no HTML.</p></body></html>");
         return;
       }
 
@@ -373,7 +407,7 @@ async function createTemplateFromBaseline() {
                 onSelectionChange={(key) => setPrb(key)}
                 width="size-3600"
                 menuTrigger="focus"
-                >
+              >
                 {prbOptions.map((o) => (
                   <Item key={o.id}>{o.label}</Item>
                 ))}
@@ -400,7 +434,7 @@ async function createTemplateFromBaseline() {
               Load Content CFs
             </Button>
             <Button variant="primary" onPress={renderPreview} isDisabled={!canonicalHtml || isRendering}>
-                {isRendering ? "Rendering…" : "Render preview"}
+              {isRendering ? "Rendering…" : "Render preview"}
             </Button>
           </Flex>
         </Flex>
@@ -462,17 +496,17 @@ async function createTemplateFromBaseline() {
             <TabPanels>
               <Item key="preview">
                 <View borderWidth="thin" borderColor="light" borderRadius="small" height="62vh" padding="size-100">
-                    {renderError ? (
-                        <View marginBottom="size-100">
-                            <StatusLight variant="negative">{renderError}</StatusLight>
-                        </View>
-                    ) : null}
-                    <iframe
-                        title="Email Preview"
-                        style={{ width: "100%", height: "100%", border: "none" }}
-                        sandbox="allow-same-origin"
-                        srcDoc={previewHtml}
-                    />
+                  {renderError ? (
+                    <View marginBottom="size-100">
+                      <StatusLight variant="negative">{renderError}</StatusLight>
+                    </View>
+                  ) : null}
+                  <iframe
+                    title="Email Preview"
+                    style={{ width: "100%", height: "100%", border: "none" }}
+                    sandbox="allow-same-origin"
+                    srcDoc={previewHtml}
+                  />
                 </View>
               </Item>
 
