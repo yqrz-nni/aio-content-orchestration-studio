@@ -80,6 +80,26 @@ function safeJsonSnippet(obj, maxChars = 1200) {
 }
 
 /**
+ * Preview sanitizer:
+ * Remove AJO/Handlebars syntax from rendered preview HTML only.
+ * (Canonical AJO HTML remains untouched; this is for iframe preview output.)
+ */
+function stripAjoSyntax(html) {
+  if (!html || typeof html !== "string") return html;
+
+  // Remove any remaining fragment calls first
+  let out = html.replace(/{{\s*fragment\b[\s\S]*?}}/gim, "");
+
+  // Remove triple-mustache tokens
+  out = out.replace(/{{{[\s\S]*?}}}/g, "");
+
+  // Remove any remaining mustache tokens (#if, /if, else, variables, etc.)
+  out = out.replace(/{{[\s\S]*?}}/g, "");
+
+  return out;
+}
+
+/**
  * Simple concurrency limiter (no deps).
  * Runs `items` through `worker(item)` with at most `limit` in flight.
  * Preserves result order by index.
@@ -232,10 +252,7 @@ function stitchFragmentsIntoHtml(html, fragmentsResolved) {
     const rawId = `ajo:${frag.id}`;
     const replacement = frag.content || "";
 
-    const re = new RegExp(
-      `{{\\s*fragment\\b[^}]*\\bid\\s*=\\s*(['"])${escapeRegExp(rawId)}\\1[^}]*}}`,
-      "gi"
-    );
+    const re = new RegExp(`{{\\s*fragment\\b[^}]*\\bid\\s*=\\s*(['"])${escapeRegExp(rawId)}\\1[^}]*}}`, "gi");
 
     out = out.replace(re, replacement);
   }
@@ -759,7 +776,8 @@ function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStream
     const before = html.slice(cursor, tagPos);
     out += replaceNamespaceVars(before, namespace, currentCtx);
 
-    out += tag; // keep tag
+    // ✅ strip binding tag from preview output (we only needed it for ordering)
+    out += "";
 
     cursor = tagPos + tag.length;
 
@@ -813,7 +831,10 @@ function resolveStylesByBindings({ stitchedHtml, aemBindingsEncountered, aemPref
     if (tagPos < 0) continue;
 
     out += replaceNamespaceVars(stitchedHtml.slice(cursor, tagPos), "styles", currentStyles);
-    out += tag;
+
+    // ✅ strip binding tag from preview output
+    out += "";
+
     cursor = tagPos + tag.length;
 
     const streamKey = `${b.index}:${b.result}`;
@@ -854,7 +875,8 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     dataByStreamKey: aemPrefetchDataByStreamKey,
   });
 
-  return out;
+  // ✅ final sanitize for preview HTML
+  return stripAjoSyntax(out);
 }
 
 /* =============================================================================
@@ -985,9 +1007,7 @@ async function resolveAemBindingValues({ stitchedHtml, params }) {
   }
 
   const allowHydrate =
-    params.allowAemHydrate === undefined
-      ? true
-      : params.allowAemHydrate === true || params.allowAemHydrate === "true";
+    params.allowAemHydrate === undefined ? true : params.allowAemHydrate === true || params.allowAemHydrate === "true";
 
   if (!misses.length || !allowHydrate) {
     if (!allowHydrate && misses.length) {

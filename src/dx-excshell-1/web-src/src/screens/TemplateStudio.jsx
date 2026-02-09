@@ -327,6 +327,19 @@ function safeJson(obj, space = 2) {
   }
 }
 
+/**
+ * Optional preview-only sanitizer (belt + suspenders).
+ * If the action returns renderedHtml sanitized, this is mostly redundant.
+ * It also protects the fallback path (stitchedHtml + local resolution).
+ */
+function stripAjoSyntax(html) {
+  if (!html || typeof html !== "string") return html;
+  let out = html.replace(/{{\s*fragment\b[\s\S]*?}}/gim, "");
+  out = out.replace(/{{{[\s\S]*?}}}/g, "");
+  out = out.replace(/{{[\s\S]*?}}/g, "");
+  return out;
+}
+
 /* =============================================================================
  * Component
  * ============================================================================= */
@@ -608,7 +621,8 @@ export function TemplateStudio() {
         return;
       }
 
-      setPreviewHtml(best);
+      // ✅ sanitize preview output (action should already sanitize renderedHtml, but this protects fallback path)
+      setPreviewHtml(stripAjoSyntax(best));
 
       // Optional: if action returns cache keys and hydrated stream objects, you can merge into cache editor.
       // This is safe and purely a UX improvement; it does not affect canonicalHtml.
@@ -639,7 +653,7 @@ export function TemplateStudio() {
       setRenderError(e?.message || "Render failed");
 
       // ✅ Fallback: still show *something* useful
-      setPreviewHtml(canonicalHtml || "<html><body><p>Render failed.</p></body></html>");
+      setPreviewHtml(stripAjoSyntax(canonicalHtml || "<html><body><p>Render failed.</p></body></html>"));
     } finally {
       setIsRendering(false);
     }
@@ -894,7 +908,7 @@ export function TemplateStudio() {
                   </View>
 
                   {/* Warnings */}
-                  {(resolutionWarnings.length || aemWarnings.length) ? (
+                  {resolutionWarnings.length || aemWarnings.length ? (
                     <View marginBottom="size-150">
                       <Heading level={5}>Warnings</Heading>
                       <Divider size="S" marginY="size-100" />
