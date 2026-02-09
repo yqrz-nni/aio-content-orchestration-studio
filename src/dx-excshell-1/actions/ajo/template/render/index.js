@@ -87,14 +87,20 @@ function safeJsonSnippet(obj, maxChars = 1200) {
 function stripAjoSyntax(html) {
   if (!html || typeof html !== "string") return html;
 
-  // Remove any remaining fragment calls first
-  let out = html.replace(/{{\s*fragment\b[\s\S]*?}}/gim, "");
+  let out = html;
 
-  // Remove triple-mustache tokens
-  out = out.replace(/{{{[\s\S]*?}}}/g, "");
+  // 1) Remove ACR wrapped blocks:
+  // {{!-- [acr-start ... }}   ...anything...   {{!-- ... [acr-end ... }}
+  // - non-greedy, across newlines
+  // - keeps everything else (including {{cf.*}} tokens)
+  const acrBlockRe =
+    /{{!--\s*\[acr-start[\s\S]*?}}[\s\S]*?{{!--[\s\S]*?\[acr-end[\s\S]*?}}/gim;
 
-  // Remove any remaining mustache tokens (#if, /if, else, variables, etc.)
-  out = out.replace(/{{[\s\S]*?}}/g, "");
+  out = out.replace(acrBlockRe, "");
+
+  // 2) Remove Liquid tags: {% ... %}
+  const liquidTagRe = /{%\s*[\s\S]*?\s*%}/g;
+  out = out.replace(liquidTagRe, "");
 
   return out;
 }
