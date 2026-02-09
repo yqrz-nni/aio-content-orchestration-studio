@@ -1,20 +1,19 @@
 const fetch = require("node-fetch");
 
 /**
- * Standardized fetch wrapper for App Builder actions.
- *
- * - Always reads response text first (Adobe APIs sometimes return non-JSON errors)
- * - Attempts JSON parse automatically
- * - Throws structured errors on non-2xx responses
+ * Fetch wrapper that returns parsed JSON (or null).
+ * Throws with rich error info when response is not OK.
  */
 async function fetchJson(url, options = {}) {
   const res = await fetch(url, options);
   const text = await res.text();
 
-  let data;
+  let data = null;
   try {
     data = text ? JSON.parse(text) : null;
   } catch {
+    // Make debugging easier: if a "JSON" endpoint returns HTML/text,
+    // surface it via err.responseText on failure.
     data = null;
   }
 
@@ -27,7 +26,7 @@ async function fetchJson(url, options = {}) {
     throw err;
   }
 
-  return data ?? text;
+  return data;
 }
 
 module.exports = { fetchJson };
