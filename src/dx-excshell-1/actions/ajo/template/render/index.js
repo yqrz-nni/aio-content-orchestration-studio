@@ -112,13 +112,16 @@ async function fetchFragmentById({ baseUrl, fragmentIdRaw, headers }) {
     name: resp?.data?.name || null,
     type: resp?.data?.type || null,
     channels: resp?.data?.channels || null,
-    content: resp?.data?.fragment?.content ?? resp?.data?.fragment?.processedContent ?? null,
+    content:
+      resp?.data?.fragment?.content ??
+      resp?.data?.fragment?.processedContent ??
+      null,
   };
 }
 
 /**
- * Resolve fragment details for fragments referenced in html.
- * (No HTML rewriting yet — just returns fragment metadata + content for debugging / next step.)
+ * Always resolve fragment details referenced in html.
+ * (No HTML rewriting yet — just returns fragment metadata + content.)
  */
 async function resolveFragmentsFromHtml({ html, params, commonHeaders }) {
   const resolutionWarnings = [];
@@ -127,7 +130,7 @@ async function resolveFragmentsFromHtml({ html, params, commonHeaders }) {
   if (!params.AJO_GET_FRAGMENT_URL) {
     return {
       fragmentsResolved,
-      resolutionWarnings: ["resolveFragments=true but AJO_GET_FRAGMENT_URL is missing"],
+      resolutionWarnings: ["AJO_GET_FRAGMENT_URL is missing (cannot resolve fragments)."],
     };
   }
 
@@ -167,7 +170,7 @@ async function resolveFragmentsFromHtml({ html, params, commonHeaders }) {
  * 1) HTML mode (TemplateStudio preview): params.html
  * 2) templateId mode: fetch template from AJO by params.templateId
  *
- * Optional: resolveFragments=true to fetch fragment details referenced in HTML.
+ * Fragment resolution is ALWAYS ON.
  */
 async function main(params) {
   if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
@@ -188,32 +191,21 @@ async function main(params) {
       sandboxName: params.SANDBOX_NAME,
     });
 
-    const resolveFragments =
-      params.resolveFragments === true || params.resolveFragments === "true";
-
     const templateId = typeof params.templateId === "string" ? params.templateId : null;
 
     // -------- Mode A: HTML provided directly (current UI behavior) --------
     if (typeof params.html === "string" && params.html.trim()) {
       const html = params.html;
 
-      let fragmentsResolved = [];
-      let resolutionWarnings = [];
-
-      if (resolveFragments) {
-        const res = await resolveFragmentsFromHtml({ html, params, commonHeaders });
-        fragmentsResolved = res.fragmentsResolved;
-        resolutionWarnings = res.resolutionWarnings;
-      }
+      const res = await resolveFragmentsFromHtml({ html, params, commonHeaders });
 
       return ok({
         mode: "html",
         templateId,
         html,
         etag: null,
-        resolveFragments,
-        fragmentsResolved,
-        resolutionWarnings,
+        fragmentsResolved: res.fragmentsResolved,
+        resolutionWarnings: res.resolutionWarnings,
       });
     }
 
@@ -247,23 +239,15 @@ async function main(params) {
 
     const etag = pickEtag(templateResp?.headers || null);
 
-    let fragmentsResolved = [];
-    let resolutionWarnings = [];
-
-    if (resolveFragments) {
-      const res = await resolveFragmentsFromHtml({ html, params, commonHeaders });
-      fragmentsResolved = res.fragmentsResolved;
-      resolutionWarnings = res.resolutionWarnings;
-    }
+    const res = await resolveFragmentsFromHtml({ html, params, commonHeaders });
 
     return ok({
       mode: "templateId",
       templateId,
       html,
       etag,
-      resolveFragments,
-      fragmentsResolved,
-      resolutionWarnings,
+      fragmentsResolved: res.fragmentsResolved,
+      resolutionWarnings: res.resolutionWarnings,
     });
   } catch (e) {
     return serverError(e.message, {
