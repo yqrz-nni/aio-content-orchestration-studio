@@ -314,6 +314,7 @@ async function createTemplateFromBaseline() {
 
       // Be tolerant about response shape while we’re iterating
       const rendered =
+        res?.stitchedHtml ??
         res?.renderedHtml ??
         res?.html ??
         null;

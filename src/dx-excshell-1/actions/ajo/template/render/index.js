@@ -121,7 +121,6 @@ async function fetchFragmentById({ baseUrl, fragmentIdRaw, headers }) {
 
 /**
  * Always resolve fragment details referenced in html.
- * (No HTML rewriting yet — just returns fragment metadata + content.)
  */
 async function resolveFragmentsFromHtml({ html, params, commonHeaders }) {
   const resolutionWarnings = [];
@@ -164,13 +163,97 @@ async function resolveFragmentsFromHtml({ html, params, commonHeaders }) {
   return { fragmentsResolved, resolutionWarnings };
 }
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Replace {{ fragment id="ajo:..." ... }} occurrences with resolved HTML.
+ * We replace the entire handlebars tag, not the surrounding comments.
+ */
+function stitchFragmentsIntoHtml(html, fragmentsResolved) {
+  if (!html || !Array.isArray(fragmentsResolved) || fragmentsResolved.length === 0) {
+    return html;
+  }
+
+  let out = html;
+
+  for (const frag of fragmentsResolved) {
+    const rawId = `ajo:${frag.id}`;
+    const replacement = frag.content || "";
+
+    const re = new RegExp(
+      `{{\\s*fragment\\b[^}]*\\bid\\s*=\\s*(['"])${escapeRegExp(rawId)}\\1[^}]*}}`,
+      "gi"
+    );
+
+    out = out.replace(re, replacement);
+  }
+
+  return out;
+}
+
+/**
+ * Resolve + stitch recursively up to a max depth (handles nested fragments).
+ * Returns:
+ *  - stitchedHtml
+ *  - fragmentsResolvedAll (deduped by id)
+ *  - resolutionWarnings
+ */
+async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
+  const maxDepth = Number(params.maxFragmentDepth || 3);
+
+  let currentHtml = html;
+  let allWarnings = [];
+  const byId = new Map();
+
+  for (let depth = 0; depth < maxDepth; depth++) {
+    const { fragmentsResolved, resolutionWarnings } = await resolveFragmentsFromHtml({
+      html: currentHtml,
+      params,
+      commonHeaders,
+    });
+
+    allWarnings = allWarnings.concat(resolutionWarnings || []);
+
+    // No more fragments found (or none resolvable)
+    if (!fragmentsResolved || fragmentsResolved.length === 0) break;
+
+    // Dedup + detect whether this pass can make progress
+    let anyNew = false;
+    for (const f of fragmentsResolved) {
+      if (f && f.id && !byId.has(f.id)) {
+        byId.set(f.id, f);
+        anyNew = true;
+      }
+    }
+
+    const nextHtml = stitchFragmentsIntoHtml(currentHtml, fragmentsResolved);
+
+    // If stitching didn't change anything, stop
+    if (nextHtml === currentHtml) break;
+
+    currentHtml = nextHtml;
+
+    // If we didn't learn anything new AND html changed, keep going one more loop is fine,
+    // but generally this means we're just re-stitching the same set.
+    if (!anyNew && depth > 0) break;
+  }
+
+  return {
+    stitchedHtml: currentHtml,
+    fragmentsResolvedAll: [...byId.values()],
+    resolutionWarnings: allWarnings,
+  };
+}
+
 /**
  * Render action:
  * Supports TWO modes:
  * 1) HTML mode (TemplateStudio preview): params.html
  * 2) templateId mode: fetch template from AJO by params.templateId
  *
- * Fragment resolution is ALWAYS ON.
+ * Fragment resolution is ALWAYS ON, and we also return stitchedHtml.
  */
 async function main(params) {
   if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
@@ -197,15 +280,16 @@ async function main(params) {
     if (typeof params.html === "string" && params.html.trim()) {
       const html = params.html;
 
-      const res = await resolveFragmentsFromHtml({ html, params, commonHeaders });
+      const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
 
       return ok({
         mode: "html",
         templateId,
         html,
+        stitchedHtml: stitched.stitchedHtml,
         etag: null,
-        fragmentsResolved: res.fragmentsResolved,
-        resolutionWarnings: res.resolutionWarnings,
+        fragmentsResolved: stitched.fragmentsResolvedAll,
+        resolutionWarnings: stitched.resolutionWarnings,
       });
     }
 
@@ -225,10 +309,7 @@ async function main(params) {
 
     const data = templateResp?.data || null;
 
-    const html =
-      data?.template?.html?.body ??
-      data?.template?.html ??
-      null;
+    const html = data?.template?.html?.body ?? data?.template?.html ?? null;
 
     if (!html) {
       return serverError("Template fetched but no template.html found", {
@@ -239,15 +320,16 @@ async function main(params) {
 
     const etag = pickEtag(templateResp?.headers || null);
 
-    const res = await resolveFragmentsFromHtml({ html, params, commonHeaders });
+    const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
 
     return ok({
       mode: "templateId",
       templateId,
       html,
+      stitchedHtml: stitched.stitchedHtml,
       etag,
-      fragmentsResolved: res.fragmentsResolved,
-      resolutionWarnings: res.resolutionWarnings,
+      fragmentsResolved: stitched.fragmentsResolvedAll,
+      resolutionWarnings: stitched.resolutionWarnings,
     });
   } catch (e) {
     return serverError(e.message, {
