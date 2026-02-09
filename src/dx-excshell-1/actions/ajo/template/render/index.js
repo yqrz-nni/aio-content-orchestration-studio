@@ -4,7 +4,15 @@ const { ok, badRequest, serverError, corsPreflight } = require("../../../_lib/ht
 const { fetchRaw } = require("../../../_lib/fetchRaw");
 const { fetchJson } = require("../../../_lib/fetchJson");
 const { requireIms } = require("../../../_lib/ims");
-const auth = require("@adobe/jwt-auth");
+
+// Only needed if you choose NOT to use a proxy for AEM GraphQL.
+// (Matches your aem-gql-demo / prb-list pattern.)
+let jwtAuth = null;
+try {
+  jwtAuth = require("@adobe/jwt-auth");
+} catch {
+  // ok: if you always use proxy, this won't be needed
+}
 
 /**
  * Normalize Bearer token for Authorization header.
@@ -139,7 +147,7 @@ async function resolveFragmentsFromHtml({ html, params, commonHeaders }) {
 
   const fragmentIds = extractAjoFragmentIds(html);
 
-  const max = Number(params.maxFragmentsToResolve || 10);
+  const max = Number(params.maxFragmentsToResolve || 25);
   const toResolve = fragmentIds.slice(0, Math.max(0, max));
 
   const results = [];
@@ -205,7 +213,7 @@ function stitchFragmentsIntoHtml(html, fragmentsResolved) {
  *  - resolutionWarnings
  */
 async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
-  const maxDepth = Number(params.maxFragmentDepth || 3);
+  const maxDepth = Number(params.maxFragmentDepth || 5);
 
   let currentHtml = html;
   let allWarnings = [];
@@ -231,11 +239,9 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
     }
 
     const nextHtml = stitchFragmentsIntoHtml(currentHtml, fragmentsResolved);
-
     if (nextHtml === currentHtml) break;
 
     currentHtml = nextHtml;
-
     if (!anyNew && depth > 0) break;
   }
 
@@ -246,277 +252,455 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
   };
 }
 
-/* ------------------------------------------------------------------ */
-/* AEM BIND TAG PARSING (order-preserving)                              */
-/* ------------------------------------------------------------------ */
-
-/**
- * Parse "aem:<uuid>?repoId=..." into { aemId, repoId }.
+/* ============================================================================
+ * AEM (AJO handlebars: {{fragment id='aem:<ID>?repoId=...' result='cf'}})
+ * ============================================================================
  */
-function parseAemIdRaw(aemIdRaw) {
-  if (!aemIdRaw || typeof aemIdRaw !== "string") return { aemId: null, repoId: null };
-
-  const trimmed = aemIdRaw.trim();
-  const [beforeQ, qs] = trimmed.split("?");
-
-  const aemId = beforeQ.startsWith("aem:") ? beforeQ.slice("aem:".length) : beforeQ;
-
-  let repoId = null;
-  if (qs) {
-    const sp = new URLSearchParams(qs);
-    repoId = sp.get("repoId");
-  }
-
-  return { aemId, repoId };
-}
 
 /**
- * Parse extra key=value args from the inner fragment tag.
- * Example: result='cf' r1=r1 r2=r2 => { r1: "r1", r2: "r2" }
- */
-function parseAemCallArgs(inner) {
-  const args = {};
-  if (!inner) return args;
-
-  const kvRe = /\b([a-zA-Z_][\w.-]*)\s*=\s*(?:(['"])(.*?)\2|([^\s}]+))/g;
-  let m;
-  while ((m = kvRe.exec(inner)) !== null) {
-    const key = m[1];
-    const quotedVal = m[3];
-    const bareVal = m[4];
-
-    if (key === "id" || key === "result" || key === "mode" || key === "name") continue;
-
-    args[key] = quotedVal != null ? quotedVal : bareVal;
-  }
-
-  return args;
-}
-
-/**
- * Extract AEM binding fragment calls in document order.
+ * Extract AEM fragment bindings from the HTML in-order.
  *
- * Supports:
- *  {{fragment id='aem:<uuid>?repoId=...' result='cf' r1=r1 ...}}
- *  {{ fragment id="aem:<uuid>?repoId=..." result="prbProperties" }}
+ * Captures:
+ *  - aem id (uuid)
+ *  - repoId
+ *  - result ('prbProperties' | 'cf' | other)
+ *  - args: any extra key=value pairs on the tag (best-effort)
  *
- * Returns [{ raw, aemId, result, repoId, args, start, end, index }]
+ * Example:
+ *   {{fragment id='aem:<ID>?repoId=...' result='cf' firstName='' r1=r1 r2=r2}}
  */
-function extractAemBindingsInOrder(html) {
+function extractAemBindings(html) {
   if (!html || typeof html !== "string") return [];
 
-  const out = [];
-  const tagRe = /{{\s*fragment\b([\s\S]*?)}}/gi;
+  const bindings = [];
+
+  // NOTE:
+  // - We keep this regex strict on id= and result=, but flexible about arg order.
+  // - We assume single OR double quotes for id and result values.
+  const tagRe = /{{\s*fragment\b([^}]*)}}/gim;
 
   let m;
   let index = 0;
-
   while ((m = tagRe.exec(html)) !== null) {
-    const full = m[0];
-    const inner = m[1] || "";
-    const start = m.index;
-    const end = start + full.length;
+    const inside = m[1] || "";
 
-    const idMatch = inner.match(/\bid\s*=\s*(['"])(aem:[^'"]+)\1/i);
+    // id='aem:<uuid>?repoId=...'
+    const idMatch = inside.match(/\bid\s*=\s*(['"])(aem:[^'"]+)\1/i);
     if (!idMatch) continue;
+    const rawId = idMatch[2];
 
-    const idRaw = idMatch[2];
-    if (!idRaw.toLowerCase().startsWith("aem:")) continue;
+    // only handle aem:
+    if (!rawId.toLowerCase().startsWith("aem:")) continue;
 
-    const resultMatch = inner.match(/\bresult\s*=\s*(['"])([^'"]+)\1/i);
+    const resultMatch = inside.match(/\bresult\s*=\s*(['"])([^'"]+)\1/i);
     const result = resultMatch ? resultMatch[2] : null;
 
-    const parsed = parseAemIdRaw(idRaw);
-    const args = parseAemCallArgs(inner);
+    // Parse the aem:<uuid>?repoId=... form
+    let aemId = null;
+    let repoId = null;
+    try {
+      const noPrefix = rawId.slice("aem:".length);
+      const [idPart, queryPart] = noPrefix.split("?");
+      aemId = (idPart || "").trim() || null;
 
-    out.push({
-      raw: full,
-      aemIdRaw: idRaw,
-      aemId: parsed.aemId,
-      repoId: parsed.repoId,
+      if (queryPart) {
+        const sp = new URLSearchParams(queryPart);
+        repoId = sp.get("repoId") || null;
+      }
+    } catch {
+      // ignore
+    }
+
+    // Parse extra args (best effort). We ignore id= and result=.
+    // Handles:
+    //   key='value'
+    //   key="value"
+    //   key=value
+    const args = {};
+    const argRe = /\b([a-zA-Z_][a-zA-Z0-9_-]*)\s*=\s*(?:(['"])(.*?)\2|([^\s}]+))/g;
+    let am;
+    while ((am = argRe.exec(inside)) !== null) {
+      const k = am[1];
+      if (!k) continue;
+      if (k.toLowerCase() === "id" || k.toLowerCase() === "result") continue;
+
+      const v = am[3] !== undefined ? am[3] : am[4] !== undefined ? am[4] : "";
+      args[k] = v;
+    }
+
+    bindings.push({
+      index,
       result,
+      aemId,
+      repoId,
       args,
-      start,
-      end,
-      index: index++,
     });
+    index++;
   }
 
-  return out;
+  return bindings;
 }
 
-/* ------------------------------------------------------------------ */
-/* AEM GRAPHQL FETCH (optional prefetch, cached)                        */
-/* ------------------------------------------------------------------ */
-
-function buildAemGqlUrl(params) {
+/**
+ * Build AEM GraphQL endpoint + headers.
+ * Mirrors your aem-gql-demo / prb-list pattern.
+ *
+ * Supports two modes:
+ * - proxy mode: params.USE_AEM_PROXY === "true" and params.AEM_GQL_PATH_PROXY is set
+ * - direct mode: mint JWT and call AEM_AUTHOR + AEM_GQL_PATH
+ */
+async function buildAemGraphqlClient(params) {
   const useProxy = params.USE_AEM_PROXY === "true";
 
-  if (!params.AEM_GQL_PATH) throw new Error("Missing AEM_GQL_PATH");
-  if (!params.AEM_AUTHOR && !useProxy) throw new Error("Missing AEM_AUTHOR");
-  if (!params.AEM_GQL_PATH_PROXY && useProxy) throw new Error("Missing AEM_GQL_PATH_PROXY");
+  // If you don't provide AEM config to this action, we simply won't prefetch.
+  if (!params.AEM_GQL_PATH) {
+    return { ok: false, reason: "Missing AEM_GQL_PATH", gqlUrl: null, headers: null };
+  }
 
-  return useProxy
+  if (!useProxy && !params.AEM_AUTHOR) {
+    return { ok: false, reason: "Missing AEM_AUTHOR (and USE_AEM_PROXY is not true)", gqlUrl: null, headers: null };
+  }
+
+  if (useProxy && !params.AEM_GQL_PATH_PROXY) {
+    return { ok: false, reason: "Missing AEM_GQL_PATH_PROXY (USE_AEM_PROXY=true)", gqlUrl: null, headers: null };
+  }
+
+  const gqlUrl = useProxy
     ? params.AEM_GQL_PATH_PROXY
     : new URL(params.AEM_GQL_PATH, params.AEM_AUTHOR).toString();
-}
 
-async function buildAemHeaders(params) {
-  const useProxy = params.USE_AEM_PROXY === "true";
   const headers = { "content-type": "application/json" };
-  if (useProxy) return headers;
 
-  const required = [
-    "IMS_HOST",
-    "CLIENT_ID",
-    "CLIENT_SECRET",
-    "TECH_ACCOUNT_ID",
-    "ORG_ID",
-    "PRIVATE_KEY",
-    "METASCOPES",
-  ];
-  for (const k of required) {
-    if (!params[k]) throw new Error(`Missing ${k}`);
+  if (!useProxy) {
+    // Need JWT auth
+    if (!jwtAuth) return { ok: false, reason: "Missing @adobe/jwt-auth dependency", gqlUrl: null, headers: null };
+
+    if (!params.IMS_HOST) return { ok: false, reason: "Missing IMS_HOST", gqlUrl: null, headers: null };
+    if (!params.CLIENT_ID) return { ok: false, reason: "Missing CLIENT_ID", gqlUrl: null, headers: null };
+    if (!params.CLIENT_SECRET) return { ok: false, reason: "Missing CLIENT_SECRET", gqlUrl: null, headers: null };
+    if (!params.TECH_ACCOUNT_ID) return { ok: false, reason: "Missing TECH_ACCOUNT_ID", gqlUrl: null, headers: null };
+    if (!params.ORG_ID) return { ok: false, reason: "Missing ORG_ID", gqlUrl: null, headers: null };
+    if (!params.PRIVATE_KEY) return { ok: false, reason: "Missing PRIVATE_KEY", gqlUrl: null, headers: null };
+    if (!params.METASCOPES) return { ok: false, reason: "Missing METASCOPES", gqlUrl: null, headers: null };
+
+    const accessTokenResp = await jwtAuth({
+      imsHost: params.IMS_HOST,
+      clientId: params.CLIENT_ID,
+      clientSecret: params.CLIENT_SECRET,
+      technicalAccountId: params.TECH_ACCOUNT_ID,
+      orgId: params.ORG_ID,
+      privateKey: (params.PRIVATE_KEY || "").replace(/\\r\\n/g, "\n"),
+      metaScopes: params.METASCOPES,
+    });
+
+    const accessToken = accessTokenResp.access_token || accessTokenResp;
+
+    headers.Authorization = `Bearer ${accessToken}`;
+    headers["x-gw-ims-org-id"] = params.ORG_ID;
+    headers["x-api-key"] = params.CLIENT_ID;
   }
 
-  const accessTokenResp = await auth({
-    imsHost: params.IMS_HOST,
-    clientId: params.CLIENT_ID,
-    clientSecret: params.CLIENT_SECRET,
-    technicalAccountId: params.TECH_ACCOUNT_ID,
-    orgId: params.ORG_ID,
-    privateKey: (params.PRIVATE_KEY || "").replace(/\\r\\n/g, "\n"),
-    metaScopes: params.METASCOPES,
-  });
-
-  const accessToken = accessTokenResp.access_token || accessTokenResp;
-
-  headers.Authorization = `Bearer ${accessToken}`;
-  headers["x-gw-ims-org-id"] = params.ORG_ID;
-  headers["x-api-key"] = params.CLIENT_ID;
-
-  return headers;
+  return { ok: true, gqlUrl, headers, reason: null };
 }
 
 /**
- * Fetch AEM item by GraphQL using the explicit model queries you shared.
- * model: "prb" | "unifiedpromo"
+ * Fetch GraphQL JSON, but preserve and return data.errors if present.
  */
-async function fetchAemItemViaGraphql({ model, aemId, params }) {
-  const url = buildAemGqlUrl(params);
-  const headers = await buildAemHeaders(params);
+async function postGraphql({ gqlUrl, headers, query, variables, operationName }) {
+  const payload = { query };
+  if (variables) payload.variables = variables;
+  if (operationName) payload.operationName = operationName;
 
-  const query =
-    model === "prb"
-      ? `
-        query GetFragmentById($id: String!) {
-          prbPropertiesById(_id:$id) {
-            item {
-              _id
-              _path
-              name
-              prbNumber
-              startingDate
-              expirationDate
-              brandStyle {
-                font_family
-                email_banner_content_section_padding
-                email_banner_content_bottom_margin
-                email_banner_content_top_margin
-                email_banner_content_right_margin
-                email_banner_content_left_margin
-                email_body_copy_line_height
-                email_headline_line_height
-                font_size_heading_xs
-                font_size_heading_sm
-                font_size_heading_med
-                font_size_heading_lg
-                font_size_heading_x1
-                component_button_border_radius
-                divider_weight
-                divider_color
-                color_text_body
-                color_text_white
-                color_text_link_secondary
-                color_text_link_primary
-                color_background_tertiary
-                color_background_secondary
-                color_background_primary
-                color_text_tertiary
-                color_text_secondary
-                color_text_primary
-              }
-              brands {
-                isiLink
-                piLink
-                indication
-                homepageUrl
-                icon
-                displayName
-                name
-              }
-            }
-          }
-        }
-      `
-      : `
-        query GetFragmentById($id: String!) {
-          unifiedPromotionalContentById(_id:$id) {
-            item {
-              _id
-              _path
-              eyebrowText
-              headlineText
-              bodyCopy
-              primaryImage
-              ctaText
-              ctaLink
-              localFootnote
-              references { referenceNote }
-              localReferences { referenceNote }
-            }
-          }
-        }
-      `;
-
-  const data = await fetchJson(url, {
+  const data = await fetchJson(gqlUrl, {
     method: "POST",
     headers,
-    body: JSON.stringify({ query, variables: { id: aemId } }),
+    body: JSON.stringify(payload),
   });
 
+  // AEM GraphQL often returns HTTP 200 with errors[]
   if (data?.errors?.length) {
-    const e = new Error("AEM GraphQL returned errors");
-    e.status = 502;
-    e.data = data;
-    throw e;
+    const err = new Error("AEM GraphQL returned errors");
+    err.status = 502;
+    err.data = data;
+    throw err;
   }
 
-  const item =
-    model === "prb"
-      ? data?.data?.prbPropertiesById?.item
-      : data?.data?.unifiedPromotionalContentById?.item;
-
-  return item || null;
+  return data;
 }
 
 /**
- * Cached AEM fetch.
- * cacheKey: "prb:<id>" | "unifiedpromo:<id>"
+ * Introspect query fields once per invocation to find the correct "ById" field + arg name.
+ * (Some environments differ: _id vs id, ById vs ByPath, etc.)
  */
-async function fetchAemItemCached({ cache, binding, params }) {
-  const { result, aemId } = binding;
-  if (!result || !aemId) return null;
+async function introspectQueryFields({ gqlUrl, headers }) {
+  const query = `
+    query IntrospectQueryFields {
+      __type(name: "Query") {
+        fields {
+          name
+          args {
+            name
+            type {
+              kind
+              name
+              ofType {
+                kind
+                name
+                ofType {
+                  kind
+                  name
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  `;
+  const data = await postGraphql({ gqlUrl, headers, query, operationName: "IntrospectQueryFields" });
+  const fields = data?.data?.__type?.fields || [];
+  return fields;
+}
 
-  const model = result === "prbProperties" ? "prb" : result === "cf" ? "unifiedpromo" : null;
-  if (!model) return null;
+function pickBestByIdField(fields, modelName) {
+  // We try common names first, then fall back to any field containing modelName + "By"
+  const preferredNames = [
+    `${modelName}ById`,
+    `${modelName}By_id`,
+    `${modelName}ByID`,
+    `${modelName}ByPath`,
+    `${modelName}By_path`,
+    `${modelName}BySlug`,
+  ];
 
-  const key = `${model}:${aemId}`;
-  if (cache.has(key)) return cache.get(key);
+  const byName = new Map(fields.map((f) => [f.name, f]));
 
-  const item = await fetchAemItemViaGraphql({ model, aemId, params });
-  cache.set(key, item);
-  return item;
+  for (const n of preferredNames) {
+    if (byName.has(n)) return byName.get(n);
+  }
+
+  const lowerModel = modelName.toLowerCase();
+  const candidates = fields.filter((f) => {
+    const ln = (f.name || "").toLowerCase();
+    return ln.includes(lowerModel) && ln.includes("by");
+  });
+
+  return candidates[0] || null;
+}
+
+function pickArgNameForByField(field, have) {
+  // have: { id: true, path: true/false }
+  const args = field?.args || [];
+  const argNames = args.map((a) => a.name);
+
+  // Prefer _id / id when we have an ID
+  if (have.id) {
+    if (argNames.includes("_id")) return "_id";
+    if (argNames.includes("id")) return "id";
+  }
+
+  // If we had path support in future:
+  if (have.path) {
+    if (argNames.includes("_path")) return "_path";
+    if (argNames.includes("path")) return "path";
+  }
+
+  // Fallback: first arg if exists
+  return argNames[0] || null;
+}
+
+function buildByFieldQuery({ fieldName, argName, selectionSet, opName }) {
+  return `
+    query ${opName}($id: String!) {
+      ${fieldName}(${argName}: $id) {
+        item {
+          ${selectionSet}
+        }
+      }
+    }
+  `;
+}
+
+function safeJsonSnippet(obj, maxChars = 1200) {
+  try {
+    const s = JSON.stringify(obj);
+    return s.length > maxChars ? s.slice(0, maxChars) + "…" : s;
+  } catch {
+    return String(obj);
+  }
+}
+
+/**
+ * Prefetch AEM objects for encountered bindings.
+ * We do NOT inject into HTML yet; we just:
+ * - verify bindings parse correctly
+ * - verify AEM GraphQL can fetch them
+ * - return detailed error information if it cannot
+ */
+async function prefetchAemBindings({ stitchedHtml, params }) {
+  const aemBindingsEncountered = extractAemBindings(stitchedHtml);
+
+  const aemWarnings = [];
+  const aemPrefetch = [];
+  const aemCacheKeys = [];
+  const aemPrefetchData = {}; // limited map for debugging
+
+  if (!aemBindingsEncountered.length) {
+    return { aemBindingsEncountered, aemPrefetch, aemCacheKeys, aemWarnings, aemPrefetchData };
+  }
+
+  const client = await buildAemGraphqlClient(params);
+  if (!client.ok) {
+    aemWarnings.push(`AEM prefetch skipped: ${client.reason}`);
+    // Mark each binding as not fetched
+    for (const b of aemBindingsEncountered) {
+      aemPrefetch.push({ index: b.index, result: b.result, aemId: b.aemId, ok: false, reason: client.reason });
+    }
+    return { aemBindingsEncountered, aemPrefetch, aemCacheKeys, aemWarnings, aemPrefetchData };
+  }
+
+  // Determine which query fields exist in this environment
+  let queryFields = null;
+  try {
+    queryFields = await introspectQueryFields({ gqlUrl: client.gqlUrl, headers: client.headers });
+  } catch (e) {
+    // If introspection is blocked, we’ll fall back to your expected field names.
+    aemWarnings.push(
+      `AEM schema introspection failed; falling back to assumed ById field names. Reason: ${e.message}${
+        e?.data?.errors ? ` | errors=${safeJsonSnippet(e.data.errors)}` : ""
+      }`
+    );
+    queryFields = null;
+  }
+
+  // Hard-coded selections for now (you said it’s OK to assume only these two models)
+  const selectionForPrb = `
+        _id
+        _path
+        name
+        prbNumber
+        startingDate
+        expirationDate
+        brandStyle {
+          font_family
+        }
+  `;
+
+  const selectionForUnified = `
+        _id
+        _path
+        eyebrowText
+        headlineText
+        bodyCopy
+        primaryImage
+        ctaText
+        ctaLink
+        localFootnote
+        references { referenceNote }
+        localReferences { referenceNote }
+  `;
+
+  // Identify model by "result" in handlebars
+  function modelFromResult(result) {
+    // Your convention:
+    // - result='prbProperties' => PRB model
+    // - result='cf' => unified promotional content model
+    if (result === "prbProperties") return "prbProperties";
+    if (result === "cf") return "unifiedPromotionalContent";
+    return null;
+  }
+
+  for (const b of aemBindingsEncountered) {
+    const model = modelFromResult(b.result);
+
+    if (!b.aemId) {
+      aemPrefetch.push({ index: b.index, result: b.result, aemId: b.aemId, ok: false, reason: "Missing aemId" });
+      continue;
+    }
+
+    if (!model) {
+      aemPrefetch.push({
+        index: b.index,
+        result: b.result,
+        aemId: b.aemId,
+        ok: false,
+        reason: `Unknown result '${b.result}' (no model mapping)`,
+      });
+      continue;
+    }
+
+    const cacheKey = `${model}:${b.aemId}`;
+    aemCacheKeys.push(cacheKey);
+
+    // Pick the best query field + arg name
+    let fieldName = null;
+    let argName = null;
+
+    if (queryFields) {
+      const field = pickBestByIdField(queryFields, model);
+      fieldName = field?.name || null;
+      argName = field ? pickArgNameForByField(field, { id: true }) : null;
+    }
+
+    // Fallback to your assumed "ById(_id:)" naming
+    if (!fieldName) fieldName = `${model}ById`;
+    if (!argName) argName = "_id";
+
+    const selectionSet = model === "prbProperties" ? selectionForPrb : selectionForUnified;
+
+    const opName = `Get_${model}_ById`;
+    const query = buildByFieldQuery({ fieldName, argName, selectionSet, opName });
+
+    try {
+      const data = await postGraphql({
+        gqlUrl: client.gqlUrl,
+        headers: client.headers,
+        query,
+        variables: { id: b.aemId },
+        operationName: opName,
+      });
+
+      const item = data?.data?.[fieldName]?.item || null;
+
+      aemPrefetch.push({
+        index: b.index,
+        result: b.result,
+        aemId: b.aemId,
+        ok: !!item,
+        fieldName,
+        argName,
+      });
+
+      // Keep a small amount of debug data
+      if (item) {
+        // Store by "result" and index to preserve ordering semantics
+        aemPrefetchData[`${b.index}:${b.result}`] = item;
+      } else {
+        aemWarnings.push(
+          `AEM fetch succeeded but returned no item for ${b.result} ${b.aemId} (field=${fieldName}, arg=${argName}).`
+        );
+      }
+    } catch (e) {
+      const errErrors = e?.data?.errors || null;
+
+      aemPrefetch.push({
+        index: b.index,
+        result: b.result,
+        aemId: b.aemId,
+        ok: false,
+        fieldName,
+        argName,
+      });
+
+      aemWarnings.push(
+        `Failed to fetch AEM ${b.result} ${b.aemId}: ${e.message}${
+          errErrors ? ` | errors=${safeJsonSnippet(errErrors)}` : ""
+        }`
+      );
+    }
+  }
+
+  return { aemBindingsEncountered, aemPrefetch, aemCacheKeys, aemWarnings, aemPrefetchData };
 }
 
 /**
@@ -525,11 +709,10 @@ async function fetchAemItemCached({ cache, binding, params }) {
  * 1) HTML mode (TemplateStudio preview): params.html
  * 2) templateId mode: fetch template from AJO by params.templateId
  *
- * Fragment resolution is ALWAYS ON, and we also return stitchedHtml.
+ * Fragment resolution is ALWAYS ON; we return stitchedHtml.
  *
- * NEW:
- * - Parse AEM binding tags in-order (cf/prbProperties)
- * - Optional prefetch + cache (for now, returns debug payload)
+ * NEW (debug + next-step): we ALSO parse AEM bindings and attempt AEM GraphQL prefetch,
+ * returning *detailed* GraphQL errors when things fail, so you can quickly fix schema/args.
  */
 async function main(params) {
   if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
@@ -552,63 +735,14 @@ async function main(params) {
 
     const templateId = typeof params.templateId === "string" ? params.templateId : null;
 
-    // For AEM: allow caller to disable prefetch until env vars are wired.
-    const prefetchAem = params.prefetchAem !== false && params.prefetchAem !== "false";
-
-    async function postProcessStitched(stitchedHtml) {
-      // Discover bind tags (document order)
-      const bindings = extractAemBindingsInOrder(stitchedHtml);
-
-      // Prefetch (optional) with caching
-      const cache = new Map();
-      const aemPrefetch = [];
-      const aemWarnings = [];
-
-      if (prefetchAem && bindings.length) {
-        for (const b of bindings) {
-          // Only your known models for now
-          if (b.result !== "cf" && b.result !== "prbProperties") continue;
-
-          try {
-            const item = await fetchAemItemCached({ cache, binding: b, params });
-            aemPrefetch.push({
-              index: b.index,
-              result: b.result,
-              aemId: b.aemId,
-              ok: !!item,
-            });
-          } catch (e) {
-            aemWarnings.push(`Failed to fetch AEM ${b.result} ${b.aemId}: ${e.message}`);
-            aemPrefetch.push({
-              index: b.index,
-              result: b.result,
-              aemId: b.aemId,
-              ok: false,
-            });
-          }
-        }
-      }
-
-      return {
-        aemBindingsEncountered: bindings.map((b) => ({
-          index: b.index,
-          result: b.result,
-          aemId: b.aemId,
-          repoId: b.repoId,
-          args: b.args,
-        })),
-        aemPrefetch,
-        aemCacheKeys: [...cache.keys()],
-        aemWarnings,
-      };
-    }
-
     // -------- Mode A: HTML provided directly (current UI behavior) --------
     if (typeof params.html === "string" && params.html.trim()) {
       const html = params.html;
 
       const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
-      const aemDebug = await postProcessStitched(stitched.stitchedHtml);
+
+      // NEW: parse + prefetch AEM bindings (does not alter HTML yet)
+      const aem = await prefetchAemBindings({ stitchedHtml: stitched.stitchedHtml, params });
 
       return ok({
         mode: "html",
@@ -619,8 +753,14 @@ async function main(params) {
         fragmentsResolved: stitched.fragmentsResolvedAll,
         resolutionWarnings: stitched.resolutionWarnings,
 
-        // NEW:
-        ...aemDebug,
+        // NEW AEM debug outputs (what you expected to “see change”)
+        aemBindingsEncountered: aem.aemBindingsEncountered,
+        aemPrefetch: aem.aemPrefetch,
+        aemCacheKeys: aem.aemCacheKeys,
+        aemWarnings: aem.aemWarnings,
+
+        // Keep small debug payload; can be removed later
+        aemPrefetchData: aem.aemPrefetchData,
       });
     }
 
@@ -639,7 +779,6 @@ async function main(params) {
     });
 
     const data = templateResp?.data || null;
-
     const html = data?.template?.html?.body ?? data?.template?.html ?? null;
 
     if (!html) {
@@ -650,9 +789,10 @@ async function main(params) {
     }
 
     const etag = pickEtag(templateResp?.headers || null);
-
     const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
-    const aemDebug = await postProcessStitched(stitched.stitchedHtml);
+
+    // NEW: parse + prefetch AEM bindings
+    const aem = await prefetchAemBindings({ stitchedHtml: stitched.stitchedHtml, params });
 
     return ok({
       mode: "templateId",
@@ -663,8 +803,12 @@ async function main(params) {
       fragmentsResolved: stitched.fragmentsResolvedAll,
       resolutionWarnings: stitched.resolutionWarnings,
 
-      // NEW:
-      ...aemDebug,
+      // NEW AEM debug outputs
+      aemBindingsEncountered: aem.aemBindingsEncountered,
+      aemPrefetch: aem.aemPrefetch,
+      aemCacheKeys: aem.aemCacheKeys,
+      aemWarnings: aem.aemWarnings,
+      aemPrefetchData: aem.aemPrefetchData,
     });
   } catch (e) {
     return serverError(e.message, {
