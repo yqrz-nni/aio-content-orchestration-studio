@@ -530,6 +530,104 @@ function safeJsonSnippet(obj, maxChars = 1200) {
   }
 }
 
+/* =========================
+ * Unified model selection fix
+ * ========================= */
+
+/**
+ * Introspect a GraphQL type's fields (best-effort; may be blocked).
+ */
+async function introspectType({ gqlUrl, headers, typeName }) {
+  const query = `
+    query IntrospectType($name: String!) {
+      __type(name: $name) {
+        name
+        kind
+        fields {
+          name
+          type {
+            kind
+            name
+            ofType {
+              kind
+              name
+              ofType { kind name }
+            }
+          }
+        }
+      }
+    }
+  `;
+  const data = await postGraphql({
+    gqlUrl,
+    headers,
+    query,
+    variables: { name: typeName },
+    operationName: "IntrospectType",
+  });
+  return data?.data?.__type || null;
+}
+
+/**
+ * From an introspected __type, pick "scalar-ish" field names (SCALAR/ENUM),
+ * preferring common richtext/image-ish fields when present.
+ */
+function pickScalarFieldNames(typeInfo, preferred = []) {
+  const fields = typeInfo?.fields || [];
+  const scalarish = fields
+    .filter((f) => {
+      const k = f?.type?.kind;
+      const ok = k === "SCALAR" || k === "ENUM";
+      const okNested = f?.type?.ofType?.kind === "SCALAR" || f?.type?.ofType?.kind === "ENUM";
+      return ok || okNested;
+    })
+    .map((f) => f.name);
+
+  const out = [];
+  for (const p of preferred) if (scalarish.includes(p)) out.push(p);
+  for (const n of scalarish) if (!out.includes(n)) out.push(n);
+  return out;
+}
+
+/**
+ * Build the unified selection set, ensuring subselections for MultiFormatString + Reference.
+ * If schema introspection is allowed, we tailor it to what's actually available.
+ */
+async function buildUnifiedSelectionSet({ gqlUrl, headers }) {
+  // Safe baseline that fixes your exact validation errors:
+  // - bodyCopy is [MultiFormatString] => bodyCopy { html plaintext }
+  // - primaryImage is Reference => primaryImage { _path }
+  let bodyCopySub = "html plaintext";
+  let primaryImageSub = "_path";
+
+  try {
+    const mfs = await introspectType({ gqlUrl, headers, typeName: "MultiFormatString" });
+    const ref = await introspectType({ gqlUrl, headers, typeName: "Reference" });
+
+    const mfsFields = pickScalarFieldNames(mfs, ["html", "plaintext", "json", "raw"]);
+    if (mfsFields.length) bodyCopySub = mfsFields.slice(0, 3).join(" ");
+
+    const refFields = pickScalarFieldNames(ref, ["_path", "_id", "_publishUrl", "_authorUrl", "path", "id"]);
+    if (refFields.length) primaryImageSub = refFields.slice(0, 3).join(" ");
+  } catch {
+    // Introspection might be blocked; fall back to baseline
+  }
+
+  return `
+        _id
+        _path
+        eyebrowText
+        headlineText
+        bodyCopy { ${bodyCopySub} }
+        primaryImage { ${primaryImageSub} }
+        ctaText
+        ctaLink
+        localFootnote
+        references { referenceNote }
+        localReferences { referenceNote }
+  `;
+}
+
 /**
  * Prefetch AEM objects for encountered bindings.
  * We do NOT inject into HTML yet; we just:
@@ -552,7 +650,6 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
   const client = await buildAemGraphqlClient(params);
   if (!client.ok) {
     aemWarnings.push(`AEM prefetch skipped: ${client.reason}`);
-    // Mark each binding as not fetched
     for (const b of aemBindingsEncountered) {
       aemPrefetch.push({ index: b.index, result: b.result, aemId: b.aemId, ok: false, reason: client.reason });
     }
@@ -564,7 +661,6 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
   try {
     queryFields = await introspectQueryFields({ gqlUrl: client.gqlUrl, headers: client.headers });
   } catch (e) {
-    // If introspection is blocked, we’ll fall back to your expected field names.
     aemWarnings.push(
       `AEM schema introspection failed; falling back to assumed ById field names. Reason: ${e.message}${
         e?.data?.errors ? ` | errors=${safeJsonSnippet(e.data.errors)}` : ""
@@ -586,25 +682,10 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
         }
   `;
 
-  const selectionForUnified = `
-        _id
-        _path
-        eyebrowText
-        headlineText
-        bodyCopy
-        primaryImage
-        ctaText
-        ctaLink
-        localFootnote
-        references { referenceNote }
-        localReferences { referenceNote }
-  `;
+  // IMPORTANT: unified selection is built dynamically (fixes subselection errors)
+  let selectionForUnified = null;
 
-  // Identify model by "result" in handlebars
   function modelFromResult(result) {
-    // Your convention:
-    // - result='prbProperties' => PRB model
-    // - result='cf' => unified promotional content model
     if (result === "prbProperties") return "prbProperties";
     if (result === "cf") return "unifiedPromotionalContent";
     return null;
@@ -646,6 +727,13 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
     if (!fieldName) fieldName = `${model}ById`;
     if (!argName) argName = "_id";
 
+    // Build unified selection once per invocation
+    if (model === "unifiedPromotionalContent") {
+      if (!selectionForUnified) {
+        selectionForUnified = await buildUnifiedSelectionSet({ gqlUrl: client.gqlUrl, headers: client.headers });
+      }
+    }
+
     const selectionSet = model === "prbProperties" ? selectionForPrb : selectionForUnified;
 
     const opName = `Get_${model}_ById`;
@@ -671,9 +759,7 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
         argName,
       });
 
-      // Keep a small amount of debug data
       if (item) {
-        // Store by "result" and index to preserve ordering semantics
         aemPrefetchData[`${b.index}:${b.result}`] = item;
       } else {
         aemWarnings.push(
@@ -753,7 +839,7 @@ async function main(params) {
         fragmentsResolved: stitched.fragmentsResolvedAll,
         resolutionWarnings: stitched.resolutionWarnings,
 
-        // NEW AEM debug outputs (what you expected to “see change”)
+        // NEW AEM debug outputs
         aemBindingsEncountered: aem.aemBindingsEncountered,
         aemPrefetch: aem.aemPrefetch,
         aemCacheKeys: aem.aemCacheKeys,
@@ -811,11 +897,11 @@ async function main(params) {
       aemPrefetchData: aem.aemPrefetchData,
     });
   } catch (e) {
-    return serverError(e.message, {
-      url: e.url,
-      status: e.status,
-      responseText: e.responseText,
-      data: e.data,
+    return serverError("Unhandled exception", {
+      message: e?.message,
+      status: e?.status,
+      stack: e?.stack,
+      data: e?.data,
     });
   }
 }
