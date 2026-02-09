@@ -1,44 +1,28 @@
-// File: src/dx-excshell-1/actions/ajo/template/render/queries/unifiedPromotionalContent.gql.js
+// File: src/dx-excshell-1/actions/ajo/template/render/queries/prbProperties.gql.js
 
-/**
- * Unified Promotional Content selection set
- * IMPORTANT: includes bodyCopy (MultiFormat-like) so AJO-style rendering can use `.html`.
- */
-const unifiedPromotionalContentSelection = `
+const prbPropertiesSelection = `
   _id
   _path
+  prbNumber
+  name
+  expirationDate
+  startingDate
 
-  bodyCopy {
-    html
-    markdown
-    plaintext
-    json
+  brands {
+    _path
+    _id
+    _variation
+    name
+    displayName
+    homepageUrl
+    piLink
+    isiLink
+    icon {
+      ... on ImageRef { _path }
+    }
   }
 
-  primaryImage {
-    ... on ImageRef { _path }
-  }
-
-  references { referenceNote }
-
-  headlineText
-  ctaText
-  ctaLink
-
-  ctaImage {
-    ... on ImageRef { _path }
-  }
-
-  localFootnote
-  localReferences { referenceNote }
-
-  eyebrowText
-  keyMessageCategory
-  triggersBoxedWarning
-  imageReferencePlaceholders
-  moduleId
-
-  forceBrandStylingLeaveBlankToInheritContextualBrandStyle {
+  brandStyle {
     _path
     _id
     _variation
@@ -68,7 +52,8 @@ const unifiedPromotionalContentSelection = `
     email_banner_content_top_margin
     email_banner_content_bottom_margin
     email_banner_content_section_padding
+    ajoTemplateId
   }
 `;
 
-module.exports = { unifiedPromotionalContentSelection };
+module.exports = { prbPropertiesSelection };
