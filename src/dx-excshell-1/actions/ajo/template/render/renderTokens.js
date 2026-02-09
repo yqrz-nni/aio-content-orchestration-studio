@@ -142,10 +142,27 @@ function deriveStylesContext({ prbCtx, cfCtx }) {
 
 /**
  * Build the root context for the mini AJO runtime.
- * This is CRITICAL so templates like {{#each cf.bodyCopy}} resolve correctly.
+ *
+ * CRITICAL:
+ * Many templates assume the binding tag establishes an implicit "current" object,
+ * and then reference fields un-namespaced (e.g. {{#each bodyCopy}}).
+ *
+ * So we:
+ * - spread localCtx at the top-level for un-namespaced access
+ * - expose it as {{this.*}} as well
+ * - ALSO keep canonical namespaces { cf, prbProperties, styles } so {{#each cf.bodyCopy}} works too
  */
-function buildMiniAjoRootCtx({ cfCtx, prbCtx, stylesCtx }) {
+function buildMiniAjoRootCtx({ cfCtx, prbCtx, stylesCtx, localCtx }) {
+  const local = localCtx && typeof localCtx === "object" ? localCtx : null;
+
   return {
+    // allow templates to use {{this.*}} if they want
+    this: local || {},
+
+    // allow un-namespaced access like {{#each bodyCopy}} / {{headlineText}}
+    ...(local || {}),
+
+    // canonical namespaces
     cf: cfCtx && typeof cfCtx === "object" ? cfCtx : {},
     prbProperties: prbCtx && typeof prbCtx === "object" ? prbCtx : {},
     styles: stylesCtx && typeof stylesCtx === "object" ? stylesCtx : {},
@@ -179,6 +196,7 @@ function renderNamespaceByBindingOrder({
         prbCtx: namespace === "prbProperties" ? defaultCtx : defaultPrbCtx,
         cfCtx: namespace === "cf" ? defaultCtx : defaultCfCtx,
       }),
+      localCtx: defaultCtx,
     });
 
     const maybeExpanded = renderMiniAjo(html, miniRoot);
@@ -205,9 +223,10 @@ function renderNamespaceByBindingOrder({
         prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
         cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
       }),
+      localCtx: effectiveCtx,
     });
 
-    // Expand minimal AJO blocks (e.g., {{#each cf.bodyCopy}}) BEFORE namespaced replacements
+    // Expand minimal AJO blocks (e.g., {{#each cf.bodyCopy}} OR {{#each bodyCopy}}) BEFORE namespaced replacements
     before = renderMiniAjo(before, miniRoot);
 
     out += replaceNamespaceVars(before, namespace, effectiveCtx);
@@ -232,6 +251,7 @@ function renderNamespaceByBindingOrder({
       prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
       cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
     }),
+    localCtx: effectiveCtx,
   });
 
   tail = renderMiniAjo(tail, miniRoot);
@@ -262,7 +282,13 @@ function resolveStylesByBindings({
     const styles = deriveStylesContext({ prbCtx: defaultPrbCtx, cfCtx: defaultCfCtx });
     if (!styles) return stitchedHtml;
 
-    const miniRoot = buildMiniAjoRootCtx({ cfCtx: defaultCfCtx, prbCtx: defaultPrbCtx, stylesCtx: styles });
+    const miniRoot = buildMiniAjoRootCtx({
+      cfCtx: defaultCfCtx,
+      prbCtx: defaultPrbCtx,
+      stylesCtx: styles,
+      localCtx: styles,
+    });
+
     const maybeExpanded = renderMiniAjo(stitchedHtml, miniRoot);
     return replaceNamespaceVars(maybeExpanded, "styles", styles);
   }
@@ -285,6 +311,7 @@ function resolveStylesByBindings({
       cfCtx: currentCf || defaultCfCtx,
       prbCtx: currentPrb || defaultPrbCtx,
       stylesCtx: currentStyles,
+      localCtx: currentStyles,
     });
 
     seg = renderMiniAjo(seg, miniRoot);
@@ -310,6 +337,7 @@ function resolveStylesByBindings({
     cfCtx: currentCf || defaultCfCtx,
     prbCtx: currentPrb || defaultPrbCtx,
     stylesCtx: currentStyles,
+    localCtx: currentStyles,
   });
 
   tail = renderMiniAjo(tail, tailRoot);
