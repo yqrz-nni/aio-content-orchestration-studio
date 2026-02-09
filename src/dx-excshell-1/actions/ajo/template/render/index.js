@@ -2,7 +2,9 @@
 
 const { ok, badRequest, serverError, corsPreflight } = require("../../../_lib/http");
 const { fetchRaw } = require("../../../_lib/fetchRaw");
+const { fetchJson } = require("../../../_lib/fetchJson");
 const { requireIms } = require("../../../_lib/ims");
+const auth = require("@adobe/jwt-auth");
 
 /**
  * Normalize Bearer token for Authorization header.
@@ -116,7 +118,6 @@ async function fetchFragmentById({ baseUrl, fragmentIdRaw, headers }) {
       resp?.data?.fragment?.content ??
       resp?.data?.fragment?.processedContent ??
       resp?.data?.fragment?.expression ??
-      // (extra safety in case the API nests it differently)
       resp?.data?.fragment?.content?.expression ??
       null,
   };
@@ -219,10 +220,8 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
 
     allWarnings = allWarnings.concat(resolutionWarnings || []);
 
-    // No more fragments found (or none resolvable)
     if (!fragmentsResolved || fragmentsResolved.length === 0) break;
 
-    // Dedup + detect whether this pass can make progress
     let anyNew = false;
     for (const f of fragmentsResolved) {
       if (f && f.id && !byId.has(f.id)) {
@@ -233,13 +232,10 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
 
     const nextHtml = stitchFragmentsIntoHtml(currentHtml, fragmentsResolved);
 
-    // If stitching didn't change anything, stop
     if (nextHtml === currentHtml) break;
 
     currentHtml = nextHtml;
 
-    // If we didn't learn anything new AND html changed, keep going one more loop is fine,
-    // but generally this means we're just re-stitching the same set.
     if (!anyNew && depth > 0) break;
   }
 
@@ -250,6 +246,279 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* AEM BIND TAG PARSING (order-preserving)                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Parse "aem:<uuid>?repoId=..." into { aemId, repoId }.
+ */
+function parseAemIdRaw(aemIdRaw) {
+  if (!aemIdRaw || typeof aemIdRaw !== "string") return { aemId: null, repoId: null };
+
+  const trimmed = aemIdRaw.trim();
+  const [beforeQ, qs] = trimmed.split("?");
+
+  const aemId = beforeQ.startsWith("aem:") ? beforeQ.slice("aem:".length) : beforeQ;
+
+  let repoId = null;
+  if (qs) {
+    const sp = new URLSearchParams(qs);
+    repoId = sp.get("repoId");
+  }
+
+  return { aemId, repoId };
+}
+
+/**
+ * Parse extra key=value args from the inner fragment tag.
+ * Example: result='cf' r1=r1 r2=r2 => { r1: "r1", r2: "r2" }
+ */
+function parseAemCallArgs(inner) {
+  const args = {};
+  if (!inner) return args;
+
+  const kvRe = /\b([a-zA-Z_][\w.-]*)\s*=\s*(?:(['"])(.*?)\2|([^\s}]+))/g;
+  let m;
+  while ((m = kvRe.exec(inner)) !== null) {
+    const key = m[1];
+    const quotedVal = m[3];
+    const bareVal = m[4];
+
+    if (key === "id" || key === "result" || key === "mode" || key === "name") continue;
+
+    args[key] = quotedVal != null ? quotedVal : bareVal;
+  }
+
+  return args;
+}
+
+/**
+ * Extract AEM binding fragment calls in document order.
+ *
+ * Supports:
+ *  {{fragment id='aem:<uuid>?repoId=...' result='cf' r1=r1 ...}}
+ *  {{ fragment id="aem:<uuid>?repoId=..." result="prbProperties" }}
+ *
+ * Returns [{ raw, aemId, result, repoId, args, start, end, index }]
+ */
+function extractAemBindingsInOrder(html) {
+  if (!html || typeof html !== "string") return [];
+
+  const out = [];
+  const tagRe = /{{\s*fragment\b([\s\S]*?)}}/gi;
+
+  let m;
+  let index = 0;
+
+  while ((m = tagRe.exec(html)) !== null) {
+    const full = m[0];
+    const inner = m[1] || "";
+    const start = m.index;
+    const end = start + full.length;
+
+    const idMatch = inner.match(/\bid\s*=\s*(['"])(aem:[^'"]+)\1/i);
+    if (!idMatch) continue;
+
+    const idRaw = idMatch[2];
+    if (!idRaw.toLowerCase().startsWith("aem:")) continue;
+
+    const resultMatch = inner.match(/\bresult\s*=\s*(['"])([^'"]+)\1/i);
+    const result = resultMatch ? resultMatch[2] : null;
+
+    const parsed = parseAemIdRaw(idRaw);
+    const args = parseAemCallArgs(inner);
+
+    out.push({
+      raw: full,
+      aemIdRaw: idRaw,
+      aemId: parsed.aemId,
+      repoId: parsed.repoId,
+      result,
+      args,
+      start,
+      end,
+      index: index++,
+    });
+  }
+
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* AEM GRAPHQL FETCH (optional prefetch, cached)                        */
+/* ------------------------------------------------------------------ */
+
+function buildAemGqlUrl(params) {
+  const useProxy = params.USE_AEM_PROXY === "true";
+
+  if (!params.AEM_GQL_PATH) throw new Error("Missing AEM_GQL_PATH");
+  if (!params.AEM_AUTHOR && !useProxy) throw new Error("Missing AEM_AUTHOR");
+  if (!params.AEM_GQL_PATH_PROXY && useProxy) throw new Error("Missing AEM_GQL_PATH_PROXY");
+
+  return useProxy
+    ? params.AEM_GQL_PATH_PROXY
+    : new URL(params.AEM_GQL_PATH, params.AEM_AUTHOR).toString();
+}
+
+async function buildAemHeaders(params) {
+  const useProxy = params.USE_AEM_PROXY === "true";
+  const headers = { "content-type": "application/json" };
+  if (useProxy) return headers;
+
+  const required = [
+    "IMS_HOST",
+    "CLIENT_ID",
+    "CLIENT_SECRET",
+    "TECH_ACCOUNT_ID",
+    "ORG_ID",
+    "PRIVATE_KEY",
+    "METASCOPES",
+  ];
+  for (const k of required) {
+    if (!params[k]) throw new Error(`Missing ${k}`);
+  }
+
+  const accessTokenResp = await auth({
+    imsHost: params.IMS_HOST,
+    clientId: params.CLIENT_ID,
+    clientSecret: params.CLIENT_SECRET,
+    technicalAccountId: params.TECH_ACCOUNT_ID,
+    orgId: params.ORG_ID,
+    privateKey: (params.PRIVATE_KEY || "").replace(/\\r\\n/g, "\n"),
+    metaScopes: params.METASCOPES,
+  });
+
+  const accessToken = accessTokenResp.access_token || accessTokenResp;
+
+  headers.Authorization = `Bearer ${accessToken}`;
+  headers["x-gw-ims-org-id"] = params.ORG_ID;
+  headers["x-api-key"] = params.CLIENT_ID;
+
+  return headers;
+}
+
+/**
+ * Fetch AEM item by GraphQL using the explicit model queries you shared.
+ * model: "prb" | "unifiedpromo"
+ */
+async function fetchAemItemViaGraphql({ model, aemId, params }) {
+  const url = buildAemGqlUrl(params);
+  const headers = await buildAemHeaders(params);
+
+  const query =
+    model === "prb"
+      ? `
+        query GetFragmentById($id: String!) {
+          prbPropertiesById(_id:$id) {
+            item {
+              _id
+              _path
+              name
+              prbNumber
+              startingDate
+              expirationDate
+              brandStyle {
+                font_family
+                email_banner_content_section_padding
+                email_banner_content_bottom_margin
+                email_banner_content_top_margin
+                email_banner_content_right_margin
+                email_banner_content_left_margin
+                email_body_copy_line_height
+                email_headline_line_height
+                font_size_heading_xs
+                font_size_heading_sm
+                font_size_heading_med
+                font_size_heading_lg
+                font_size_heading_x1
+                component_button_border_radius
+                divider_weight
+                divider_color
+                color_text_body
+                color_text_white
+                color_text_link_secondary
+                color_text_link_primary
+                color_background_tertiary
+                color_background_secondary
+                color_background_primary
+                color_text_tertiary
+                color_text_secondary
+                color_text_primary
+              }
+              brands {
+                isiLink
+                piLink
+                indication
+                homepageUrl
+                icon
+                displayName
+                name
+              }
+            }
+          }
+        }
+      `
+      : `
+        query GetFragmentById($id: String!) {
+          unifiedPromotionalContentById(_id:$id) {
+            item {
+              _id
+              _path
+              eyebrowText
+              headlineText
+              bodyCopy
+              primaryImage
+              ctaText
+              ctaLink
+              localFootnote
+              references { referenceNote }
+              localReferences { referenceNote }
+            }
+          }
+        }
+      `;
+
+  const data = await fetchJson(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ query, variables: { id: aemId } }),
+  });
+
+  if (data?.errors?.length) {
+    const e = new Error("AEM GraphQL returned errors");
+    e.status = 502;
+    e.data = data;
+    throw e;
+  }
+
+  const item =
+    model === "prb"
+      ? data?.data?.prbPropertiesById?.item
+      : data?.data?.unifiedPromotionalContentById?.item;
+
+  return item || null;
+}
+
+/**
+ * Cached AEM fetch.
+ * cacheKey: "prb:<id>" | "unifiedpromo:<id>"
+ */
+async function fetchAemItemCached({ cache, binding, params }) {
+  const { result, aemId } = binding;
+  if (!result || !aemId) return null;
+
+  const model = result === "prbProperties" ? "prb" : result === "cf" ? "unifiedpromo" : null;
+  if (!model) return null;
+
+  const key = `${model}:${aemId}`;
+  if (cache.has(key)) return cache.get(key);
+
+  const item = await fetchAemItemViaGraphql({ model, aemId, params });
+  cache.set(key, item);
+  return item;
+}
+
 /**
  * Render action:
  * Supports TWO modes:
@@ -257,6 +526,10 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
  * 2) templateId mode: fetch template from AJO by params.templateId
  *
  * Fragment resolution is ALWAYS ON, and we also return stitchedHtml.
+ *
+ * NEW:
+ * - Parse AEM binding tags in-order (cf/prbProperties)
+ * - Optional prefetch + cache (for now, returns debug payload)
  */
 async function main(params) {
   if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
@@ -279,11 +552,63 @@ async function main(params) {
 
     const templateId = typeof params.templateId === "string" ? params.templateId : null;
 
+    // For AEM: allow caller to disable prefetch until env vars are wired.
+    const prefetchAem = params.prefetchAem !== false && params.prefetchAem !== "false";
+
+    async function postProcessStitched(stitchedHtml) {
+      // Discover bind tags (document order)
+      const bindings = extractAemBindingsInOrder(stitchedHtml);
+
+      // Prefetch (optional) with caching
+      const cache = new Map();
+      const aemPrefetch = [];
+      const aemWarnings = [];
+
+      if (prefetchAem && bindings.length) {
+        for (const b of bindings) {
+          // Only your known models for now
+          if (b.result !== "cf" && b.result !== "prbProperties") continue;
+
+          try {
+            const item = await fetchAemItemCached({ cache, binding: b, params });
+            aemPrefetch.push({
+              index: b.index,
+              result: b.result,
+              aemId: b.aemId,
+              ok: !!item,
+            });
+          } catch (e) {
+            aemWarnings.push(`Failed to fetch AEM ${b.result} ${b.aemId}: ${e.message}`);
+            aemPrefetch.push({
+              index: b.index,
+              result: b.result,
+              aemId: b.aemId,
+              ok: false,
+            });
+          }
+        }
+      }
+
+      return {
+        aemBindingsEncountered: bindings.map((b) => ({
+          index: b.index,
+          result: b.result,
+          aemId: b.aemId,
+          repoId: b.repoId,
+          args: b.args,
+        })),
+        aemPrefetch,
+        aemCacheKeys: [...cache.keys()],
+        aemWarnings,
+      };
+    }
+
     // -------- Mode A: HTML provided directly (current UI behavior) --------
     if (typeof params.html === "string" && params.html.trim()) {
       const html = params.html;
 
       const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
+      const aemDebug = await postProcessStitched(stitched.stitchedHtml);
 
       return ok({
         mode: "html",
@@ -293,6 +618,9 @@ async function main(params) {
         etag: null,
         fragmentsResolved: stitched.fragmentsResolvedAll,
         resolutionWarnings: stitched.resolutionWarnings,
+
+        // NEW:
+        ...aemDebug,
       });
     }
 
@@ -324,6 +652,7 @@ async function main(params) {
     const etag = pickEtag(templateResp?.headers || null);
 
     const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
+    const aemDebug = await postProcessStitched(stitched.stitchedHtml);
 
     return ok({
       mode: "templateId",
@@ -333,6 +662,9 @@ async function main(params) {
       etag,
       fragmentsResolved: stitched.fragmentsResolvedAll,
       resolutionWarnings: stitched.resolutionWarnings,
+
+      // NEW:
+      ...aemDebug,
     });
   } catch (e) {
     return serverError(e.message, {
