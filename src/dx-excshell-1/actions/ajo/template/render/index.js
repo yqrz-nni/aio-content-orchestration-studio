@@ -365,7 +365,6 @@ async function buildAemGraphqlClient(params) {
 
 /**
  * Fetch GraphQL JSON and throw (with attached data) if errors[] is present.
- * (AEM GraphQL often returns HTTP 200 with errors[].)
  */
 async function postGraphql({ gqlUrl, headers, query, variables, operationName }) {
   const payload = { query };
@@ -468,8 +467,66 @@ function safeJsonSnippet(obj, maxChars = 1200) {
 }
 
 /* =========================
- * Unified model selection + cross-schema fallback
+ * Unified selection helpers
  * ========================= */
+
+function extractUndefinedFieldName(graphQLErrors = []) {
+  const msg = graphQLErrors?.[0]?.message || "";
+  const m = msg.match(/Field '([^']+)' in type '([^']+)' is undefined/i);
+  if (!m) return null;
+  return { field: m[1], type: m[2] };
+}
+
+function extractUnknownTypeName(graphQLErrors = []) {
+  const msg = graphQLErrors?.[0]?.message || "";
+  const m = msg.match(/Unknown type '([^']+)'/i);
+  if (!m) return null;
+  return { type: m[1] };
+}
+
+function extractInlineFragmentNotPossible(graphQLErrors = []) {
+  const msg = graphQLErrors?.[0]?.message || "";
+  // common GraphQL error wording varies; keep broad:
+  if (/Fragment cannot be spread here/i.test(msg)) return { message: msg };
+  if (/cannot be spread/i.test(msg)) return { message: msg };
+  return null;
+}
+
+/**
+ * Inline fragment builder for primaryImage, trying multiple possible concrete types.
+ * Example:
+ * primaryImage {
+ *   ... on ImageRef { _path }
+ *   ... on AssetRef { _path }
+ * }
+ */
+function buildPrimaryImageInlineSelection({ typeNames, fieldList }) {
+  const fields = (fieldList || "").trim();
+  if (!fields) return "primaryImage { }";
+
+  const types = Array.isArray(typeNames) && typeNames.length ? typeNames : ["ImageRef"];
+  const spreads = types.map((t) => `... on ${t} { ${fields} }`).join("\n          ");
+  return `primaryImage {\n          ${spreads}\n        }`;
+}
+
+/**
+ * Build unified selection set from "bodyCopySub" and a "primaryImage block" (string).
+ */
+function buildUnifiedSelectionSetFromBlocks({ bodyCopySub, primaryImageBlock }) {
+  return `
+        _id
+        _path
+        eyebrowText
+        headlineText
+        bodyCopy { ${bodyCopySub} }
+        ${primaryImageBlock}
+        ctaText
+        ctaLink
+        localFootnote
+        references { referenceNote }
+        localReferences { referenceNote }
+  `;
+}
 
 /**
  * Introspect a GraphQL type's fields (best-effort; may be blocked).
@@ -517,59 +574,42 @@ function pickScalarFieldNames(typeInfo, preferred = []) {
   return out;
 }
 
-function extractUndefinedFieldName(graphQLErrors = []) {
-  const msg = graphQLErrors?.[0]?.message || "";
-  const m = msg.match(/Field '([^']+)' in type '([^']+)' is undefined/i);
-  if (!m) return null;
-  return { field: m[1], type: m[2] };
-}
-
-function buildUnifiedSelectionSetFromSubs({ bodyCopySub, primaryImageSub }) {
-  return `
-        _id
-        _path
-        eyebrowText
-        headlineText
-        bodyCopy { ${bodyCopySub} }
-        primaryImage { ${primaryImageSub} }
-        ctaText
-        ctaLink
-        localFootnote
-        references { referenceNote }
-        localReferences { referenceNote }
-  `;
-}
-
 /**
- * Build the unified selection set using introspection if possible.
- * IMPORTANT: baseline is _path (because your current endpoint errors on "path").
- * If introspection works, we’ll pick the correct ref fields automatically.
+ * Build a unified selection set:
+ * - bodyCopy: subselection (MultiFormatString list)
+ * - primaryImage: *inline fragments* for common concrete types, because schemas often use unions/interfaces
+ *
+ * If introspection is blocked, we still return a safe baseline with ImageRef inline fragment.
  */
 async function buildUnifiedSelectionSet({ gqlUrl, headers }) {
   let bodyCopySub = "html plaintext";
-  let primaryImageSub = "_path"; // baseline: safer for your current schema
+
+  // For primaryImage, we build inline fragments:
+  let primaryImageFields = "_path";
+  let primaryImageTypeNames = ["ImageRef", "AssetRef", "DAMAssetRef", "Reference", "Image"];
 
   try {
     const mfs = await introspectType({ gqlUrl, headers, typeName: "MultiFormatString" });
-    const ref = await introspectType({ gqlUrl, headers, typeName: "Reference" });
-
     const mfsFields = pickScalarFieldNames(mfs, ["html", "plaintext", "json", "raw"]);
     if (mfsFields.length) bodyCopySub = mfsFields.slice(0, 3).join(" ");
 
-    // Prefer whichever exists, but bias to _path first to match current environment.
-    const refFields = pickScalarFieldNames(ref, ["_path", "path", "_publishUrl", "_authorUrl", "_id", "id"]);
-    if (refFields.length) primaryImageSub = refFields.slice(0, 3).join(" ");
+    // We *can’t* reliably introspect unions to get possibleTypes in all AEM envs,
+    // so we keep a curated list of likely types. If your env uses different ones,
+    // the retry loop below will still find the right one (or fall back).
   } catch {
     // Introspection might be blocked; fall back to baseline
   }
 
-  return buildUnifiedSelectionSetFromSubs({ bodyCopySub, primaryImageSub });
+  const primaryImageBlock = buildPrimaryImageInlineSelection({
+    typeNames: primaryImageTypeNames,
+    fieldList: primaryImageFields,
+  });
+
+  return buildUnifiedSelectionSetFromBlocks({ bodyCopySub, primaryImageBlock });
 }
 
 /**
  * Prefetch AEM objects for encountered bindings.
- * - prbProperties: fixed selection
- * - unifiedPromotionalContent: introspected selection OR fallback retry across candidate Reference fields
  */
 async function prefetchAemBindings({ stitchedHtml, params }) {
   const aemBindingsEncountered = extractAemBindings(stitchedHtml);
@@ -614,7 +654,6 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
         brandStyle { font_family }
   `;
 
-  // built once if needed
   let selectionForUnified = null;
 
   function modelFromResult(result) {
@@ -645,7 +684,6 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
     const cacheKey = `${model}:${b.aemId}`;
     aemCacheKeys.push(cacheKey);
 
-    // Pick the best query field + arg name
     let fieldName = null;
     let argName = null;
 
@@ -655,37 +693,48 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
       argName = field ? pickArgNameForByField(field, { id: true }) : null;
     }
 
-    // Fallback assumptions
     if (!fieldName) fieldName = `${model}ById`;
     if (!argName) argName = "_id";
 
-    // UNIFIED: robust selection + retry across candidate Reference fields if needed
+    // UNIFIED: try baseline + a systematic retry across types/fields
     if (model === "unifiedPromotionalContent") {
       if (!selectionForUnified) {
         selectionForUnified = await buildUnifiedSelectionSet({ gqlUrl: client.gqlUrl, headers: client.headers });
       }
 
       const unifiedBodyCopySubs = ["html plaintext"];
-      const unifiedPrimaryImageSubs = ["_path", "path", "_publishUrl", "_authorUrl", "_id", "id"];
+      const primaryImageFieldCandidates = ["_path", "path", "_publishUrl", "_authorUrl", "_id", "id"];
 
-      const candidates = [];
+      // likely concrete types; add/remove as needed
+      const primaryImageTypeCandidates = ["ImageRef", "AssetRef", "DAMAssetRef", "Image", "Reference"];
 
-      // candidate 0: whatever buildUnifiedSelectionSet produced (introspection or baseline)
-      candidates.push(selectionForUnified);
+      // Candidate 0: whatever buildUnifiedSelectionSet produced
+      const candidates = [selectionForUnified];
 
-      // candidate fallbacks:
+      // Candidate variants:
       for (const bc of unifiedBodyCopySubs) {
-        for (const pi of unifiedPrimaryImageSubs) {
-          const sel = buildUnifiedSelectionSetFromSubs({ bodyCopySub: bc, primaryImageSub: pi });
-          if (!candidates.includes(sel)) candidates.push(sel);
+        for (const f of primaryImageFieldCandidates) {
+          // 1) plain selection (if primaryImage is actually an object type)
+          const plainPrimary = `primaryImage { ${f} }`;
+          candidates.push(buildUnifiedSelectionSetFromBlocks({ bodyCopySub: bc, primaryImageBlock: plainPrimary }));
+
+          // 2) inline fragment selection (if union/interface)
+          const inlinePrimary = buildPrimaryImageInlineSelection({
+            typeNames: primaryImageTypeCandidates,
+            fieldList: f,
+          });
+          candidates.push(buildUnifiedSelectionSetFromBlocks({ bodyCopySub: bc, primaryImageBlock: inlinePrimary }));
         }
       }
+
+      // De-dupe candidates
+      const uniqueCandidates = [...new Set(candidates)];
 
       let lastErr = null;
       let item = null;
       let usedSelection = null;
 
-      for (const selectionSet of candidates) {
+      for (const selectionSet of uniqueCandidates) {
         const opName = `Get_${model}_ById`;
         const query = buildByFieldQuery({ fieldName, argName, selectionSet, opName });
 
@@ -700,16 +749,17 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
 
           item = data?.data?.[fieldName]?.item || null;
           usedSelection = selectionSet;
-
-          // If request validated and returned (even null), stop retrying unless it was validation error.
-          // We stop here regardless; null item gets handled below.
-          break;
+          break; // validated (even if item null)
         } catch (e) {
           lastErr = e;
 
-          // Only keep retrying on "FieldUndefined" errors (schema mismatch)
-          const info = extractUndefinedFieldName(e?.data?.errors);
-          if (!info) break;
+          // Retry only on schema validation-ish problems
+          const errs = e?.data?.errors || [];
+          const undef = extractUndefinedFieldName(errs);
+          const unkType = extractUnknownTypeName(errs);
+          const fragNo = extractInlineFragmentNotPossible(errs);
+
+          if (!undef && !unkType && !fragNo) break;
         }
       }
 
@@ -729,10 +779,8 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
             errErrors ? ` | errors=${safeJsonSnippet(errErrors)}` : ""
           }`
         );
-
-        // Small extra debug hint
         if (usedSelection) {
-          aemWarnings.push(`Last unified selection attempted (truncated): ${usedSelection.trim().slice(0, 250)}…`);
+          aemWarnings.push(`Last unified selection attempted (truncated): ${usedSelection.trim().slice(0, 280)}…`);
         }
       }
 
@@ -887,9 +935,7 @@ async function main(params) {
       aemPrefetchData: aem.aemPrefetchData,
     });
   } catch (e) {
-    return serverError(e?.message || "Unexpected error", {
-      stack: e?.stack,
-    });
+    return serverError(e?.message || "Unexpected error", { stack: e?.stack });
   }
 }
 
