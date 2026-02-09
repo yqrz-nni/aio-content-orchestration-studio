@@ -13,16 +13,15 @@ try {
   // ok: if you always use proxy, this won't be needed
 }
 
-/**
- * Normalize Bearer token for Authorization header.
+/* ============================================================================
+ * Small utilities
+ * ============================================================================
  */
+
 function normalizeBearer(token) {
   return token?.startsWith("Bearer ") ? token : `Bearer ${token}`;
 }
 
-/**
- * Build common IMS/AEP gateway headers.
- */
 function buildCommonHeaders({ authHeader, imsOrg, apiKey, sandboxName }) {
   return {
     Authorization: authHeader,
@@ -32,26 +31,16 @@ function buildCommonHeaders({ authHeader, imsOrg, apiKey, sandboxName }) {
   };
 }
 
-/**
- * Return ETag from response headers (fetchRaw lowercases keys).
- */
 function pickEtag(headers = {}) {
   return headers.etag || headers.ETag || headers["etag"] || headers["ETag"] || null;
 }
 
-/**
- * Some AJO HTML embeds fragment ids like "ajo:<uuid>".
- * REST endpoint is /fragments/<uuid> (no "ajo:" prefix).
- */
 function stripAjoPrefix(id) {
   if (!id || typeof id !== "string") return null;
   const trimmed = id.trim();
   return trimmed.startsWith("ajo:") ? trimmed.slice("ajo:".length) : trimmed;
 }
 
-/**
- * Build a clean GET-by-id URL from a base that might include query params.
- */
 function buildFragmentGetUrl(baseUrl, fragmentId) {
   if (!baseUrl) return null;
 
@@ -65,9 +54,62 @@ function buildFragmentGetUrl(baseUrl, fragmentId) {
   return u.toString();
 }
 
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function safeJsonSnippet(obj, maxChars = 1200) {
+  try {
+    const s = JSON.stringify(obj);
+    return s.length > maxChars ? s.slice(0, maxChars) + "…" : s;
+  } catch {
+    return String(obj);
+  }
+}
+
 /**
- * Find AJO fragment ids referenced in template HTML.
+ * Simple concurrency limiter (no deps).
+ * Runs `items` through `worker(item)` with at most `limit` in flight.
+ * Preserves result order by index.
  */
+async function mapLimit(items, limit, worker) {
+  const list = Array.isArray(items) ? items : [];
+  const n = list.length;
+  if (!n) return [];
+
+  const lim = Math.max(1, Number(limit || 1));
+  const out = new Array(n);
+
+  let next = 0;
+  let active = 0;
+
+  return new Promise((resolve, reject) => {
+    const launch = () => {
+      while (active < lim && next < n) {
+        const idx = next++;
+        active++;
+
+        Promise.resolve()
+          .then(() => worker(list[idx], idx))
+          .then((res) => {
+            out[idx] = res;
+            active--;
+            if (next >= n && active === 0) resolve(out);
+            else launch();
+          })
+          .catch(reject);
+      }
+    };
+
+    launch();
+  });
+}
+
+/* ============================================================================
+ * AJO Fragment resolve + stitch
+ * ============================================================================
+ */
+
 function extractAjoFragmentIds(html) {
   if (!html || typeof html !== "string") return [];
 
@@ -82,9 +124,6 @@ function extractAjoFragmentIds(html) {
   return [...ids];
 }
 
-/**
- * Fetch a single fragment detail (GET /fragments/<id>) and return useful fields.
- */
 async function fetchFragmentById({ baseUrl, fragmentIdRaw, headers }) {
   const cleanId = stripAjoPrefix(fragmentIdRaw);
   if (!cleanId) {
@@ -123,7 +162,7 @@ async function fetchFragmentById({ baseUrl, fragmentIdRaw, headers }) {
 }
 
 /**
- * Always resolve fragment details referenced in html.
+ * Resolve all fragment ids referenced in html (parallelized).
  */
 async function resolveFragmentsFromHtml({ html, params, commonHeaders }) {
   const resolutionWarnings = [];
@@ -141,21 +180,22 @@ async function resolveFragmentsFromHtml({ html, params, commonHeaders }) {
   const max = Number(params.maxFragmentsToResolve || 25);
   const toResolve = fragmentIds.slice(0, Math.max(0, max));
 
-  const results = [];
-  for (const fid of toResolve) {
+  const concurrency = Number(params.ajoFragmentConcurrency || 8);
+
+  const results = await mapLimit(toResolve, concurrency, async (fid) => {
     try {
-      const frag = await fetchFragmentById({
+      return await fetchFragmentById({
         baseUrl: params.AJO_GET_FRAGMENT_URL,
         fragmentIdRaw: fid,
         headers: commonHeaders,
       });
-      results.push(frag);
     } catch (e) {
       resolutionWarnings.push(`Failed to resolve fragment ${fid}: ${e.message}`);
+      return null;
     }
-  }
+  });
 
-  fragmentsResolved = results;
+  fragmentsResolved = results.filter(Boolean);
 
   if (fragmentIds.length > toResolve.length) {
     resolutionWarnings.push(
@@ -164,10 +204,6 @@ async function resolveFragmentsFromHtml({ html, params, commonHeaders }) {
   }
 
   return { fragmentsResolved, resolutionWarnings };
-}
-
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
@@ -200,7 +236,7 @@ function stitchFragmentsIntoHtml(html, fragmentsResolved) {
  * Resolve + stitch recursively up to a max depth (handles nested fragments).
  */
 async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
-  const maxDepth = Number(params.maxFragmentDepth || 5);
+  const maxDepth = Number(params.maxFragmentDepth || 3); // you said likely 3
 
   let currentHtml = html;
   let allWarnings = [];
@@ -240,12 +276,13 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
 }
 
 /* ============================================================================
- * AEM (AJO handlebars: {{fragment id='aem:<ID>?repoId=...' result='cf'}})
+ * AEM bindings (AJO handlebars: {{fragment id='aem:<ID>?repoId=...' result='cf'}})
  * ============================================================================
  */
 
 /**
  * Extract AEM fragment bindings from the HTML in-order.
+ * IMPORTANT: `index` is the appearance order; we preserve it throughout.
  */
 function extractAemBindings(html) {
   if (!html || typeof html !== "string") return [];
@@ -365,6 +402,7 @@ async function buildAemGraphqlClient(params) {
 
 /**
  * Fetch GraphQL JSON and throw (with attached data) if errors[] is present.
+ * (AEM GraphQL often returns HTTP 200 with errors[].)
  */
 async function postGraphql({ gqlUrl, headers, query, variables, operationName }) {
   const payload = { query };
@@ -457,165 +495,82 @@ function buildByFieldQuery({ fieldName, argName, selectionSet, opName }) {
   `;
 }
 
-function safeJsonSnippet(obj, maxChars = 1200) {
-  try {
-    const s = JSON.stringify(obj);
-    return s.length > maxChars ? s.slice(0, maxChars) + "…" : s;
-  } catch {
-    return String(obj);
-  }
-}
-
-/* =========================
- * Unified selection helpers
- * ========================= */
-
-function extractUndefinedFieldName(graphQLErrors = []) {
-  const msg = graphQLErrors?.[0]?.message || "";
-  const m = msg.match(/Field '([^']+)' in type '([^']+)' is undefined/i);
-  if (!m) return null;
-  return { field: m[1], type: m[2] };
-}
-
-function extractUnknownTypeName(graphQLErrors = []) {
-  const msg = graphQLErrors?.[0]?.message || "";
-  const m = msg.match(/Unknown type '([^']+)'/i);
-  if (!m) return null;
-  return { type: m[1] };
-}
-
-function extractInlineFragmentNotPossible(graphQLErrors = []) {
-  const msg = graphQLErrors?.[0]?.message || "";
-  // common GraphQL error wording varies; keep broad:
-  if (/Fragment cannot be spread here/i.test(msg)) return { message: msg };
-  if (/cannot be spread/i.test(msg)) return { message: msg };
-  return null;
-}
-
 /**
- * Inline fragment builder for primaryImage, trying multiple possible concrete types.
- * Example:
- * primaryImage {
- *   ... on ImageRef { _path }
- *   ... on AssetRef { _path }
- * }
+ * Your known-good unified selection set (fast-path).
+ * Matches the query you confirmed works.
  */
-function buildPrimaryImageInlineSelection({ typeNames, fieldList }) {
-  const fields = (fieldList || "").trim();
-  if (!fields) return "primaryImage { }";
-
-  const types = Array.isArray(typeNames) && typeNames.length ? typeNames : ["ImageRef"];
-  const spreads = types.map((t) => `... on ${t} { ${fields} }`).join("\n          ");
-  return `primaryImage {\n          ${spreads}\n        }`;
-}
-
-/**
- * Build unified selection set from "bodyCopySub" and a "primaryImage block" (string).
- */
-function buildUnifiedSelectionSetFromBlocks({ bodyCopySub, primaryImageBlock }) {
+function buildUnifiedSelectionSetKnownGood() {
   return `
-        _id
-        _path
-        eyebrowText
-        headlineText
-        bodyCopy { ${bodyCopySub} }
-        ${primaryImageBlock}
-        ctaText
-        ctaLink
-        localFootnote
-        references { referenceNote }
-        localReferences { referenceNote }
-  `;
-}
+    _id
+    _path
 
-/**
- * Introspect a GraphQL type's fields (best-effort; may be blocked).
- */
-async function introspectType({ gqlUrl, headers, typeName }) {
-  const query = `
-    query IntrospectType($name: String!) {
-      __type(name: $name) {
-        name
-        kind
-        fields {
-          name
-          type { kind name ofType { kind name ofType { kind name } } }
-        }
-      }
+    primaryImage {
+      ... on ImageRef { _path }
+    }
+
+    references { referenceNote }
+
+    headlineText
+    ctaText
+    ctaLink
+
+    ctaImage {
+      ... on ImageRef { _path }
+    }
+
+    localFootnote
+    localReferences { referenceNote }
+
+    eyebrowText
+    keyMessageCategory
+    triggersBoxedWarning
+    imageReferencePlaceholders
+    moduleId
+
+    forceBrandStylingLeaveBlankToInheritContextualBrandStyle {
+      _path
+      _id
+      _variation
+      color_text_primary
+      color_text_secondary
+      color_text_tertiary
+      color_background_primary
+      color_background_secondary
+      color_background_tertiary
+      color_text_link_primary
+      color_text_link_secondary
+      color_text_white
+      color_text_body
+      divider_color
+      divider_weight
+      component_button_border_radius
+      font_size_heading_x1
+      font_size_heading_lg
+      font_size_heading_med
+      font_size_heading_sm
+      font_size_heading_xs
+      font_family
+      email_headline_line_height
+      email_body_copy_line_height
+      email_banner_content_left_margin
+      email_banner_content_right_margin
+      email_banner_content_top_margin
+      email_banner_content_bottom_margin
+      email_banner_content_section_padding
     }
   `;
-  const data = await postGraphql({
-    gqlUrl,
-    headers,
-    query,
-    variables: { name: typeName },
-    operationName: "IntrospectType",
-  });
-  return data?.data?.__type || null;
 }
 
 /**
- * From an introspected __type, pick "scalar-ish" field names (SCALAR/ENUM).
- */
-function pickScalarFieldNames(typeInfo, preferred = []) {
-  const fields = typeInfo?.fields || [];
-  const scalarish = fields
-    .filter((f) => {
-      const k = f?.type?.kind;
-      const ok = k === "SCALAR" || k === "ENUM";
-      const okNested = f?.type?.ofType?.kind === "SCALAR" || f?.type?.ofType?.kind === "ENUM";
-      return ok || okNested;
-    })
-    .map((f) => f.name);
-
-  const out = [];
-  for (const p of preferred) if (scalarish.includes(p)) out.push(p);
-  for (const n of scalarish) if (!out.includes(n)) out.push(n);
-  return out;
-}
-
-/**
- * Build a unified selection set:
- * - bodyCopy: subselection (MultiFormatString list)
- * - primaryImage: *inline fragments* for common concrete types, because schemas often use unions/interfaces
- *
- * If introspection is blocked, we still return a safe baseline with ImageRef inline fragment.
- */
-async function buildUnifiedSelectionSet({ gqlUrl, headers }) {
-  let bodyCopySub = "html plaintext";
-
-  // For primaryImage, we build inline fragments:
-  let primaryImageFields = "_path";
-  let primaryImageTypeNames = ["ImageRef", "AssetRef", "DAMAssetRef", "Reference", "Image"];
-
-  try {
-    const mfs = await introspectType({ gqlUrl, headers, typeName: "MultiFormatString" });
-    const mfsFields = pickScalarFieldNames(mfs, ["html", "plaintext", "json", "raw"]);
-    if (mfsFields.length) bodyCopySub = mfsFields.slice(0, 3).join(" ");
-
-    // We *can’t* reliably introspect unions to get possibleTypes in all AEM envs,
-    // so we keep a curated list of likely types. If your env uses different ones,
-    // the retry loop below will still find the right one (or fall back).
-  } catch {
-    // Introspection might be blocked; fall back to baseline
-  }
-
-  const primaryImageBlock = buildPrimaryImageInlineSelection({
-    typeNames: primaryImageTypeNames,
-    fieldList: primaryImageFields,
-  });
-
-  return buildUnifiedSelectionSetFromBlocks({ bodyCopySub, primaryImageBlock });
-}
-
-/**
- * Prefetch AEM objects for encountered bindings.
+ * Prefetch AEM objects for encountered bindings (parallelized) while preserving order.
+ * - prbProperties: fixed selection
+ * - unifiedPromotionalContent: known-good selection set (fast-path)
  */
 async function prefetchAemBindings({ stitchedHtml, params }) {
   const aemBindingsEncountered = extractAemBindings(stitchedHtml);
 
   const aemWarnings = [];
-  const aemPrefetch = [];
+  let aemPrefetch = [];
   const aemCacheKeys = [];
   const aemPrefetchData = {};
 
@@ -629,6 +584,8 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
     for (const b of aemBindingsEncountered) {
       aemPrefetch.push({ index: b.index, result: b.result, aemId: b.aemId, ok: false, reason: client.reason });
     }
+    // ensure stable order
+    aemPrefetch.sort((x, y) => (x.index ?? 0) - (y.index ?? 0));
     return { aemBindingsEncountered, aemPrefetch, aemCacheKeys, aemWarnings, aemPrefetchData };
   }
 
@@ -645,16 +602,14 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
   }
 
   const selectionForPrb = `
-        _id
-        _path
-        name
-        prbNumber
-        startingDate
-        expirationDate
-        brandStyle { font_family }
+    _id
+    _path
+    name
+    prbNumber
+    startingDate
+    expirationDate
+    brandStyle { font_family }
   `;
-
-  let selectionForUnified = null;
 
   function modelFromResult(result) {
     if (result === "prbProperties") return "prbProperties";
@@ -662,28 +617,35 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
     return null;
   }
 
-  for (const b of aemBindingsEncountered) {
+  // Build tasks in the same order as bindings (for stable cacheKeys + indexing)
+  const tasks = aemBindingsEncountered.map((b) => {
     const model = modelFromResult(b.result);
+    const cacheKey = model && b.aemId ? `${model}:${b.aemId}` : null;
+    if (cacheKey) aemCacheKeys.push(cacheKey);
+    return { b, model };
+  });
 
+  const concurrency = Number(params.aemConcurrency || 4);
+
+  const results = await mapLimit(tasks, concurrency, async ({ b, model }) => {
     if (!b.aemId) {
-      aemPrefetch.push({ index: b.index, result: b.result, aemId: b.aemId, ok: false, reason: "Missing aemId" });
-      continue;
+      return { kind: "prefetch", row: { index: b.index, result: b.result, aemId: b.aemId, ok: false, reason: "Missing aemId" } };
     }
 
     if (!model) {
-      aemPrefetch.push({
-        index: b.index,
-        result: b.result,
-        aemId: b.aemId,
-        ok: false,
-        reason: `Unknown result '${b.result}' (no model mapping)`,
-      });
-      continue;
+      return {
+        kind: "prefetch",
+        row: {
+          index: b.index,
+          result: b.result,
+          aemId: b.aemId,
+          ok: false,
+          reason: `Unknown result '${b.result}' (no model mapping)`,
+        },
+      };
     }
 
-    const cacheKey = `${model}:${b.aemId}`;
-    aemCacheKeys.push(cacheKey);
-
+    // Pick the best query field + arg name (based on introspection if possible)
     let fieldName = null;
     let argName = null;
 
@@ -696,155 +658,110 @@ async function prefetchAemBindings({ stitchedHtml, params }) {
     if (!fieldName) fieldName = `${model}ById`;
     if (!argName) argName = "_id";
 
-    // UNIFIED: try baseline + a systematic retry across types/fields
+    // UNIFIED: known-good selection set
     if (model === "unifiedPromotionalContent") {
-      if (!selectionForUnified) {
-        selectionForUnified = await buildUnifiedSelectionSet({ gqlUrl: client.gqlUrl, headers: client.headers });
-      }
+      const selectionSet = buildUnifiedSelectionSetKnownGood();
+      const opName = `Get_${model}_ById`;
+      const query = buildByFieldQuery({ fieldName, argName, selectionSet, opName });
 
-      const unifiedBodyCopySubs = ["html plaintext"];
-      const primaryImageFieldCandidates = ["_path", "path", "_publishUrl", "_authorUrl", "_id", "id"];
+      try {
+        const data = await postGraphql({
+          gqlUrl: client.gqlUrl,
+          headers: client.headers,
+          query,
+          variables: { id: b.aemId },
+          operationName: opName,
+        });
 
-      // likely concrete types; add/remove as needed
-      const primaryImageTypeCandidates = ["ImageRef", "AssetRef", "DAMAssetRef", "Image", "Reference"];
+        const item = data?.data?.[fieldName]?.item || null;
 
-      // Candidate 0: whatever buildUnifiedSelectionSet produced
-      const candidates = [selectionForUnified];
+        const row = { index: b.index, result: b.result, aemId: b.aemId, ok: !!item, fieldName, argName };
 
-      // Candidate variants:
-      for (const bc of unifiedBodyCopySubs) {
-        for (const f of primaryImageFieldCandidates) {
-          // 1) plain selection (if primaryImage is actually an object type)
-          const plainPrimary = `primaryImage { ${f} }`;
-          candidates.push(buildUnifiedSelectionSetFromBlocks({ bodyCopySub: bc, primaryImageBlock: plainPrimary }));
-
-          // 2) inline fragment selection (if union/interface)
-          const inlinePrimary = buildPrimaryImageInlineSelection({
-            typeNames: primaryImageTypeCandidates,
-            fieldList: f,
-          });
-          candidates.push(buildUnifiedSelectionSetFromBlocks({ bodyCopySub: bc, primaryImageBlock: inlinePrimary }));
+        if (item) {
+          return { kind: "data", key: `${b.index}:${b.result}`, item, row };
         }
+
+        return {
+          kind: "warn",
+          warning: `AEM fetch succeeded but returned no item for ${b.result} ${b.aemId} (field=${fieldName}, arg=${argName}).`,
+          row,
+        };
+      } catch (e) {
+        const errErrors = e?.data?.errors || null;
+
+        return {
+          kind: "warn",
+          warning: `Failed to fetch AEM ${b.result} ${b.aemId}: ${e.message}${errErrors ? ` | errors=${safeJsonSnippet(errErrors)}` : ""}`,
+          row: { index: b.index, result: b.result, aemId: b.aemId, ok: false, fieldName, argName },
+        };
       }
-
-      // De-dupe candidates
-      const uniqueCandidates = [...new Set(candidates)];
-
-      let lastErr = null;
-      let item = null;
-      let usedSelection = null;
-
-      for (const selectionSet of uniqueCandidates) {
-        const opName = `Get_${model}_ById`;
-        const query = buildByFieldQuery({ fieldName, argName, selectionSet, opName });
-
-        try {
-          const data = await postGraphql({
-            gqlUrl: client.gqlUrl,
-            headers: client.headers,
-            query,
-            variables: { id: b.aemId },
-            operationName: opName,
-          });
-
-          item = data?.data?.[fieldName]?.item || null;
-          usedSelection = selectionSet;
-          break; // validated (even if item null)
-        } catch (e) {
-          lastErr = e;
-
-          // Retry only on schema validation-ish problems
-          const errs = e?.data?.errors || [];
-          const undef = extractUndefinedFieldName(errs);
-          const unkType = extractUnknownTypeName(errs);
-          const fragNo = extractInlineFragmentNotPossible(errs);
-
-          if (!undef && !unkType && !fragNo) break;
-        }
-      }
-
-      if (item) {
-        aemPrefetch.push({ index: b.index, result: b.result, aemId: b.aemId, ok: true, fieldName, argName });
-        aemPrefetchData[`${b.index}:${b.result}`] = item;
-      } else if (!lastErr) {
-        aemPrefetch.push({ index: b.index, result: b.result, aemId: b.aemId, ok: false, fieldName, argName });
-        aemWarnings.push(
-          `AEM fetch succeeded but returned no item for ${b.result} ${b.aemId} (field=${fieldName}, arg=${argName}).`
-        );
-      } else {
-        const errErrors = lastErr?.data?.errors || null;
-        aemPrefetch.push({ index: b.index, result: b.result, aemId: b.aemId, ok: false, fieldName, argName });
-        aemWarnings.push(
-          `Failed to fetch AEM ${b.result} ${b.aemId}: ${lastErr?.message || "Unknown error"}${
-            errErrors ? ` | errors=${safeJsonSnippet(errErrors)}` : ""
-          }`
-        );
-        if (usedSelection) {
-          aemWarnings.push(`Last unified selection attempted (truncated): ${usedSelection.trim().slice(0, 280)}…`);
-        }
-      }
-
-      continue;
     }
 
     // PRB: fixed selection
-    const selectionSet = selectionForPrb;
-    const opName = `Get_${model}_ById`;
-    const query = buildByFieldQuery({ fieldName, argName, selectionSet, opName });
+    {
+      const selectionSet = selectionForPrb;
+      const opName = `Get_${model}_ById`;
+      const query = buildByFieldQuery({ fieldName, argName, selectionSet, opName });
 
-    try {
-      const data = await postGraphql({
-        gqlUrl: client.gqlUrl,
-        headers: client.headers,
-        query,
-        variables: { id: b.aemId },
-        operationName: opName,
-      });
+      try {
+        const data = await postGraphql({
+          gqlUrl: client.gqlUrl,
+          headers: client.headers,
+          query,
+          variables: { id: b.aemId },
+          operationName: opName,
+        });
 
-      const item = data?.data?.[fieldName]?.item || null;
+        const item = data?.data?.[fieldName]?.item || null;
 
-      aemPrefetch.push({
-        index: b.index,
-        result: b.result,
-        aemId: b.aemId,
-        ok: !!item,
-        fieldName,
-        argName,
-      });
+        const row = { index: b.index, result: b.result, aemId: b.aemId, ok: !!item, fieldName, argName };
 
-      if (item) {
-        aemPrefetchData[`${b.index}:${b.result}`] = item;
-      } else {
-        aemWarnings.push(
-          `AEM fetch succeeded but returned no item for ${b.result} ${b.aemId} (field=${fieldName}, arg=${argName}).`
-        );
+        if (item) {
+          return { kind: "data", key: `${b.index}:${b.result}`, item, row };
+        }
+
+        return {
+          kind: "warn",
+          warning: `AEM fetch succeeded but returned no item for ${b.result} ${b.aemId} (field=${fieldName}, arg=${argName}).`,
+          row,
+        };
+      } catch (e) {
+        const errErrors = e?.data?.errors || null;
+
+        return {
+          kind: "warn",
+          warning: `Failed to fetch AEM ${b.result} ${b.aemId}: ${e.message}${errErrors ? ` | errors=${safeJsonSnippet(errErrors)}` : ""}`,
+          row: { index: b.index, result: b.result, aemId: b.aemId, ok: false, fieldName, argName },
+        };
       }
-    } catch (e) {
-      const errErrors = e?.data?.errors || null;
+    }
+  });
 
-      aemPrefetch.push({
-        index: b.index,
-        result: b.result,
-        aemId: b.aemId,
-        ok: false,
-        fieldName,
-        argName,
-      });
-
-      aemWarnings.push(
-        `Failed to fetch AEM ${b.result} ${b.aemId}: ${e.message}${errErrors ? ` | errors=${safeJsonSnippet(errErrors)}` : ""}`
-      );
+  // Fold results into outputs (stable order by binding index)
+  for (const r of results) {
+    if (!r) continue;
+    if (r.kind === "data") {
+      aemPrefetchData[r.key] = r.item;
+      aemPrefetch.push(r.row);
+    } else if (r.kind === "warn") {
+      aemWarnings.push(r.warning);
+      aemPrefetch.push(r.row);
+    } else if (r.kind === "prefetch") {
+      aemPrefetch.push(r.row);
     }
   }
+
+  // Maintain appearance order no matter what finished first
+  aemPrefetch.sort((x, y) => (x.index ?? 0) - (y.index ?? 0));
 
   return { aemBindingsEncountered, aemPrefetch, aemCacheKeys, aemWarnings, aemPrefetchData };
 }
 
-/**
- * Render action main:
- * - HTML mode: params.html
- * - templateId mode: params.templateId
+/* ============================================================================
+ * Main
+ * ============================================================================
  */
+
 async function main(params) {
   if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
     return corsPreflight();
