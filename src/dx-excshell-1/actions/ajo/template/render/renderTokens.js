@@ -56,8 +56,9 @@ function getByPath(obj, path) {
 
 /**
  * Coercion rules to make preview feel closer to AJO:
- * - IMPORTANT UPDATE: arrays now concatenate their items’ coerced values,
- *   which mirrors how AJO prints arrays of rich text objects in many templates.
+ * - arrays concatenate their items’ coerced values
+ * - object with html/plaintext favors html/plaintext
+ * - object with _path favors _path
  */
 function coerceValue(val) {
   if (val == null) return "";
@@ -124,7 +125,42 @@ function pickDefaultCtxForNamespace({ namespace, aemBindingsEncountered, dataByS
   return null;
 }
 
-function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStreamKey, defaultCtx }) {
+/**
+ * Styles context derivation:
+ */
+function deriveStylesContext({ prbCtx, cfCtx }) {
+  const prbStyle = prbCtx?.brandStyle && typeof prbCtx.brandStyle === "object" ? prbCtx.brandStyle : null;
+
+  const cfOverride =
+    cfCtx?.forceBrandStylingLeaveBlankToInheritContextualBrandStyle &&
+    typeof cfCtx.forceBrandStylingLeaveBlankToInheritContextualBrandStyle === "object"
+      ? cfCtx.forceBrandStylingLeaveBlankToInheritContextualBrandStyle
+      : null;
+
+  return cfOverride || prbStyle || null;
+}
+
+/**
+ * Build the root context for the mini AJO runtime.
+ * This is CRITICAL so templates like {{#each cf.bodyCopy}} resolve correctly.
+ */
+function buildMiniAjoRootCtx({ cfCtx, prbCtx, stylesCtx }) {
+  return {
+    cf: cfCtx && typeof cfCtx === "object" ? cfCtx : {},
+    prbProperties: prbCtx && typeof prbCtx === "object" ? prbCtx : {},
+    styles: stylesCtx && typeof stylesCtx === "object" ? stylesCtx : {},
+  };
+}
+
+function renderNamespaceByBindingOrder({
+  html,
+  namespace,
+  bindings,
+  dataByStreamKey,
+  defaultCtx,
+  defaultPrbCtx,
+  defaultCfCtx,
+}) {
   if (!html) return html;
 
   const binds = (Array.isArray(bindings) ? bindings : [])
@@ -136,7 +172,16 @@ function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStream
   if (!binds.length) {
     if (!defaultCtx) return html;
 
-    const maybeExpanded = renderMiniAjo(html, defaultCtx);
+    const miniRoot = buildMiniAjoRootCtx({
+      cfCtx: namespace === "cf" ? defaultCtx : defaultCfCtx,
+      prbCtx: namespace === "prbProperties" ? defaultCtx : defaultPrbCtx,
+      stylesCtx: deriveStylesContext({
+        prbCtx: namespace === "prbProperties" ? defaultCtx : defaultPrbCtx,
+        cfCtx: namespace === "cf" ? defaultCtx : defaultCfCtx,
+      }),
+    });
+
+    const maybeExpanded = renderMiniAjo(html, miniRoot);
     return replaceNamespaceVars(maybeExpanded, namespace, defaultCtx);
   }
 
@@ -151,10 +196,21 @@ function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStream
 
     let before = html.slice(cursor, tagPos);
 
-    // Expand minimal AJO blocks scoped to current context
-    before = renderMiniAjo(before, currentCtx || defaultCtx);
+    const effectiveCtx = currentCtx || defaultCtx;
 
-    out += replaceNamespaceVars(before, namespace, currentCtx || defaultCtx);
+    const miniRoot = buildMiniAjoRootCtx({
+      cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
+      prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
+      stylesCtx: deriveStylesContext({
+        prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
+        cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
+      }),
+    });
+
+    // Expand minimal AJO blocks (e.g., {{#each cf.bodyCopy}}) BEFORE namespaced replacements
+    before = renderMiniAjo(before, miniRoot);
+
+    out += replaceNamespaceVars(before, namespace, effectiveCtx);
 
     // strip binding tag from preview output (we only needed it for ordering)
     out += "";
@@ -167,25 +223,21 @@ function renderNamespaceByBindingOrder({ html, namespace, bindings, dataByStream
   }
 
   let tail = html.slice(cursor);
-  tail = renderMiniAjo(tail, currentCtx || defaultCtx);
-  out += replaceNamespaceVars(tail, namespace, currentCtx || defaultCtx);
+
+  const effectiveCtx = currentCtx || defaultCtx;
+  const miniRoot = buildMiniAjoRootCtx({
+    cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
+    prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
+    stylesCtx: deriveStylesContext({
+      prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
+      cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
+    }),
+  });
+
+  tail = renderMiniAjo(tail, miniRoot);
+  out += replaceNamespaceVars(tail, namespace, effectiveCtx);
 
   return out;
-}
-
-/**
- * Styles context derivation:
- */
-function deriveStylesContext({ prbCtx, cfCtx }) {
-  const prbStyle = prbCtx?.brandStyle && typeof prbCtx.brandStyle === "object" ? prbCtx.brandStyle : null;
-
-  const cfOverride =
-    cfCtx?.forceBrandStylingLeaveBlankToInheritContextualBrandStyle &&
-    typeof cfCtx.forceBrandStylingLeaveBlankToInheritContextualBrandStyle === "object"
-      ? cfCtx.forceBrandStylingLeaveBlankToInheritContextualBrandStyle
-      : null;
-
-  return cfOverride || prbStyle || null;
 }
 
 /**
@@ -210,7 +262,8 @@ function resolveStylesByBindings({
     const styles = deriveStylesContext({ prbCtx: defaultPrbCtx, cfCtx: defaultCfCtx });
     if (!styles) return stitchedHtml;
 
-    const maybeExpanded = renderMiniAjo(stitchedHtml, styles);
+    const miniRoot = buildMiniAjoRootCtx({ cfCtx: defaultCfCtx, prbCtx: defaultPrbCtx, stylesCtx: styles });
+    const maybeExpanded = renderMiniAjo(stitchedHtml, miniRoot);
     return replaceNamespaceVars(maybeExpanded, "styles", styles);
   }
 
@@ -228,8 +281,13 @@ function resolveStylesByBindings({
 
     let seg = stitchedHtml.slice(cursor, tagPos);
 
-    seg = renderMiniAjo(seg, currentStyles);
+    const miniRoot = buildMiniAjoRootCtx({
+      cfCtx: currentCf || defaultCfCtx,
+      prbCtx: currentPrb || defaultPrbCtx,
+      stylesCtx: currentStyles,
+    });
 
+    seg = renderMiniAjo(seg, miniRoot);
     out += replaceNamespaceVars(seg, "styles", currentStyles);
 
     // strip binding tag from preview output
@@ -247,7 +305,14 @@ function resolveStylesByBindings({
   }
 
   let tail = stitchedHtml.slice(cursor);
-  tail = renderMiniAjo(tail, currentStyles);
+
+  const tailRoot = buildMiniAjoRootCtx({
+    cfCtx: currentCf || defaultCfCtx,
+    prbCtx: currentPrb || defaultPrbCtx,
+    stylesCtx: currentStyles,
+  });
+
+  tail = renderMiniAjo(tail, tailRoot);
   out += replaceNamespaceVars(tail, "styles", currentStyles);
 
   return out;
@@ -284,6 +349,8 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     bindings: aemBindingsEncountered,
     dataByStreamKey: aemPrefetchDataByStreamKey,
     defaultCtx: defaultPrbCtx,
+    defaultPrbCtx,
+    defaultCfCtx,
   });
 
   out = renderNamespaceByBindingOrder({
@@ -292,6 +359,8 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     bindings: aemBindingsEncountered,
     dataByStreamKey: aemPrefetchDataByStreamKey,
     defaultCtx: defaultCfCtx,
+    defaultPrbCtx,
+    defaultCfCtx,
   });
 
   // final sanitize for preview HTML

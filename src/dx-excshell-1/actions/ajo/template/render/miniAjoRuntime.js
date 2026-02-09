@@ -7,8 +7,11 @@
 //      {{{bodyCopy}}}, {{bodyCopy}}, {{{this}}}, {{{alias}}}, {{alias.html}}, etc.
 //  - Do NOT attempt full Handlebars; do NOT touch {{fragment ...}} tags.
 //  - Be safe: if parsing fails, leave input unchanged.
+//  - Best-effort preview: if the each list can't be resolved, leave the block untouched.
 //
-// This is designed to run BEFORE namespace token replacement in renderTokens.js.
+// IMPORTANT CONTEXT SHAPE:
+// renderTokens passes ctx shaped like { cf: {...}, prbProperties: {...}, styles: {...} }
+// so templates can do: {{#each cf.bodyCopy}} ... {{/each}}
 
 function escapeHtml(s) {
   return String(s ?? "")
@@ -32,16 +35,14 @@ function getByPath(obj, path) {
 /**
  * AJO-like coercion for "printable" values:
  * - primitives => String
- * - object with html/plaintext => favor html
+ * - object with html/plaintext => favor html, then plaintext
  * - object with _path => _path
- * - arrays => join coerced elements (no separator by default)
+ * - arrays => join coerced elements (no separator)
  */
 function coerceValue(val) {
   if (val == null) return "";
 
   if (Array.isArray(val)) {
-    // Mirror AJO-ish behavior: render each item as its "string value" and concatenate.
-    // Using "" (not "\n") to avoid messing up HTML layout; templates can include their own <p>/<br/>.
     return val.map(coerceValue).join("");
   }
 
@@ -68,10 +69,10 @@ function coerceValue(val) {
  * Resolve a "token path" against:
  * - alias var (if token begins with alias.)
  * - localCtx (the current each item)
- * - rootCtx (the namespace root passed from renderTokens, e.g. cf ctx)
+ * - rootCtx (the namespace root passed from renderTokens, e.g. {cf, prbProperties, styles})
  *
  * Examples:
- * - "bodyCopy" -> localCtx.bodyCopy OR localCtx itself if it has no property but is a rich text object
+ * - "bodyCopy" -> localCtx.bodyCopy OR localCtx itself if it is a rich text object
  * - "this" -> localCtx
  * - "alias" -> aliasObj
  * - "alias.html" -> aliasObj.html
@@ -80,25 +81,21 @@ function resolveTokenValue({ tokenPath, rootCtx, localCtx, aliasName, aliasObj }
   const p = String(tokenPath || "").trim();
   if (!p) return undefined;
 
-  // Special handlebars-ish tokens (very small subset)
   if (p === "this") return localCtx;
 
-  // Alias resolution
   if (aliasName && (p === aliasName || p.startsWith(aliasName + "."))) {
     const sub = p === aliasName ? "" : p.slice(aliasName.length + 1);
     return sub ? getByPath(aliasObj, sub) : aliasObj;
   }
 
-  // Prefer local context first
   if (localCtx && typeof localCtx === "object") {
     const vLocal = getByPath(localCtx, p);
     if (vLocal !== undefined) return vLocal;
 
-    // If token is "bodyCopy" but localCtx is itself a bodyCopy-like object, allow printing it directly.
+    // Common convenience: if localCtx is itself a bodyCopy-like object, allow {{{bodyCopy}}} to print it.
     if (p === "bodyCopy") return localCtx;
   }
 
-  // Fallback to root ctx (e.g. cf ctx)
   return getByPath(rootCtx, p);
 }
 
@@ -109,7 +106,6 @@ function resolveTokenValue({ tokenPath, rootCtx, localCtx, aliasName, aliasObj }
 function replaceSimpleTokens(segment, { rootCtx, localCtx, aliasName, aliasObj }) {
   if (!segment || typeof segment !== "string") return segment;
 
-  // Triple must run before double.
   const triple = /\{\{\{\s*([a-zA-Z_][a-zA-Z0-9_$.]*)\s*\}\}\}/g;
   const dbl = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_$.]*)\s*\}\}/g;
 
@@ -133,14 +129,15 @@ function replaceSimpleTokens(segment, { rootCtx, localCtx, aliasName, aliasObj }
  *  - {{#each cf.bodyCopy as |thisBodyCopy|}} ... {{/each}}
  *  - {{#each cf.bodyCopy}} ... {{/each}}   (no alias)
  *
- * We only support non-nested each reliably; however we do a bounded recursion pass
- * to handle common nested cases without blowing up.
+ * We do a bounded recursion pass to handle common nested cases without blowing up.
+ *
+ * BEST-EFFORT PREVIEW:
+ * - If the list path can't be resolved (undefined/null), we leave the entire block untouched.
  */
 function renderEachBlocks(html, rootCtx, depth, maxDepth) {
   if (!html || typeof html !== "string") return html;
   if (depth >= maxDepth) return html;
 
-  // Match start tags like: {{#each <path> (as |alias|)?}}
   const eachOpenRe = /{{\s*#each\s+([a-zA-Z0-9_$.]+)(?:\s+as\s+\|\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\|)?\s*}}/g;
 
   let out = "";
@@ -156,13 +153,12 @@ function renderEachBlocks(html, rootCtx, depth, maxDepth) {
     const path = m[1] || "";
     const aliasName = m[2] || null;
 
-    // Find matching close tag {{/each}} after openEnd
     const closeRe = /{{\s*\/each\s*}}/g;
     closeRe.lastIndex = openEnd;
 
     const closeMatch = closeRe.exec(html);
     if (!closeMatch) {
-      // malformed; append rest and stop
+      // malformed; leave remainder untouched
       out += html.slice(cursor);
       return out;
     }
@@ -170,24 +166,31 @@ function renderEachBlocks(html, rootCtx, depth, maxDepth) {
     const closeStart = closeMatch.index;
     const closeEnd = closeRe.lastIndex;
 
-    // Append text before the each-block (but also allow simple token replacement at root level)
-    const before = html.slice(cursor, openStart);
-    out += before;
+    // Append text before the each-block (untouched here; caller already runs token replacement)
+    out += html.slice(cursor, openStart);
 
     const inner = html.slice(openEnd, closeStart);
 
     const listVal = getByPath(rootCtx, path);
-    const list = Array.isArray(listVal) ? listVal : listVal ? [listVal] : [];
+
+    // Best-effort: if we can't resolve, keep original block intact
+    if (listVal == null) {
+      out += html.slice(openStart, closeEnd);
+      cursor = closeEnd;
+      eachOpenRe.lastIndex = cursor;
+      continue;
+    }
+
+    const list = Array.isArray(listVal) ? listVal : [listVal];
 
     let renderedInner = "";
     for (let i = 0; i < list.length; i++) {
       const item = list[i];
 
-      // First, recursively expand nested each blocks inside the inner template with the same rootCtx.
-      // (This keeps scope simple; the inner token replacement uses localCtx for item-level resolution.)
+      // Expand nested each blocks inside the inner template
       let innerExpanded = renderEachBlocks(inner, rootCtx, depth + 1, maxDepth);
 
-      // Then replace un-namespaced tokens using localCtx=item
+      // Replace un-namespaced tokens using localCtx=item
       innerExpanded = replaceSimpleTokens(innerExpanded, {
         rootCtx,
         localCtx: item,
