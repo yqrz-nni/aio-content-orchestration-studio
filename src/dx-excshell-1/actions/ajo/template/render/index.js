@@ -30,51 +30,77 @@ async function main(params) {
   }
 
   try {
-    const { token, imsOrg } = requireIms(params);
-    const authHeader = normalizeBearer(token);
+    // Allow "HTML-first" rendering for the demo.
+    // If html is provided, we don't need to fetch from AJO.
+    const providedHtml =
+      typeof params.html === "string"
+        ? params.html
+        : typeof params.templateHtml === "string"
+          ? params.templateHtml
+          : typeof params.templateHtml?.body === "string"
+            ? params.templateHtml.body
+            : typeof params.html?.body === "string"
+              ? params.html.body
+              : null;
 
-    const templateId = params.templateId;
-    if (!templateId) return badRequest("Missing templateId");
+    // If we're going to fetch from AJO, we need IMS context + AJO config.
+    const needsFetch = !providedHtml;
 
-    if (!params.AJO_API_KEY) return serverError("Missing AJO_API_KEY");
-    if (!params.SANDBOX_NAME) return serverError("Missing SANDBOX_NAME");
-    if (!params.AJO_GET_TEMPLATE_URL) return serverError("Missing AJO_GET_TEMPLATE_URL");
-
-    const url = buildGetUrl(params, templateId);
-    if (!url) return serverError("Could not build template GET url");
-
-    const resp = await fetchRaw(url, {
-      method: "GET",
-      headers: {
-        Authorization: authHeader,
-        "x-gw-ims-org-id": imsOrg,
-        "x-api-key": params.AJO_API_KEY,
-        "x-sandbox-name": params.SANDBOX_NAME,
-        accept: "application/vnd.adobe.ajo.template.v1+json",
-      },
-    });
-
-    const data = resp?.data || null;
-    const html =
-      data?.template?.html?.body ??
-      data?.template?.html ??
-      null;
-
-    if (!html) {
-      return serverError("Template fetched but no template.html found", {
-        templateId,
-        keys: data ? Object.keys(data) : null,
-      });
+    let token, imsOrg;
+    if (needsFetch) {
+      const ims = requireIms(params);
+      token = ims.token;
+      imsOrg = ims.imsOrg;
     }
 
-    const etag = pickEtag(resp?.headers || null);
+    const templateId = params.templateId || null;
 
-    // Keep the response contract "render-centric"
+    if (!providedHtml && !templateId) {
+      return badRequest("Missing templateId or html");
+    }
+
+    let html = providedHtml;
+    let etag = null;
+
+    if (!html) {
+      if (!params.AJO_API_KEY) return serverError("Missing AJO_API_KEY");
+      if (!params.SANDBOX_NAME) return serverError("Missing SANDBOX_NAME");
+      if (!params.AJO_GET_TEMPLATE_URL) return serverError("Missing AJO_GET_TEMPLATE_URL");
+
+      const authHeader = normalizeBearer(token);
+      const url = buildGetUrl(params, templateId);
+      if (!url) return serverError("Could not build template GET url");
+
+      const resp = await fetchRaw(url, {
+        method: "GET",
+        headers: {
+          Authorization: authHeader,
+          "x-gw-ims-org-id": imsOrg,
+          "x-api-key": params.AJO_API_KEY,
+          "x-sandbox-name": params.SANDBOX_NAME,
+          accept: "application/vnd.adobe.ajo.template.v1+json",
+        },
+      });
+
+      const data = resp?.data || null;
+      html = data?.template?.html?.body ?? data?.template?.html ?? null;
+
+      if (!html) {
+        return serverError("Template fetched but no template.html found", {
+          templateId,
+          keys: data ? Object.keys(data) : null,
+        });
+      }
+
+      etag = pickEtag(resp?.headers || null);
+    }
+
+    // Response is now "render-centric" even before we stitch fragments.
     return ok({
       templateId,
       html,
-      etag, // handy for subsequent update flows / caching
-      // Later: include resolved fragments, decisions, audience stats, etc.
+      etag,
+      // Next: renderedHtml, trace, fragmentGraph, etc.
     });
   } catch (e) {
     return serverError(e.message, {
