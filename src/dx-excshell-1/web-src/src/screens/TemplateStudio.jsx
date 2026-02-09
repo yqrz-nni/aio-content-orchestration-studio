@@ -314,11 +314,8 @@ async function createTemplateFromBaseline() {
 
       // Be tolerant about response shape while we’re iterating
       const rendered =
-        res?.renderedHtml ||
-        res?.html ||
-        res?.body?.html ||
-        res?.result?.html ||
-        res?.result?.renderedHtml ||
+        res?.renderedHtml ??
+        res?.html ??
         null;
 
       if (!rendered || typeof rendered !== "string") {
