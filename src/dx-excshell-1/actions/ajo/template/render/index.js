@@ -115,6 +115,9 @@ async function fetchFragmentById({ baseUrl, fragmentIdRaw, headers }) {
     content:
       resp?.data?.fragment?.content ??
       resp?.data?.fragment?.processedContent ??
+      resp?.data?.fragment?.expression ??
+      // (extra safety in case the API nests it differently)
+      resp?.data?.fragment?.content?.expression ??
       null,
   };
 }
