@@ -329,106 +329,113 @@ function safeJson(obj, space = 2) {
   }
 }
 
+/* =============================================================================
+ * Preview sanitizer + warnings
+ * ============================================================================= */
+
 /**
- * Optional preview-only sanitizer (belt + suspenders).
- * If the action returns renderedHtml sanitized, this is mostly redundant.
- * It also protects the fallback path (stitchedHtml + local resolution).
+ * Strip noisy ACR-wrapped blocks and Liquid tags, but NEVER delete AJO fragment includes.
  *
- * NOTE:
- * - The action sanitizes comments/liquid; here we strip only ACR blocks + liquid for fallback safety.
- * - We DO NOT strip generic {{ ... }} so cf/prb tokens remain resolvable.
+ * Key bug you hit:
+ * - Many VF includes are wrapped in:
+ *   {{!-- [acr-start-fragment] --}}{{ fragment id="ajo:..." ... }}{{!-- [acr-end-fragment] --}}
+ * - If you naively strip everything between acr-start/end, you delete the actual VF call.
+ *
+ * This function removes:
+ * - Liquid tags: {% ... %}
+ * - ACR comment-wrapped "expr-field"/"expr"/"field" blocks
+ * - Other ACR blocks by default
+ *
+ * And preserves:
+ * - Any ACR block whose inner HTML includes {{ fragment id="ajo:... }}
  */
 function stripAjoSyntax(html) {
   if (!html || typeof html !== "string") return html;
+
   let out = html;
 
-  // Remove ACR wrapped blocks
-  const acrBlockRe =
-    /{{!--\s*\[acr-start[\s\S]*?}}[\s\S]*?{{!--[\s\S]*?\[acr-end[\s\S]*?}}/gim;
-  out = out.replace(acrBlockRe, "");
+  // Remove Liquid tags (preview shouldn't show them)
+  out = out.replace(/{%\s*[\s\S]*?\s*%}/g, "");
 
-  // Remove Liquid tags
-  const liquidTagRe = /{%\s*[\s\S]*?\s*%}/g;
-  out = out.replace(liquidTagRe, "");
+  // Strip ACR-wrapped blocks, preserving VF includes
+  const acrBlockRe = /{{!--\s*\[acr-start([^\]]*)\]\s*--}}([\s\S]*?){{!--\s*\[acr-end[^\]]*\]\s*--}}/gim;
+
+  out = out.replace(acrBlockRe, (_m, startSuffix, inner) => {
+    const kind = String(startSuffix || "").trim().toLowerCase(); // e.g. "-expr-field", "-fragment"
+
+    // Always keep VF calls; remove wrapper comments but keep inner
+    if (/\{\{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:/i.test(inner)) {
+      return inner;
+    }
+
+    // If you want to keep AEM bindings too, uncomment:
+    // if (/\{\{\s*fragment\b[^}]*\bid\s*=\s*(['"])aem:/i.test(inner)) return inner;
+
+    // Strip obvious noise types
+    if (kind.includes("expr-field") || kind.includes("expr") || kind.includes("field")) return "";
+
+    // Default: strip other ACR blocks (conservative)
+    return "";
+  });
+
+  // Remove any stray ACR marker comments
+  out = out.replace(/{{!--\s*\[acr-(?:start|end)[^\]]*\]\s*--}}/gim, "");
 
   return out;
 }
 
-/* =============================================================================
- * Helpers: warnings + iframe instrumentation
- * ============================================================================= */
-
-function detectPreviewWarnings(html) {
-  const warnings = [];
-  if (!html || typeof html !== "string") return warnings;
-
-  // AJO Liquid tags: our iframe preview will never execute these, so they can explain missing VFs/content.
-  const liquidRe = /{%\s*[\s\S]*?\s*%}/g;
-  const liquidCount = (html.match(liquidRe) || []).length;
-  if (liquidCount) warnings.push(`Liquid tags present (${liquidCount}). Preview will not evaluate {% ... %} locals.`);
-
-  // Any remaining AJO VF directives suggest VF expansion didn't happen in render step.
-  const ajoVfDirectiveRe = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:[^'"]+\1[^}]*}}/gi;
-  const vfDirectiveCount = (html.match(ajoVfDirectiveRe) || []).length;
-  if (vfDirectiveCount) warnings.push(`AJO VF directives still present (${vfDirectiveCount}). VFs may not be expanded.`);
-
-  // Un-namespaced handlebars tokens like {{prbYear}} {{prbMonthName}} etc
-  // (common when template uses local variables created via Liquid).
-  const bareTokenRe = /{{{?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}?}}/g;
-  const bad = new Set();
-  let m;
-  while ((m = bareTokenRe.exec(html)) !== null) {
-    const t = m[1] || "";
-    if (!t) continue;
-    if (t === "fragment") continue; // ignore helper name itself
-    if (t.startsWith("cf") || t.startsWith("prbProperties") || t.startsWith("styles")) continue;
-    // ignore some harmless handlebars-ish things that could appear in comments (rare)
-    if (t === "!--") continue;
-    bad.add(t);
-    if (bad.size >= 20) break;
-  }
-  if (bad.size) warnings.push(`Unresolved tokens detected: ${[...bad].slice(0, 12).join(", ")}${bad.size > 12 ? "…" : ""}`);
-
-  return warnings;
+function countMatches(str, re) {
+  if (!str || typeof str !== "string") return 0;
+  const m = str.match(re);
+  return m ? m.length : 0;
 }
 
-function injectIframeLogger(html) {
-  if (!html || typeof html !== "string") return html;
+function computePreviewWarnings({ beforeSanitize, afterSanitize, expectedVfIds = [] }) {
+  const warnings = [];
 
-  // Don't double-inject.
-  if (html.includes("data-ts-iframe-logger")) return html;
+  const before = beforeSanitize || "";
+  const after = afterSanitize || "";
 
-  const script = `
-<script data-ts-iframe-logger>
-(function(){
-  function post(payload){
-    try{
-      window.parent && window.parent.postMessage({ __ts_preview_log: true, ...payload }, "*");
-    }catch(e){}
+  // 1) Liquid tags present (should be stripped)
+  const liquidCount = countMatches(after, /{%\s*[\s\S]*?\s*%}/g);
+  if (liquidCount > 0) warnings.push(`Liquid tags still present in preview HTML (${liquidCount}).`);
+
+  // 2) ACR markers still present
+  const acrMarkerCount = countMatches(after, /{{!--\s*\[acr-(?:start|end)[^\]]*\]\s*--}}/gim);
+  if (acrMarkerCount > 0) warnings.push(`ACR marker comments still present in preview HTML (${acrMarkerCount}).`);
+
+  // 3) AJO fragment calls exist in canonical "best" but got removed by sanitizer
+  const beforeAjoCalls = countMatches(before, /\{\{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:/gi);
+  const afterAjoCalls = countMatches(after, /\{\{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:/gi);
+  if (beforeAjoCalls > 0 && afterAjoCalls === 0) {
+    warnings.push(
+      "All AJO fragment includes (ajo:...) disappeared after sanitization. This usually means the sanitizer is stripping VF blocks."
+    );
+  } else if (afterAjoCalls > 0) {
+    warnings.push(
+      `AJO fragment includes (ajo:...) are still present in preview HTML (${afterAjoCalls}). That means they were NOT stitched/resolved before preview.`
+    );
   }
 
-  window.addEventListener("error", function(ev){
-    var msg = (ev && ev.message) ? ev.message : "Unknown error";
-    post({ type: "error", message: msg, filename: ev && ev.filename, lineno: ev && ev.lineno, colno: ev && ev.colno });
-  });
+  // 4) Specific VF IDs expected but missing after sanitize
+  const uniq = [...new Set((expectedVfIds || []).filter(Boolean))];
+  for (const id of uniq) {
+    const re = new RegExp(`ajo:${String(id).replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}`, "i");
+    const hadBefore = re.test(before);
+    const hasAfter = re.test(after);
+    if (hadBefore && !hasAfter) {
+      warnings.push(`VF ajo:${id} was present in HTML but is missing after sanitization.`);
+    }
+  }
 
-  window.addEventListener("unhandledrejection", function(ev){
-    var reason = ev && ev.reason;
-    var msg = (reason && (reason.message || String(reason))) || "Unhandled promise rejection";
-    post({ type: "unhandledrejection", message: msg });
-  });
+  // 5) Very common symptom: unresolved handlebars-like tokens left behind
+  // (We do NOT treat as fatal, but warn because it can break layout or be "noise".)
+  const curlyCount = countMatches(after, /{{\s*[^}]+}}/g);
+  if (curlyCount > 50) {
+    warnings.push(`Preview HTML still contains many {{...}} tokens (${curlyCount}). (Not necessarily wrong, but may be noisy.)`);
+  }
 
-  // Helpful: report that the iframe DOM loaded
-  document.addEventListener("DOMContentLoaded", function(){
-    post({ type: "info", message: "Preview iframe DOMContentLoaded" });
-  });
-})();
-</script>`;
-
-  // Best: inject before </head>. Else before </body>. Else append.
-  if (html.includes("</head>")) return html.replace("</head>", `${script}</head>`);
-  if (html.includes("</body>")) return html.replace("</body>", `${script}</body>`);
-  return html + script;
+  return warnings.slice(0, 10);
 }
 
 /* =============================================================================
@@ -476,9 +483,8 @@ export function TemplateStudio() {
   const [isRendering, setIsRendering] = useState(false);
   const [renderError, setRenderError] = useState("");
 
-  // NEW: preview warnings + iframe logs (surfaced in UI)
-  const [previewWarnings, setPreviewWarnings] = useState([]); // string[]
-  const [iframeLogs, setIframeLogs] = useState([]); // {ts,type,message,...}[]
+  // NEW: non-fatal preview warnings (shown in same error area)
+  const [previewWarnings, setPreviewWarnings] = useState([]);
 
   // Optional advanced renderContext controls
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -494,41 +500,6 @@ export function TemplateStudio() {
     const v = safeParseJson(cacheText, {});
     return v && typeof v === "object" ? v : {};
   }, [cacheText]);
-
-  // ---------------------------------------------------------------------------
-  // Listen for iframe logs (window.onerror inside preview iframe)
-  // ---------------------------------------------------------------------------
-
-  useEffect(() => {
-    function onMessage(ev) {
-      const data = ev?.data;
-      if (!data || data.__ts_preview_log !== true) return;
-
-      setIframeLogs((prev) => {
-        const next = [
-          ...prev,
-          {
-            ts: Date.now(),
-            type: data.type || "info",
-            message: data.message || "",
-            filename: data.filename,
-            lineno: data.lineno,
-            colno: data.colno,
-          },
-        ];
-        return next.slice(-50);
-      });
-
-      // Promote iframe runtime errors into the existing error UI area
-      if (data.type === "error" || data.type === "unhandledrejection") {
-        const msg = `Preview runtime error: ${data.message || "Unknown error"}`;
-        setRenderError((cur) => cur || msg);
-      }
-    }
-
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, []);
 
   // ---------------------------------------------------------------------------
   // Simple “operation queue” so rapid clicks don’t interleave PUT-like updates
@@ -696,12 +667,11 @@ export function TemplateStudio() {
 
   async function renderPreview() {
     try {
-      setIsRendering(true);
-      setIframeLogs([]);
+      setRenderError("");
       setPreviewWarnings([]);
+      setIsRendering(true);
 
       if (!canonicalHtml) {
-        setRenderError("");
         setPreviewHtml("<html><body><p>No HTML loaded yet.</p></body></html>");
         return;
       }
@@ -728,23 +698,27 @@ export function TemplateStudio() {
       const best = resolvePreviewHtmlFromRenderResult(res, canonicalHtml);
 
       if (!best || typeof best !== "string") {
-        setRenderError("Render succeeded but returned no HTML.");
         setPreviewHtml("<html><body><p>Render succeeded but returned no HTML.</p></body></html>");
         return;
       }
 
-      // NEW: warnings for common “silent failures” (VF not expanded, Liquid locals, etc)
-      const warnings = detectPreviewWarnings(best);
-      setPreviewWarnings(warnings);
+      // Sanitize for iframe preview, but preserve VF includes
+      const sanitized = stripAjoSyntax(best);
 
-      // Keep renderError for actual failures / runtime parse errors; do not clobber it with warnings
-      setRenderError("");
+      // Warnings: show non-fatal issues in the existing error area
+      const expectedVfIds = (Array.isArray(modules) ? modules : []).map((m) => m?.vfId).filter(Boolean);
+      const warnings = computePreviewWarnings({
+        beforeSanitize: best,
+        afterSanitize: sanitized,
+        expectedVfIds,
+      });
 
-      // Preview HTML should be safe-ish for iframe and instrumented for runtime errors.
-      const stripped = stripAjoSyntax(best);
-      const instrumented = injectIframeLogger(stripped);
+      if (warnings.length) {
+        console.warn("Preview warnings:", warnings);
+        setPreviewWarnings(warnings);
+      }
 
-      setPreviewHtml(instrumented);
+      setPreviewHtml(sanitized);
 
       // Optional: merge hydrated values into cache editor for reuse
       if (res?.aemCacheKeys && res?.aemPrefetchDataByStreamKey && Array.isArray(res?.aemBindingsEncountered)) {
@@ -772,6 +746,7 @@ export function TemplateStudio() {
     } catch (e) {
       console.error("Render preview failed:", e);
       setRenderError(e?.message || "Render failed");
+      setPreviewWarnings([]);
       setPreviewHtml(stripAjoSyntax(canonicalHtml || "<html><body><p>Render failed.</p></body></html>"));
     } finally {
       setIsRendering(false);
@@ -804,8 +779,6 @@ export function TemplateStudio() {
   const resolutionWarnings = Array.isArray(lastRenderResult?.resolutionWarnings) ? lastRenderResult.resolutionWarnings : [];
   const aemPrefetch = Array.isArray(lastRenderResult?.aemPrefetch) ? lastRenderResult.aemPrefetch : [];
   const perf = lastRenderResult?.perf || null;
-
-  const mergedWarnings = [...previewWarnings, ...resolutionWarnings, ...aemWarnings].filter(Boolean);
 
   return (
     <View>
@@ -873,10 +846,9 @@ export function TemplateStudio() {
           <Text>templateId: {templateId || "(not created yet)"}</Text>
         </View>
 
-        {/* Warnings shown near the top too (so you don't miss them) */}
-        {mergedWarnings.length ? (
+        {aemWarnings.length ? (
           <View marginTop="size-150">
-            <StatusLight variant="negative">{mergedWarnings[0]}</StatusLight>
+            <StatusLight variant="negative">{aemWarnings[0]}</StatusLight>
           </View>
         ) : null}
 
@@ -974,9 +946,9 @@ export function TemplateStudio() {
                     </View>
                   ) : null}
 
-                  {previewWarnings.length ? (
+                  {!renderError && previewWarnings.length ? (
                     <View marginBottom="size-100">
-                      {previewWarnings.slice(0, 5).map((w, i) => (
+                      {previewWarnings.map((w, i) => (
                         <View key={`pw-${i}`} marginBottom="size-50">
                           <StatusLight variant="negative">{w}</StatusLight>
                         </View>
@@ -987,30 +959,9 @@ export function TemplateStudio() {
                   <iframe
                     title="Email Preview"
                     style={{ width: "100%", height: "100%", border: "none" }}
-                    sandbox="allow-same-origin allow-scripts"
+                    sandbox="allow-same-origin"
                     srcDoc={previewHtml}
                   />
-
-                  {iframeLogs.length ? (
-                    <View marginTop="size-150" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-100">
-                      <Heading level={5}>Preview iframe logs</Heading>
-                      <Divider size="S" marginY="size-100" />
-                      <View height="size-1200" overflow="auto">
-                        {iframeLogs
-                          .slice()
-                          .reverse()
-                          .slice(0, 12)
-                          .map((l, idx) => (
-                            <View key={`log-${l.ts}-${idx}`} marginBottom="size-50">
-                              <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: "12px" }}>
-                                [{new Date(l.ts).toLocaleTimeString()}] {l.type}: {l.message}
-                                {l.filename ? ` (${l.filename}:${l.lineno}:${l.colno})` : ""}
-                              </Text>
-                            </View>
-                          ))}
-                      </View>
-                    </View>
-                  ) : null}
                 </View>
               </Item>
 
