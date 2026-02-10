@@ -2,7 +2,7 @@
 //
 // Minimal evaluator for a small subset of AJO-style handlebars blocks.
 // Goals:
-//  - Support {{#each <path> as |alias|}} ... {{/each}}
+//  - Support {{#each <path> as |alias|}} ... {{/each}} (WITH nesting)
 //  - Inside each block, resolve un-namespaced tokens like:
 //      {{{bodyCopy}}}, {{bodyCopy}}, {{{this}}}, {{{alias}}}, {{alias.html}}, etc.
 //  - Do NOT attempt full Handlebars; do NOT touch {{fragment ...}} tags.
@@ -42,9 +42,7 @@ function getByPath(obj, path) {
 function coerceValue(val) {
   if (val == null) return "";
 
-  if (Array.isArray(val)) {
-    return val.map(coerceValue).join("");
-  }
+  if (Array.isArray(val)) return val.map(coerceValue).join("");
 
   if (typeof val === "string" || typeof val === "number" || typeof val === "boolean") return String(val);
 
@@ -70,12 +68,6 @@ function coerceValue(val) {
  * - alias var (if token begins with alias.)
  * - localCtx (the current each item)
  * - rootCtx (the namespace root passed from renderTokens, e.g. {cf, prbProperties, styles})
- *
- * Examples:
- * - "bodyCopy" -> localCtx.bodyCopy OR localCtx itself if it is a rich text object
- * - "this" -> localCtx
- * - "alias" -> aliasObj
- * - "alias.html" -> aliasObj.html
  */
 function resolveTokenValue({ tokenPath, rootCtx, localCtx, aliasName, aliasObj }) {
   const p = String(tokenPath || "").trim();
@@ -92,17 +84,13 @@ function resolveTokenValue({ tokenPath, rootCtx, localCtx, aliasName, aliasObj }
     const vLocal = getByPath(localCtx, p);
     if (vLocal !== undefined) return vLocal;
 
-    // Common convenience: if localCtx is itself a bodyCopy-like object, allow {{{bodyCopy}}} to print it.
+    // Convenience: in a bodyCopy loop, {{{bodyCopy}}} should print the item
     if (p === "bodyCopy") return localCtx;
   }
 
   return getByPath(rootCtx, p);
 }
 
-/**
- * Replace un-namespaced tokens within a segment, using the current localCtx + alias var.
- * We intentionally do NOT match tokens with spaces/keywords like "fragment", "#each", etc.
- */
 function replaceSimpleTokens(segment, { rootCtx, localCtx, aliasName, aliasObj }) {
   if (!segment || typeof segment !== "string") return segment;
 
@@ -123,17 +111,28 @@ function replaceSimpleTokens(segment, { rootCtx, localCtx, aliasName, aliasObj }
 }
 
 /**
- * Minimal {{#each ...}} parser.
- *
- * Supported forms:
- *  - {{#each cf.bodyCopy as |thisBodyCopy|}} ... {{/each}}
- *  - {{#each cf.bodyCopy}} ... {{/each}}   (no alias)
- *
- * We do a bounded recursion pass to handle common nested cases without blowing up.
- *
- * BEST-EFFORT PREVIEW:
- * - If the list path can't be resolved (undefined/null), we leave the entire block untouched.
+ * Find the matching {{/each}} for an opening {{#each ...}} starting at openEnd,
+ * correctly handling nested {{#each}} blocks.
  */
+function findMatchingEachClose(html, openEnd) {
+  const tagRe = /{{\s*(#each\b[^}]*|\/each)\s*}}/g;
+  tagRe.lastIndex = openEnd;
+
+  let depth = 1;
+  while (true) {
+    const m = tagRe.exec(html);
+    if (!m) return null;
+
+    const raw = m[1] || "";
+    if (raw.startsWith("#each")) depth += 1;
+    else if (raw === "/each") depth -= 1;
+
+    if (depth === 0) {
+      return { closeStart: m.index, closeEnd: tagRe.lastIndex };
+    }
+  }
+}
+
 function renderEachBlocks(html, rootCtx, depth, maxDepth) {
   if (!html || typeof html !== "string") return html;
   if (depth >= maxDepth) return html;
@@ -153,24 +152,17 @@ function renderEachBlocks(html, rootCtx, depth, maxDepth) {
     const path = m[1] || "";
     const aliasName = m[2] || null;
 
-    const closeRe = /{{\s*\/each\s*}}/g;
-    closeRe.lastIndex = openEnd;
-
-    const closeMatch = closeRe.exec(html);
-    if (!closeMatch) {
-      // malformed; leave remainder untouched
+    const close = findMatchingEachClose(html, openEnd);
+    if (!close) {
       out += html.slice(cursor);
       return out;
     }
 
-    const closeStart = closeMatch.index;
-    const closeEnd = closeRe.lastIndex;
+    const { closeStart, closeEnd } = close;
 
-    // Append text before the each-block (untouched here; caller already runs token replacement)
     out += html.slice(cursor, openStart);
 
     const inner = html.slice(openEnd, closeStart);
-
     const listVal = getByPath(rootCtx, path);
 
     // Best-effort: if we can't resolve, keep original block intact
@@ -184,13 +176,10 @@ function renderEachBlocks(html, rootCtx, depth, maxDepth) {
     const list = Array.isArray(listVal) ? listVal : [listVal];
 
     let renderedInner = "";
-    for (let i = 0; i < list.length; i++) {
-      const item = list[i];
-
-      // Expand nested each blocks inside the inner template
+    for (const item of list) {
+      // recurse first so nested loops render properly
       let innerExpanded = renderEachBlocks(inner, rootCtx, depth + 1, maxDepth);
 
-      // Replace un-namespaced tokens using localCtx=item
       innerExpanded = replaceSimpleTokens(innerExpanded, {
         rootCtx,
         localCtx: item,
@@ -211,19 +200,14 @@ function renderEachBlocks(html, rootCtx, depth, maxDepth) {
   return out;
 }
 
-/**
- * Main entry: expand each blocks, then replace any remaining simple tokens
- * against the root ctx (without localCtx).
- */
 function renderMiniAjo(htmlSegment, ctx) {
   if (!htmlSegment || typeof htmlSegment !== "string") return htmlSegment;
 
   const rootCtx = ctx && typeof ctx === "object" ? ctx : {};
 
-  // 1) Expand each blocks
-  let out = renderEachBlocks(htmlSegment, rootCtx, 0, 3);
+  let out = renderEachBlocks(htmlSegment, rootCtx, 0, 8);
 
-  // 2) Replace any leftover simple tokens (un-namespaced) at root scope
+  // Replace any leftover simple tokens at root scope
   out = replaceSimpleTokens(out, {
     rootCtx,
     localCtx: null,
