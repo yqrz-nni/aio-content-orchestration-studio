@@ -599,10 +599,18 @@ function createDynamicReferencesState() {
   return {
     wrapper: null, // e.g., "##"
     wrapperCandidates: new Map(), // wrapper -> count
+
     noteToNumber: new Map(), // note -> global #
     orderedNotes: [], // global list
+
     placeholdersSeen: 0,
     replacementsMade: 0,
+
+    // extra visibility
+    supHandlebarsSeen: 0,
+    supHandlebarsReplaced: 0,
+    wrapperPlaceholdersSeen: 0,
+    wrapperPlaceholdersReplaced: 0,
   };
 }
 
@@ -659,16 +667,91 @@ function extractReferenceNotesFromCf(cfCtx) {
   return notes;
 }
 
-/**
- * Resolve placeholders like "##1" in a segment using the cf.references ordering.
- * Each placeholder local index maps to cf.references[localIndex-1].referenceNote.
- * Then we assign a global number based on first-seen uniqueness of referenceNote.
- */
-function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmentKey }) {
-  if (!html || typeof html !== "string") return html;
-  if (!dynState) return html;
+function assignGlobalRefNumber(dynState, note) {
+  if (!dynState) return null;
+  const key = String(note ?? "");
+  if (!key) return null;
 
-  const notes = extractReferenceNotesFromCf(cfCtx);
+  let globalNum = dynState.noteToNumber.get(key);
+  const wasNew = globalNum == null;
+
+  if (wasNew) {
+    globalNum = dynState.orderedNotes.length + 1;
+    dynState.noteToNumber.set(key, globalNum);
+    dynState.orderedNotes.push(key);
+  }
+
+  return { globalNum, wasNew };
+}
+
+/**
+ * Phase 1 (name-agnostic):
+ * Resolve <sup>{{anything}}</sup> occurrences by POSITION within the segment:
+ * - 1st <sup>{{...}}</sup> -> cf.references[0].referenceNote -> global index
+ * - 2nd -> cf.references[1] -> ...
+ *
+ * This avoids depending on r1/r2/refWrapper/refCount being evaluated in-scope.
+ */
+function resolveSupHandlebarsByPosition({ html, notes, dynState, diag, segmentKey }) {
+  if (!html || typeof html !== "string") return { out: html, mapping: [] };
+  if (!dynState) return { out: html, mapping: [] };
+
+  // Match <sup ...>{{token}}</sup> or <sup ...>{{{token}}}</sup>
+  // Keep conservative: only "simple identifier" inside handlebars (no dots)
+  const re =
+    /<sup([^>]*)>\s*\{\{\{?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}?\}\}\s*<\/sup>/gi;
+
+  let localIdx = 0;
+  const mapping = [];
+
+  const out = html.replace(re, (m, supAttrs, tokenName) => {
+    localIdx += 1;
+    dynState.supHandlebarsSeen += 1;
+    dynState.placeholdersSeen += 1;
+
+    const note = notes[localIdx - 1] ?? "";
+    if (!note) {
+      if (diag?.dynamicReferences) {
+        diag.dynamicReferences.warnings.push({
+          message: "Superscript handlebars placeholder had no matching cf.references entry (by position).",
+          segmentKey,
+          localIdx,
+          tokenName,
+          referencesLength: notes.length,
+        });
+      }
+      // leave original
+      return m;
+    }
+
+    const assigned = assignGlobalRefNumber(dynState, note);
+    if (!assigned) return m;
+
+    dynState.supHandlebarsReplaced += 1;
+    dynState.replacementsMade += 1;
+
+    mapping.push({
+      kind: "sup-handlebars",
+      tokenName,
+      localIdx,
+      note,
+      globalNum: assigned.globalNum,
+      wasNew: assigned.wasNew,
+    });
+
+    return `<sup${supAttrs}>${assigned.globalNum}</sup>`;
+  });
+
+  return { out, mapping };
+}
+
+/**
+ * Phase 2 (wrapper-based):
+ * Resolve placeholders like "##1" in a segment using cf.references ordering.
+ */
+function resolveWrapperPlaceholders({ html, notes, dynState, diag, segmentKey }) {
+  if (!html || typeof html !== "string") return { out: html, mapping: [] };
+  if (!dynState) return { out: html, mapping: [] };
 
   // If wrapper not known yet, infer from this segment
   if (!dynState.wrapper) {
@@ -690,10 +773,10 @@ function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmen
     }
   }
 
-  // If still no wrapper, nothing to do
-  if (!dynState.wrapper) return html;
+  if (!dynState.wrapper) return { out: html, mapping: [] };
 
   const wrapper = dynState.wrapper;
+
   const phRe = new RegExp(`${escapeRegExp(wrapper)}(\\d{1,3})`, "g");
 
   // Collect unique local indices in this segment
@@ -704,21 +787,21 @@ function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmen
     if (Number.isFinite(idx) && idx > 0) localIdxs.add(idx);
   }
 
-  if (!localIdxs.size) return html;
+  if (!localIdxs.size) return { out: html, mapping: [] };
 
+  dynState.wrapperPlaceholdersSeen += localIdxs.size;
   dynState.placeholdersSeen += localIdxs.size;
 
   const mapping = [];
   let out = html;
 
-  // Replace per local index
   for (const localIdx of Array.from(localIdxs).sort((a, b) => a - b)) {
     const note = notes[localIdx - 1] ?? "";
 
     if (!note) {
       if (diag?.dynamicReferences) {
         diag.dynamicReferences.warnings.push({
-          message: "Placeholder index had no matching cf.references entry.",
+          message: "Wrapper placeholder index had no matching cf.references entry.",
           segmentKey,
           wrapper,
           localIdx,
@@ -728,23 +811,51 @@ function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmen
       continue;
     }
 
-    let globalNum = dynState.noteToNumber.get(note);
-    const wasNew = globalNum == null;
+    const assigned = assignGlobalRefNumber(dynState, note);
+    if (!assigned) continue;
 
-    if (wasNew) {
-      globalNum = dynState.orderedNotes.length + 1;
-      dynState.noteToNumber.set(note, globalNum);
-      dynState.orderedNotes.push(note);
+    const targetRe = new RegExp(`${escapeRegExp(wrapper)}${localIdx}\\b`, "g");
+
+    const before = out;
+    out = out.replace(targetRe, String(assigned.globalNum));
+
+    if (out !== before) {
+      dynState.wrapperPlaceholdersReplaced += 1;
+      dynState.replacementsMade += 1;
     }
 
-    // Replace all occurrences of wrapper+localIdx with globalNum
-    const targetRe = new RegExp(`${escapeRegExp(wrapper)}${localIdx}\\b`, "g");
-    const beforeLen = out.length;
-    out = out.replace(targetRe, String(globalNum));
-    if (out.length !== beforeLen) dynState.replacementsMade += 1;
-
-    mapping.push({ localIdx, note, globalNum, wasNew });
+    mapping.push({
+      kind: "wrapper",
+      wrapper,
+      localIdx,
+      note,
+      globalNum: assigned.globalNum,
+      wasNew: assigned.wasNew,
+    });
   }
+
+  return { out, mapping };
+}
+
+/**
+ * Run both dynamic reference passes for a segment.
+ */
+function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmentKey }) {
+  if (!html || typeof html !== "string") return html;
+  if (!dynState) return html;
+
+  const notes = extractReferenceNotesFromCf(cfCtx);
+  const combinedMapping = [];
+
+  // Phase 1: <sup>{{token}}</sup> by position
+  const sup = resolveSupHandlebarsByPosition({ html, notes, dynState, diag, segmentKey });
+  let out = sup.out;
+  combinedMapping.push(...sup.mapping);
+
+  // Phase 2: wrapper placeholders (##1, etc)
+  const wrap = resolveWrapperPlaceholders({ html: out, notes, dynState, diag, segmentKey });
+  out = wrap.out;
+  combinedMapping.push(...wrap.mapping);
 
   if (diag?.dynamicReferences) {
     diag.dynamicReferences.totalPlaceholdersSeen = dynState.placeholdersSeen;
@@ -754,10 +865,15 @@ function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmen
 
     diag.dynamicReferences.perSegment.push({
       segmentKey,
-      wrapper,
-      placeholdersInSegment: Array.from(localIdxs).sort((a, b) => a - b),
+      wrapper: dynState.wrapper,
       referencesLength: notes.length,
-      mapping,
+      mapping: combinedMapping,
+      counters: {
+        supHandlebarsSeen: dynState.supHandlebarsSeen,
+        supHandlebarsReplaced: dynState.supHandlebarsReplaced,
+        wrapperPlaceholdersSeen: dynState.wrapperPlaceholdersSeen,
+        wrapperPlaceholdersReplaced: dynState.wrapperPlaceholdersReplaced,
+      },
     });
   }
 
@@ -1007,7 +1123,12 @@ function resolveStylesByBindings({
     let maybeExpanded = renderMiniAjo(stitchedHtml, miniRoot);
 
     const needed = collectTopLevelVarNames(maybeExpanded);
-    maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
+    maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, {
+      ctx: miniRoot,
+      locale: "en-US",
+      neededVars: needed,
+      diag,
+    });
 
     return replaceNamespaceVars(maybeExpanded, "styles", styles);
   }
@@ -1181,6 +1302,12 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
       diag.dynamicReferences.totalReplacementsMade = dynState.replacementsMade;
       diag.dynamicReferences.totalUniqueReferences = dynState.orderedNotes.length;
       diag.dynamicReferences.orderedReferenceNotes = dynState.orderedNotes.slice(0, 200);
+
+      // add additional counters
+      diag.dynamicReferences.supHandlebarsSeen = dynState.supHandlebarsSeen;
+      diag.dynamicReferences.supHandlebarsReplaced = dynState.supHandlebarsReplaced;
+      diag.dynamicReferences.wrapperPlaceholdersSeen = dynState.wrapperPlaceholdersSeen;
+      diag.dynamicReferences.wrapperPlaceholdersReplaced = dynState.wrapperPlaceholdersReplaced;
     }
   }
 
