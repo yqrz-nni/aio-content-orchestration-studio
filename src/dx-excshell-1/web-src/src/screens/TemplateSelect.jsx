@@ -13,6 +13,7 @@ import {
   Divider,
   TextField,
   StatusLight,
+  Grid, // ✅ FIX: was missing
 } from "@adobe/react-spectrum";
 
 import actions from "../config.json";
@@ -105,11 +106,13 @@ export function TemplateSelect() {
 
       const items = res?.templates || res?.items || [];
       setTemplates(
-        (Array.isArray(items) ? items : []).map((t) => ({
-          id: t.id || t.templateId || t._id,
-          name: t.name || t.title || t.label || "(unnamed)",
-          raw: t,
-        })).filter((t) => !!t.id)
+        (Array.isArray(items) ? items : [])
+          .map((t) => ({
+            id: t.id || t.templateId || t._id,
+            name: t.name || t.title || t.label || "(unnamed)",
+            raw: t,
+          }))
+          .filter((t) => !!t.id)
       );
 
       if (!items?.length) setStatus("No templates found for this PRB (or action returned no rows). You can create a new one.");
