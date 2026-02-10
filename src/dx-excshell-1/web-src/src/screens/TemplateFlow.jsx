@@ -1,71 +1,58 @@
-/* 
-* <license header>
-*/
+// File: src/dx-excshell-1/web-src/src/screens/TemplateFlow.jsx
+//
+// Single-screen “progressive reveal” flow:
+// - Select PRB
+// - Create/open template
+// - Compose in Studio (embedded)
+// Keeps deep links intact elsewhere; this is just a UX wrapper.
 
-import React from 'react'
-import { Provider, defaultTheme, View } from '@adobe/react-spectrum'
-import ErrorBoundary from 'react-error-boundary'
-import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
-import { ImsContext } from "../context/ImsContext";
+import React, { useMemo, useState } from "react";
+import { View, Divider } from "@adobe/react-spectrum";
 
-import { PrbSelect } from "../screens/PrbSelect";
-import { TemplateSelect } from "../screens/TemplateSelect";
-import { TemplateStudio } from "../screens/TemplateStudio";
+import { PrbSelect } from "./PrbSelect";
+import { TemplateSelect } from "./TemplateSelect";
+import { TemplateStudio } from "./TemplateStudio";
 
-function App (props) {
-  // eslint-disable-next-line no-console
-  console.log('runtime object:', props.runtime)
-  // eslint-disable-next-line no-console
-  console.log('ims object:', props.ims)
+export function TemplateFlow() {
+  // local flow state (no routing required)
+  const [prbId, setPrbId] = useState(null);
+  const [templateId, setTemplateId] = useState(null);
 
-  // use exc runtime event handlers
-  // respond to configuration change events (e.g. user switches org)
-  props.runtime.on('configuration', ({ imsOrg, imsToken, locale }) => {
-    // eslint-disable-next-line no-console
-    console.log('configuration change', { imsOrg, imsToken, locale })
-  })
-  // respond to history change events
-  props.runtime.on('history', ({ type, path }) => {
-    // eslint-disable-next-line no-console
-    console.log('history change', { type, path })
-  })
+  const hasPrb = !!prbId;
+  const hasTemplate = !!templateId;
+
+  const studioKey = useMemo(() => `${prbId || ""}:${templateId || ""}`, [prbId, templateId]);
 
   return (
-    <ErrorBoundary onError={onError} FallbackComponent={fallbackComponent}>
-      <Router>
-        <Provider theme={defaultTheme} colorScheme={'light'}>
-          <ImsContext.Provider value={props.ims}>
-            <View padding="size-200">
-              <Routes>
-                <Route path="/" element={<Navigate to="/prb" replace />} />
-                <Route path="/prb" element={<PrbSelect />} />
-                <Route path="/prb/:prbId/templates" element={<TemplateSelect />} />
-                <Route path="/prb/:prbId/templates/:templateId/studio" element={<TemplateStudio />} />
-                <Route path="*" element={<Navigate to="/prb" replace />} />
-              </Routes>
-            </View>
-          </ImsContext.Provider>
-        </Provider>
-      </Router>
-    </ErrorBoundary>
-  )
+    <View>
+      {/* Step 1: PRB */}
+      <PrbSelect
+        mode="embedded"
+        value={prbId}
+        onChange={(next) => {
+          setPrbId(next || null);
+          setTemplateId(null); // reset downstream
+        }}
+      />
 
-  // Methods
+      <Divider size="S" marginY="size-200" />
 
-  // error handler on UI rendering failure
-  function onError (e, componentStack) { }
+      {/* Step 2: Template list / create */}
+      <TemplateSelect
+        mode="embedded"
+        prbIdOverride={prbId}
+        isDisabled={!hasPrb}
+        onOpenTemplate={(tid) => setTemplateId(tid || null)}
+      />
 
-  // component to show if UI fails rendering
-  function fallbackComponent ({ componentStack, error }) {
-    return (
-      <React.Fragment>
-        <h1 style={{ textAlign: 'center', marginTop: '20px' }}>
-          Something went wrong :(
-        </h1>
-        <pre>{componentStack + '\n' + error.message}</pre>
-      </React.Fragment>
-    )
-  }
+      <Divider size="S" marginY="size-200" />
+
+      {/* Step 3: Studio */}
+      {hasPrb && hasTemplate ? (
+        <TemplateStudio mode="embedded" prbIdOverride={prbId} templateIdOverride={templateId} key={studioKey} />
+      ) : (
+        <View />
+      )}
+    </View>
+  );
 }
-
-export default App
