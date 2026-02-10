@@ -22,6 +22,7 @@ function ensureDiagnostics(d) {
   if (!rt.unresolved) rt.unresolved = {};
   if (!rt.warnings) rt.warnings = [];
   if (!rt.errors) rt.errors = [];
+  if (!rt.info) rt.info = []; // NEW: "INFO-level" events
 
   // convenience counters
   if (!rt.liquid.unknownFns) rt.liquid.unknownFns = {};
@@ -39,7 +40,14 @@ function ensureDiagnostics(d) {
       orderedReferenceNotes: [],
       perSegment: [],
       warnings: [],
+      info: [], // NEW: "INFO-level" dynamic refs events
     };
+  } else {
+    // ensure new keys exist even if older object
+    if (!rt.dynamicReferences.warnings) rt.dynamicReferences.warnings = [];
+    if (!rt.dynamicReferences.info) rt.dynamicReferences.info = [];
+    if (!rt.dynamicReferences.perSegment) rt.dynamicReferences.perSegment = [];
+    if (!rt.dynamicReferences.wrapperCandidates) rt.dynamicReferences.wrapperCandidates = [];
   }
 
   return rt;
@@ -53,6 +61,12 @@ function diagAddWarning(rt, msg, meta) {
 function diagAddError(rt, msg, meta) {
   if (!rt) return;
   rt.errors.push(meta ? { message: msg, ...meta } : { message: msg });
+}
+
+// NEW
+function diagAddInfo(rt, msg, meta) {
+  if (!rt) return;
+  rt.info.push(meta ? { message: msg, ...meta } : { message: msg });
 }
 
 /* =============================================================================
@@ -576,7 +590,33 @@ function replaceLiquidVarTokens(html, vars) {
 }
 
 /**
+ * Replace simple handlebars tokens ANYWHERE in the segment:
+ * {{name}} / {{{name}}} -> vars[name]
+ *
+ * IMPORTANT: this is allowlist-only. Used to simulate fragment param injection
+ * into rich text strings like "<sup>{{r1}}</sup>".
+ */
+function replaceHandlebarsVarTokensAnywhere(html, vars, allowlist) {
+  if (!html || typeof html !== "string") return html;
+  if (!vars || typeof vars !== "object") return html;
+
+  const keys = (Array.isArray(allowlist) ? allowlist : []).filter((k) => typeof k === "string" && k.trim());
+  if (!keys.length) return html;
+
+  const keyAlt = keys.map(escapeRegExp).join("|");
+
+  const triple = new RegExp(`\\{\\{\\{\\s*(${keyAlt})\\s*\\}\\}\\}`, "g");
+  const dbl = new RegExp(`\\{\\{\\s*(${keyAlt})\\s*\\}\\}`, "g");
+
+  let out = html.replace(triple, (_m, k) => String(vars[k] ?? ""));
+  out = out.replace(dbl, (_m, k) => escapeHtml(String(vars[k] ?? "")));
+
+  return out;
+}
+
+/**
  * Evaluate liquid lets and replace tokens, then remove the let/assign tags themselves.
+ * (kept for callers that want the original behavior)
  */
 function evaluateLiquidLetsAndReplace(html, { ctx, locale = "en-US", neededVars, diag } = {}) {
   if (!html || typeof html !== "string") return html;
@@ -684,99 +724,41 @@ function assignGlobalRefNumber(dynState, note) {
   return { globalNum, wasNew };
 }
 
-/**
- * Phase 1 (name-agnostic, robust):
- * Resolve <sup>{{anything}}</sup> occurrences ONLY when the <sup> inner content is exactly
- * a handlebars token: {{r1}} or {{{r1}}}.
- *
- * Mapping is BY POSITION within the segment:
- * - 1st such <sup>...</sup> -> cf.references[0].referenceNote -> global index
- * - 2nd -> cf.references[1] -> ...
- */
-function resolveSupHandlebarsByPosition({ html, notes, dynState, diag, segmentKey }) {
-  if (!html || typeof html !== "string") return { out: html, mapping: [] };
-  if (!dynState) return { out: html, mapping: [] };
-
-  const supRe = /<sup([^>]*)>([\s\S]*?)<\/sup>/gi;
-
-  let localIdx = 0;
-  const mapping = [];
-
-  const out = html.replace(supRe, (full, attrs, innerRaw) => {
-    const inner = String(innerRaw ?? "").trim();
-
-    // Match EXACT token inner: {{r1}} or {{{r1}}}
-    let m = inner.match(/^\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}$/);
-    if (!m) m = inner.match(/^\{\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}\}$/);
-    if (!m) return full;
-
-    const tokenName = m[1] || "";
-    localIdx += 1;
-
-    dynState.supHandlebarsSeen += 1;
-    dynState.placeholdersSeen += 1;
-
-    const note = notes[localIdx - 1] ?? "";
-    if (!note) {
-      if (diag?.dynamicReferences) {
-        diag.dynamicReferences.warnings.push({
-          message: "Superscript handlebars placeholder had no matching cf.references entry (by position).",
-          segmentKey,
-          localIdx,
-          tokenName,
-          referencesLength: notes.length,
-        });
-      }
-      return full; // leave unchanged
-    }
-
-    const assigned = assignGlobalRefNumber(dynState, note);
-    if (!assigned) return full;
-
-    dynState.supHandlebarsReplaced += 1;
-    dynState.replacementsMade += 1;
-
-    mapping.push({
-      kind: "sup-handlebars",
-      tokenName,
-      localIdx,
-      note,
-      globalNum: assigned.globalNum,
-      wasNew: assigned.wasNew,
-    });
-
-    // Preserve attributes
-    return `<sup${attrs}>${assigned.globalNum}</sup>`;
-  });
-
-  return { out, mapping };
+function getCfIdForLogs(cfCtx) {
+  if (!cfCtx || typeof cfCtx !== "object") return null;
+  return (
+    cfCtx._id ||
+    cfCtx.id ||
+    cfCtx.contentFragmentId ||
+    cfCtx.aemId ||
+    (typeof cfCtx._path === "string" ? cfCtx._path : null) ||
+    null
+  );
 }
 
 /**
  * Phase 2 (wrapper-based):
  * Resolve placeholders like "##1" in a segment using cf.references ordering.
  */
-function resolveWrapperPlaceholders({ html, notes, dynState, diag, segmentKey }) {
+function resolveWrapperPlaceholders({ html, notes, dynState, diag, segmentKey, cfId }) {
   if (!html || typeof html !== "string") return { out: html, mapping: [] };
   if (!dynState) return { out: html, mapping: [] };
 
-  // If wrapper not known yet, infer from this segment
-  if (!dynState.wrapper) {
-    const inferred = inferWrapperFromHtml(html);
-    if (inferred) dynState.wrapper = inferred;
+  // Always attempt to infer from this segment (for candidates + visibility)
+  const inferred = inferWrapperFromHtml(html);
+  if (inferred) {
+    dynState.wrapperCandidates.set(inferred, (dynState.wrapperCandidates.get(inferred) || 0) + 1);
   }
 
-  // Track wrapper candidates even if wrapper already set
-  {
-    const inferred = inferWrapperFromHtml(html);
-    if (inferred) {
-      dynState.wrapperCandidates.set(inferred, (dynState.wrapperCandidates.get(inferred) || 0) + 1);
-      if (diag?.dynamicReferences) {
-        diag.dynamicReferences.wrapperCandidates = snapshotWrapperCandidates(dynState.wrapperCandidates);
-        if (!diag.dynamicReferences.wrapperInferred && dynState.wrapper) {
-          diag.dynamicReferences.wrapperInferred = dynState.wrapper;
-        }
-      }
+  // If wrapper not known yet, adopt inferred wrapper
+  if (!dynState.wrapper && inferred) dynState.wrapper = inferred;
+
+  // Always refresh diagnostics wrapper candidates + inferred wrapper (even if wrapper already set)
+  if (diag?.dynamicReferences) {
+    diag.dynamicReferences.wrapperCandidates = snapshotWrapperCandidates(dynState.wrapperCandidates);
+
+    if (dynState.wrapper && typeof dynState.wrapper === "string") {
+      diag.dynamicReferences.wrapperInferred = dynState.wrapper;
     }
   }
 
@@ -810,6 +792,7 @@ function resolveWrapperPlaceholders({ html, notes, dynState, diag, segmentKey })
         diag.dynamicReferences.warnings.push({
           message: "Wrapper placeholder index had no matching cf.references entry.",
           segmentKey,
+          cfId,
           wrapper,
           localIdx,
           referencesLength: notes.length,
@@ -833,8 +816,10 @@ function resolveWrapperPlaceholders({ html, notes, dynState, diag, segmentKey })
 
     mapping.push({
       kind: "wrapper",
+      cfId,
       wrapper,
       localIdx,
+      tokenName: `r${localIdx}`,
       note,
       globalNum: assigned.globalNum,
       wasNew: assigned.wasNew,
@@ -845,24 +830,53 @@ function resolveWrapperPlaceholders({ html, notes, dynState, diag, segmentKey })
 }
 
 /**
- * Run both dynamic reference passes for a segment.
+ * Run wrapper-based dynamic reference resolution for a segment.
+ * (We intentionally do NOT do the old sup-handlebars positional phase.)
  */
 function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmentKey }) {
   if (!html || typeof html !== "string") return html;
   if (!dynState) return html;
 
   const notes = extractReferenceNotesFromCf(cfCtx);
+  const cfId = getCfIdForLogs(cfCtx);
   const combinedMapping = [];
 
-  // Phase 1: <sup>{{token}}</sup> by position (robust)
-  const sup = resolveSupHandlebarsByPosition({ html, notes, dynState, diag, segmentKey });
-  let out = sup.out;
-  combinedMapping.push(...sup.mapping);
+  const wrap = resolveWrapperPlaceholders({
+    html,
+    notes,
+    dynState,
+    diag,
+    segmentKey,
+    cfId,
+  });
 
-  // Phase 2: wrapper placeholders (##1, etc)
-  const wrap = resolveWrapperPlaceholders({ html: out, notes, dynState, diag, segmentKey });
-  out = wrap.out;
+  let out = wrap.out;
   combinedMapping.push(...wrap.mapping);
+
+  // INFO logging: tell user exactly what was resolved for this CF segment
+  if (diag?.dynamicReferences && combinedMapping.length) {
+    for (const m of combinedMapping) {
+      if (m.kind !== "wrapper") continue;
+
+      const msg = `AEM CF ID ${m.cfId || "(unknown)"}: {{${m.tokenName}}} resolved as global ref ${m.globalNum} ("${String(
+        m.note ?? ""
+      )}")`;
+
+      // cap growth
+      if (diag.dynamicReferences.info.length < 500) {
+        diag.dynamicReferences.info.push({
+          message: msg,
+          segmentKey,
+          cfId: m.cfId || null,
+          token: `{{${m.tokenName}}}`,
+          wrapper: m.wrapper,
+          localIdx: m.localIdx,
+          globalNum: m.globalNum,
+          referenceNote: m.note,
+        });
+      }
+    }
+  }
 
   if (diag?.dynamicReferences) {
     diag.dynamicReferences.totalPlaceholdersSeen = dynState.placeholdersSeen;
@@ -872,6 +886,7 @@ function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmen
 
     diag.dynamicReferences.perSegment.push({
       segmentKey,
+      cfId,
       wrapper: dynState.wrapper,
       referencesLength: notes.length,
       mapping: combinedMapping,
@@ -958,6 +973,8 @@ function buildMiniAjoRootCtx({ cfCtx, prbCtx, stylesCtx, localCtx }) {
   };
 }
 
+const REF_LOCAL_NAMES = ["r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"];
+
 function renderNamespaceByBindingOrder({
   html,
   namespace,
@@ -995,13 +1012,18 @@ function renderNamespaceByBindingOrder({
 
     let maybeExpanded = renderMiniAjo(html, miniRoot);
 
+    // Compute lets once; reuse values for both Liquid vars and handlebars injection.
     const needed = collectTopLevelVarNames(maybeExpanded);
-    maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, {
+    const letVars = computeLiquidLets(maybeExpanded, {
       ctx: miniRoot,
       locale: "en-US",
       neededVars: needed,
       diag,
     });
+
+    maybeExpanded = replaceLiquidVarTokens(maybeExpanded, letVars);
+    maybeExpanded = replaceHandlebarsVarTokensAnywhere(maybeExpanded, letVars, REF_LOCAL_NAMES);
+    maybeExpanded = maybeExpanded.replace(/{%\s*(?:let|assign)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*[\s\S]*?\s*%}/g, "");
 
     // Dynamic references (only meaningful with cf context)
     if (dynEnabled && namespace === "cf") {
@@ -1041,8 +1063,17 @@ function renderNamespaceByBindingOrder({
 
     before = renderMiniAjo(before, miniRoot);
 
+    // Compute lets once so we can also inject r1..r10 handlebars tokens inside rich text strings.
     const needed = collectTopLevelVarNames(before);
-    before = evaluateLiquidLetsAndReplace(before, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
+    const letVars = computeLiquidLets(before, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
+
+    before = replaceLiquidVarTokens(before, letVars);
+
+    // NEW: simulate "fragment param injection" into richtext: <sup>{{r1}}</sup> -> <sup>##1</sup>
+    before = replaceHandlebarsVarTokensAnywhere(before, letVars, REF_LOCAL_NAMES);
+
+    // Remove let/assign tags now (also stripped later)
+    before = before.replace(/{%\s*(?:let|assign)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*[\s\S]*?\s*%}/g, "");
 
     // Dynamic references pass per segment (only cf)
     if (dynEnabled && namespace === "cf") {
@@ -1084,7 +1115,11 @@ function renderNamespaceByBindingOrder({
   tail = renderMiniAjo(tail, miniRoot);
 
   const needed = collectTopLevelVarNames(tail);
-  tail = evaluateLiquidLetsAndReplace(tail, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
+  const letVars = computeLiquidLets(tail, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
+
+  tail = replaceLiquidVarTokens(tail, letVars);
+  tail = replaceHandlebarsVarTokensAnywhere(tail, letVars, REF_LOCAL_NAMES);
+  tail = tail.replace(/{%\s*(?:let|assign)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*[\s\S]*?\s*%}/g, "");
 
   if (dynEnabled && namespace === "cf") {
     tail = resolveDynamicReferencesInSegment({
@@ -1304,7 +1339,12 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     if (diag) diag.timings.dynamicRefsRefArrayMs = nowMs() - t;
 
     if (diag?.dynamicReferences) {
+      // Always set wrapperInferred when known
       diag.dynamicReferences.wrapperInferred = dynState.wrapper || diag.dynamicReferences.wrapperInferred || null;
+
+      // Always publish wrapper candidates (even if wrapper was already known)
+      diag.dynamicReferences.wrapperCandidates = snapshotWrapperCandidates(dynState.wrapperCandidates);
+
       diag.dynamicReferences.totalPlaceholdersSeen = dynState.placeholdersSeen;
       diag.dynamicReferences.totalReplacementsMade = dynState.replacementsMade;
       diag.dynamicReferences.totalUniqueReferences = dynState.orderedNotes.length;
@@ -1330,6 +1370,15 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     if (unresolved.length) {
       diagAddWarning(diag, "Unresolved top-level variables remain after preview render.", {
         unresolvedTopLevelVars: unresolved.slice(0, 50),
+      });
+    }
+
+    // Bubble a compact INFO summary at the top-level too (handy for your UI)
+    const drInfo = diag.dynamicReferences?.info || [];
+    if (drInfo.length) {
+      diagAddInfo(diag, "Dynamic references: wrapper-based replacements performed.", {
+        count: drInfo.length,
+        examples: drInfo.slice(0, 25).map((x) => x.message),
       });
     }
   }
@@ -1379,6 +1428,7 @@ module.exports = {
   deriveStylesContext,
   stripKnownEmptyEachBlocks,
 
+  replaceHandlebarsVarTokensAnywhere, // NEW export
   evaluateLiquidLetsAndReplace,
   computeLiquidLets,
   evalLiquidExpr,
