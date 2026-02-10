@@ -17,6 +17,7 @@ import {
   TextField,
   ComboBox,
   StatusLight,
+  Switch,
 } from "@adobe/react-spectrum";
 
 import actions from "../config.json";
@@ -49,6 +50,9 @@ function applyPrbToTemplateHtml(html, { prbCfId, repoId }) {
   const re = /{{\s*fragment\s+id=(['"])aem:[^'"]+\?repoId=[^'"]+\1\s+result=(['"])prbProperties\2\s*}}/g;
 
   if (!re.test(html)) {
+    // Keep this one warning: it indicates unsafe auto-mutation.
+    // (But don't flood logs beyond this.)
+    // eslint-disable-next-line no-console
     console.warn("Baseline HTML did not contain prbProperties binding; refusing to inject automatically.");
     return html;
   }
@@ -324,6 +328,10 @@ function safeJson(obj, space = 2) {
  * - This is for iframe preview only.
  * - It will remove your inline {{ fragment id="ajo:..." }} calls too (if they’re inside ACR markers),
  *   which is correct for “browser preview” unless your render action has already stitched the VF content.
+ *
+ * NOTE:
+ * This is intentionally conservative for a browser preview, but it is also aggressive.
+ * (Your server-side renderTokens.js is the "real" safe sanitizer for preview HTML coming from the action.)
  */
 function stripAjoSyntax(html) {
   if (!html || typeof html !== "string") return html;
@@ -408,13 +416,9 @@ function computePreviewWarnings({ canonicalHtml, bestHtml, sanitizedHtml, expect
       canon.includes(`data-fragment-id="ajo:${id}"`) ||
       canon.includes(`data-fragment-id='ajo:${id}'`);
     const hasInBest =
-      best.includes(`ajo:${id}`) ||
-      best.includes(`data-fragment-id="ajo:${id}"`) ||
-      best.includes(`data-fragment-id='ajo:${id}'`);
+      best.includes(`ajo:${id}`) || best.includes(`data-fragment-id="ajo:${id}"`) || best.includes(`data-fragment-id='ajo:${id}'`);
     const hasInAfter =
-      after.includes(`ajo:${id}`) ||
-      after.includes(`data-fragment-id="ajo:${id}"`) ||
-      after.includes(`data-fragment-id='ajo:${id}'`);
+      after.includes(`ajo:${id}`) || after.includes(`data-fragment-id="ajo:${id}"`) || after.includes(`data-fragment-id='ajo:${id}'`);
 
     if (hasInCanonical && !hasInBest) {
       warnings.push(
@@ -430,8 +434,7 @@ function computePreviewWarnings({ canonicalHtml, bestHtml, sanitizedHtml, expect
       continue;
     }
 
-    const hasDomMarker =
-      after.includes(`data-fragment-id="ajo:${id}"`) || after.includes(`data-fragment-id='ajo:${id}'`);
+    const hasDomMarker = after.includes(`data-fragment-id="ajo:${id}"`) || after.includes(`data-fragment-id='ajo:${id}'`);
     const hasTemplateTag = after.includes(`ajo:${id}`);
 
     if (hasTemplateTag && !hasDomMarker) {
@@ -521,6 +524,9 @@ export function TemplateStudio() {
   const [bindingStreamText, setBindingStreamText] = useState("[]");
   const [cacheText, setCacheText] = useState("{}");
 
+  // Diagnostics gating
+  const [enableIframeBridge, setEnableIframeBridge] = useState(false);
+
   const bindingStream = useMemo(() => {
     const v = safeParseJson(bindingStreamText, []);
     return Array.isArray(v) ? v : [];
@@ -531,7 +537,6 @@ export function TemplateStudio() {
     return v && typeof v === "object" ? v : {};
   }, [cacheText]);
 
-  // IMPORTANT CHANGE:
   // Track ALL AJO VFs present in canonical HTML (including “standalone” VFs like footer),
   // not just those inferred from modules[].
   const expectedVfIds = useMemo(() => {
@@ -543,10 +548,7 @@ export function TemplateStudio() {
     return [...new Set([...fromModules, ...fromCanonical])];
   }, [modules, canonicalHtml]);
 
-  // ---------------------------------------------------------------------------
   // VF survival diagnostics (canonical → render result → sanitizer)
-  // ---------------------------------------------------------------------------
-
   const [vfDiag, setVfDiag] = useState({
     expected: [],
     best: [],
@@ -570,22 +572,19 @@ export function TemplateStudio() {
     };
   }, [vfDiag]);
 
-  // ---------------------------------------------------------------------------
   // Operation queue
-  // ---------------------------------------------------------------------------
-
   const opQueueRef = useRef(Promise.resolve());
   function enqueue(asyncFn) {
     opQueueRef.current = opQueueRef.current
       .then(() => asyncFn())
-      .catch((e) => console.error("Queued op failed:", e));
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.error("Queued op failed:", e);
+      });
     return opQueueRef.current;
   }
 
-  // ---------------------------------------------------------------------------
   // Iframe message listener (bridge)
-  // ---------------------------------------------------------------------------
-
   useEffect(() => {
     function onMessage(ev) {
       const msg = ev?.data;
@@ -593,7 +592,7 @@ export function TemplateStudio() {
 
       setIframeMsgs((prev) => {
         const next = [...prev, { at: new Date().toISOString(), ...msg }];
-        return next.slice(-80);
+        return next.slice(-200);
       });
 
       if (msg.type === "error" || msg.type === "unhandledrejection") {
@@ -601,41 +600,15 @@ export function TemplateStudio() {
         setRenderError((cur) => cur || `Preview iframe error: ${m}`);
       }
 
-      if (msg.type === "vf-dom-check") {
-        const found = msg?.data?.found || {};
-        const missing = Object.entries(found)
-          .filter(([_id, ok]) => !ok)
-          .map(([id]) => id);
-
-        if (missing.length) {
-          setPreviewWarnings((cur) => {
-            const add = [`Iframe DOM check: missing rendered VF DOM for ${missing.map((x) => `ajo:${x}`).join(", ")}.`];
-            const merged = [...add, ...(Array.isArray(cur) ? cur : [])];
-            return [...new Set(merged)].slice(0, 12);
-          });
-        }
-      }
-
-      if (msg.type === "vf-dom-any") {
-        const count = Number(msg?.data?.count || 0);
-        if (!Number.isNaN(count) && count === 0) {
-          setPreviewWarnings((cur) => {
-            const add = [
-              "Iframe DOM check: no elements found with data-fragment-id starting with 'ajo:'. This typically means your render action is not stitching VF HTML before preview.",
-            ];
-            return [...new Set([...(Array.isArray(cur) ? cur : []), ...add])].slice(0, 12);
-          });
-        }
-      }
+      // IMPORTANT: don't auto-inject warnings into Preview UI anymore.
+      // We keep these available in Diagnostics instead.
     }
 
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  // ---------------------------------------------------------------------------
   // Actions
-  // ---------------------------------------------------------------------------
 
   async function createTemplateFromBaseline() {
     try {
@@ -651,6 +624,7 @@ export function TemplateStudio() {
       setTemplateId(id);
 
       if (!id) {
+        // eslint-disable-next-line no-console
         console.warn("Template created but no templateId returned:", res);
         return;
       }
@@ -658,6 +632,7 @@ export function TemplateStudio() {
       const getRes = await actionWebInvoke(actions["ajo-template-get"], headers, { templateId: id });
       const html = getRes?.htmlBody;
       if (!html) {
+        // eslint-disable-next-line no-console
         console.warn("Template fetched but no htmlBody found:", getRes);
         return;
       }
@@ -673,6 +648,7 @@ export function TemplateStudio() {
 
       setModules(Array.isArray(hydrated?.modules) ? hydrated.modules : []);
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.error("Create-from-baseline failed:", e);
     }
   }
@@ -712,6 +688,7 @@ export function TemplateStudio() {
         }))
       );
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.error("Load Content CFs failed:", e);
     }
   }
@@ -745,6 +722,7 @@ export function TemplateStudio() {
           html: nextHtml,
         });
       } catch (e) {
+        // eslint-disable-next-line no-console
         console.error("PRB update failed:", e);
       } finally {
         setIsUpdatingPrb(false);
@@ -828,21 +806,17 @@ export function TemplateStudio() {
         sanitized: extractAllAjoVfIdsFromHtml(sanitized),
       });
 
-      // Pre-iframe diagnostics
+      // Pre-iframe diagnostics (store; do not console spam)
       const warnings = computePreviewWarnings({
         canonicalHtml,
         bestHtml: best,
         sanitizedHtml: sanitized,
         expectedVfIds,
       });
-      if (warnings.length) {
-        console.warn("Preview warnings:", warnings);
-        setPreviewWarnings(warnings);
-      }
+      setPreviewWarnings(warnings);
 
-      // Inject iframe bridge script (runtime DOM + error signals)
-      const bridged = injectPreviewBridge(sanitized, expectedVfIds);
-
+      // Inject iframe bridge script only when explicitly enabled
+      const bridged = enableIframeBridge ? injectPreviewBridge(sanitized, expectedVfIds) : sanitized;
       setPreviewHtml(bridged);
 
       // Optional: merge hydrated values into cache editor for reuse
@@ -869,6 +843,7 @@ export function TemplateStudio() {
         setCacheText(safeJson(nextCache, 2));
       }
     } catch (e) {
+      // eslint-disable-next-line no-console
       console.error("Render preview failed:", e);
       setRenderError(e?.message || "Render failed");
       setPreviewWarnings([]);
@@ -901,11 +876,18 @@ export function TemplateStudio() {
   const prbStatus = selectedPrbId ? "configured" : "missing";
 
   const aemWarnings = Array.isArray(lastRenderResult?.aemWarnings) ? lastRenderResult.aemWarnings : [];
-  const resolutionWarnings = Array.isArray(lastRenderResult?.resolutionWarnings)
-    ? lastRenderResult.resolutionWarnings
-    : [];
+  const resolutionWarnings = Array.isArray(lastRenderResult?.resolutionWarnings) ? lastRenderResult.resolutionWarnings : [];
   const aemPrefetch = Array.isArray(lastRenderResult?.aemPrefetch) ? lastRenderResult.aemPrefetch : [];
   const perf = lastRenderResult?.perf || null;
+
+  // New: Stitch/VF diagnostics from server action (if present)
+  const serverVfDiag = lastRenderResult?.vfDiag || null;
+  const stitchReport = lastRenderResult?.stitchReport || null;
+  const fragmentsResolvedAll = Array.isArray(lastRenderResult?.fragmentsResolvedAll)
+    ? lastRenderResult.fragmentsResolvedAll
+    : Array.isArray(lastRenderResult?.fragmentsResolved)
+      ? lastRenderResult.fragmentsResolved
+      : [];
 
   return (
     <View>
@@ -1063,7 +1045,9 @@ export function TemplateStudio() {
               <Item key="modules">Modules</Item>
               <Item key="html">AJO HTML</Item>
               <Item key="aem">AEM</Item>
+              <Item key="diagnostics">Diagnostics</Item>
             </TabList>
+
             <TabPanels>
               <Item key="preview">
                 <View borderWidth="thin" borderColor="light" borderRadius="small" height="62vh" padding="size-100">
@@ -1082,60 +1066,6 @@ export function TemplateStudio() {
                       ))}
                     </View>
                   ) : null}
-
-                  {iframeMsgs.length ? (
-                    <View marginBottom="size-100">
-                      <Heading level={5}>Preview iframe messages</Heading>
-                      <Divider size="S" marginY="size-100" />
-                      {iframeMsgs.slice(-8).map((m, i) => (
-                        <View key={`im-${i}`} marginBottom="size-50">
-                          <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                            {m.at} — {m.type}: {safeJson(m.data, 0)}
-                          </Text>
-                        </View>
-                      ))}
-                    </View>
-                  ) : null}
-
-                  {/* VF survival diagnostics */}
-                  <View
-                    marginBottom="size-100"
-                    borderWidth="thin"
-                    borderColor="light"
-                    borderRadius="small"
-                    padding="size-100"
-                  >
-                    <Heading level={5}>VF survival diagnostics</Heading>
-
-                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                      expected(from canonical)={vfDiagSummary.expectedCount} • best(after render)={vfDiagSummary.bestCount} •
-                      sanitized(after strip)={vfDiagSummary.sanitizedCount}
-                    </Text>
-
-                    {vfDiagSummary.missingInBest.length ? (
-                      <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                        missing in best: {vfDiagSummary.missingInBest.map((id) => `ajo:${id}`).join(", ")}
-                      </Text>
-                    ) : null}
-
-                    {vfDiagSummary.missingAfterSanitize.length ? (
-                      <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                        missing after sanitize: {vfDiagSummary.missingAfterSanitize.map((id) => `ajo:${id}`).join(", ")}
-                      </Text>
-                    ) : null}
-
-                    <Divider size="S" marginY="size-100" />
-
-                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                      expected: {safeJson(vfDiag.expected, 0)}
-                    </Text>
-                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                      best: {safeJson(vfDiag.best, 0)}
-                    </Text>
-                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                      sanitized: {safeJson(vfDiag.sanitized, 0)}
-                    </Text>
-                  </View>
 
                   <iframe
                     title="Email Preview"
@@ -1163,14 +1093,7 @@ export function TemplateStudio() {
               </Item>
 
               <Item key="html">
-                <View
-                  borderWidth="thin"
-                  borderColor="light"
-                  borderRadius="small"
-                  padding="size-200"
-                  height="62vh"
-                  overflow="auto"
-                >
+                <View borderWidth="thin" borderColor="light" borderRadius="small" padding="size-200" height="62vh" overflow="auto">
                   <pre style={{ whiteSpace: "pre-wrap" }}>{canonicalHtml || "(empty)"}</pre>
                 </View>
               </Item>
@@ -1222,18 +1145,156 @@ export function TemplateStudio() {
                     <View marginTop="size-200">
                       <Heading level={5}>Raw render result</Heading>
                       <Divider size="S" marginY="size-100" />
-                      <View
-                        borderWidth="thin"
-                        borderColor="light"
-                        borderRadius="small"
-                        padding="size-200"
-                        overflow="auto"
-                        height="size-2400"
-                      >
+                      <View borderWidth="thin" borderColor="light" borderRadius="small" padding="size-200" overflow="auto" height="size-2400">
                         <pre style={{ whiteSpace: "pre-wrap" }}>{safeJson(lastRenderResult, 2)}</pre>
                       </View>
                     </View>
                   ) : null}
+                </View>
+              </Item>
+
+              <Item key="diagnostics">
+                <View height="62vh" overflow="auto">
+                  <View marginBottom="size-150">
+                    <Heading level={5}>Runtime diagnostics</Heading>
+                    <Text UNSAFE_style={{ opacity: 0.85 }}>
+                      Use this tab to inspect iframe messages, DOM checks, and server stitching diagnostics without spamming console logs.
+                    </Text>
+                  </View>
+
+                  <View marginBottom="size-150">
+                    <Switch isSelected={enableIframeBridge} onChange={setEnableIframeBridge}>
+                      Enable iframe bridge (postMessage DOM + error signals)
+                    </Switch>
+                    <Text UNSAFE_style={{ opacity: 0.8, marginTop: 6 }}>
+                      When enabled, next render injects a small script into preview HTML to report DOM checks and runtime errors.
+                    </Text>
+                    <Divider size="S" marginY="size-100" />
+                    <Flex gap="size-100">
+                      <Button variant="secondary" onPress={() => setIframeMsgs([])}>
+                        Clear iframe messages
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        onPress={() => {
+                          try {
+                            navigator.clipboard.writeText(safeJson(iframeMsgs, 2));
+                          } catch {
+                            /* ignore */
+                          }
+                        }}
+                        isDisabled={!iframeMsgs.length}
+                      >
+                        Copy iframe messages JSON
+                      </Button>
+                    </Flex>
+                  </View>
+
+                  {/* Iframe messages */}
+                  <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
+                    <Heading level={5}>Iframe messages</Heading>
+                    <Divider size="S" marginY="size-100" />
+                    {!iframeMsgs.length ? (
+                      <Text UNSAFE_style={{ opacity: 0.85 }}>No iframe messages yet. Enable the bridge and render preview.</Text>
+                    ) : (
+                      iframeMsgs.slice(-80).map((m, i) => (
+                        <View key={`im-${i}`} marginBottom="size-50">
+                          <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                            {m.at} — {m.type}: {safeJson(m.data, 0)}
+                          </Text>
+                        </View>
+                      ))
+                    )}
+                  </View>
+
+                  {/* VF survival diagnostics */}
+                  <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
+                    <Heading level={5}>VF survival diagnostics</Heading>
+
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      expected(from canonical)={vfDiagSummary.expectedCount} • best(after render)={vfDiagSummary.bestCount} •
+                      sanitized(after strip)={vfDiagSummary.sanitizedCount}
+                    </Text>
+
+                    {vfDiagSummary.missingInBest.length ? (
+                      <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                        missing in best: {vfDiagSummary.missingInBest.map((id) => `ajo:${id}`).join(", ")}
+                      </Text>
+                    ) : null}
+
+                    {vfDiagSummary.missingAfterSanitize.length ? (
+                      <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                        missing after sanitize: {vfDiagSummary.missingAfterSanitize.map((id) => `ajo:${id}`).join(", ")}
+                      </Text>
+                    ) : null}
+
+                    <Divider size="S" marginY="size-100" />
+
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      expected: {safeJson(vfDiag.expected, 0)}
+                    </Text>
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      best: {safeJson(vfDiag.best, 0)}
+                    </Text>
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      sanitized: {safeJson(vfDiag.sanitized, 0)}
+                    </Text>
+                  </View>
+
+                  {/* Server stitching diagnostics */}
+                  <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
+                    <Heading level={5}>Server stitching diagnostics</Heading>
+                    <Divider size="S" marginY="size-100" />
+
+                    {!lastRenderResult ? (
+                      <Text UNSAFE_style={{ opacity: 0.85 }}>No render result yet. Render preview to populate.</Text>
+                    ) : (
+                      <View>
+                        <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                          vfDiag: {safeJson(serverVfDiag, 2)}
+                        </Text>
+                        <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                          stitchReport: {safeJson(stitchReport, 2)}
+                        </Text>
+                        <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                          fragmentsResolvedAll(count): {Array.isArray(fragmentsResolvedAll) ? fragmentsResolvedAll.length : 0}
+                        </Text>
+
+                        {Array.isArray(fragmentsResolvedAll) && fragmentsResolvedAll.length ? (
+                          <View marginTop="size-100">
+                            <Divider size="S" marginY="size-100" />
+                            {fragmentsResolvedAll.slice(0, 30).map((f, i) => (
+                              <View key={`fr-${i}`} marginBottom="size-50">
+                                <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                                  {f.id} — {f.name || "(unnamed)"} — hasContent={String(!!f.hasContent)}
+                                </Text>
+                              </View>
+                            ))}
+                            {fragmentsResolvedAll.length > 30 ? (
+                              <Text UNSAFE_style={{ opacity: 0.8 }}>
+                                Showing first 30 of {fragmentsResolvedAll.length}. See AEM tab “Raw render result” for full payload.
+                              </Text>
+                            ) : null}
+                          </View>
+                        ) : null}
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Preview warning list (kept, but moved out of Preview) */}
+                  <View borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
+                    <Heading level={5}>Computed preview warnings</Heading>
+                    <Divider size="S" marginY="size-100" />
+                    {!previewWarnings.length ? (
+                      <Text UNSAFE_style={{ opacity: 0.85 }}>No warnings computed.</Text>
+                    ) : (
+                      previewWarnings.map((w, i) => (
+                        <View key={`dw-${i}`} marginBottom="size-50">
+                          <StatusLight variant="negative">{w}</StatusLight>
+                        </View>
+                      ))
+                    )}
+                  </View>
                 </View>
               </Item>
             </TabPanels>
