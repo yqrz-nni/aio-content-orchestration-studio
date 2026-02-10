@@ -500,6 +500,10 @@ export function TemplateStudio() {
 
   const [lastRenderResult, setLastRenderResult] = useState(null);
 
+  // NEW (diagnostics-only): persist last best + sanitized HTML so Diagnostics tab can recompute
+  const [lastBestHtml, setLastBestHtml] = useState("");
+  const [lastSanitizedHtml, setLastSanitizedHtml] = useState("");
+
   const [templateId, setTemplateId] = useState(null);
   const [templateName, setTemplateName] = useState("Baseline Clone");
 
@@ -615,6 +619,27 @@ export function TemplateStudio() {
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
   }, []);
+
+  // NEW (diagnostics-only): when user switches to Diagnostics tab, recompute diagnostics from last render output
+  useEffect(() => {
+    if (activeTab !== "diagnostics") return;
+
+    if (!canonicalHtml || !lastBestHtml || !lastSanitizedHtml) return;
+
+    setVfDiag({
+      expected: extractAllAjoVfIdsFromHtml(canonicalHtml),
+      best: extractAllAjoVfIdsFromHtml(lastBestHtml),
+      sanitized: extractAllAjoVfIdsFromHtml(lastSanitizedHtml),
+    });
+
+    const warnings = computePreviewWarnings({
+      canonicalHtml,
+      bestHtml: lastBestHtml,
+      sanitizedHtml: lastSanitizedHtml,
+      expectedVfIds,
+    });
+    setPreviewWarnings(warnings);
+  }, [activeTab, canonicalHtml, lastBestHtml, lastSanitizedHtml, expectedVfIds]);
 
   // Actions
 
@@ -806,6 +831,10 @@ export function TemplateStudio() {
 
       // Preview is browser-based, so we strip ACR blocks + Liquid noise.
       const sanitized = stripAjoSyntax(best);
+
+      // NEW (diagnostics-only): persist so Diagnostics tab can recompute without re-rendering
+      setLastBestHtml(best);
+      setLastSanitizedHtml(sanitized);
 
       // Diagnostics are computed only when Diagnostics tab is active.
       if (enableDiagnostics) {
@@ -1256,6 +1285,21 @@ export function TemplateStudio() {
                     <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
                       sanitized: {safeJson(vfDiag.sanitized, 0)}
                     </Text>
+                  </View>
+
+                  {/* Server renderTokens diagnostics (if present) */}
+                  <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
+                    <Heading level={5}>Server render diagnostics</Heading>
+                    <Divider size="S" marginY="size-100" />
+                    {!lastRenderResult ? (
+                      <Text UNSAFE_style={{ opacity: 0.85 }}>No render result yet. Render preview to populate.</Text>
+                    ) : (
+                      <View>
+                        <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                          diagnostics: {safeJson(lastRenderResult?.diagnostics || lastRenderResult?.diagnostic || null, 2)}
+                        </Text>
+                      </View>
+                    )}
                   </View>
 
                   {/* Server stitching diagnostics */}
