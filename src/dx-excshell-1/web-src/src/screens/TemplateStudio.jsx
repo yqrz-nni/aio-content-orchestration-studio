@@ -544,6 +544,33 @@ export function TemplateStudio() {
   }, [modules, canonicalHtml]);
 
   // ---------------------------------------------------------------------------
+  // VF survival diagnostics (canonical → render result → sanitizer)
+  // ---------------------------------------------------------------------------
+
+  const [vfDiag, setVfDiag] = useState({
+    expected: [],
+    best: [],
+    sanitized: [],
+  });
+
+  const vfDiagSummary = useMemo(() => {
+    const expected = Array.isArray(vfDiag.expected) ? vfDiag.expected : [];
+    const best = Array.isArray(vfDiag.best) ? vfDiag.best : [];
+    const sanitized = Array.isArray(vfDiag.sanitized) ? vfDiag.sanitized : [];
+
+    const missingInBest = expected.filter((id) => !best.includes(id));
+    const missingAfterSanitize = best.filter((id) => !sanitized.includes(id));
+
+    return {
+      expectedCount: expected.length,
+      bestCount: best.length,
+      sanitizedCount: sanitized.length,
+      missingInBest,
+      missingAfterSanitize,
+    };
+  }, [vfDiag]);
+
+  // ---------------------------------------------------------------------------
   // Operation queue
   // ---------------------------------------------------------------------------
 
@@ -794,6 +821,13 @@ export function TemplateStudio() {
       // Preview is browser-based, so we strip ACR blocks + Liquid noise.
       const sanitized = stripAjoSyntax(best);
 
+      // VF survival diagnostics
+      setVfDiag({
+        expected: extractAllAjoVfIdsFromHtml(canonicalHtml),
+        best: extractAllAjoVfIdsFromHtml(best),
+        sanitized: extractAllAjoVfIdsFromHtml(sanitized),
+      });
+
       // Pre-iframe diagnostics
       const warnings = computePreviewWarnings({
         canonicalHtml,
@@ -867,7 +901,9 @@ export function TemplateStudio() {
   const prbStatus = selectedPrbId ? "configured" : "missing";
 
   const aemWarnings = Array.isArray(lastRenderResult?.aemWarnings) ? lastRenderResult.aemWarnings : [];
-  const resolutionWarnings = Array.isArray(lastRenderResult?.resolutionWarnings) ? lastRenderResult.resolutionWarnings : [];
+  const resolutionWarnings = Array.isArray(lastRenderResult?.resolutionWarnings)
+    ? lastRenderResult.resolutionWarnings
+    : [];
   const aemPrefetch = Array.isArray(lastRenderResult?.aemPrefetch) ? lastRenderResult.aemPrefetch : [];
   const perf = lastRenderResult?.perf || null;
 
@@ -1060,6 +1096,46 @@ export function TemplateStudio() {
                       ))}
                     </View>
                   ) : null}
+
+                  {/* VF survival diagnostics */}
+                  <View
+                    marginBottom="size-100"
+                    borderWidth="thin"
+                    borderColor="light"
+                    borderRadius="small"
+                    padding="size-100"
+                  >
+                    <Heading level={5}>VF survival diagnostics</Heading>
+
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      expected(from canonical)={vfDiagSummary.expectedCount} • best(after render)={vfDiagSummary.bestCount} •
+                      sanitized(after strip)={vfDiagSummary.sanitizedCount}
+                    </Text>
+
+                    {vfDiagSummary.missingInBest.length ? (
+                      <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                        missing in best: {vfDiagSummary.missingInBest.map((id) => `ajo:${id}`).join(", ")}
+                      </Text>
+                    ) : null}
+
+                    {vfDiagSummary.missingAfterSanitize.length ? (
+                      <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                        missing after sanitize: {vfDiagSummary.missingAfterSanitize.map((id) => `ajo:${id}`).join(", ")}
+                      </Text>
+                    ) : null}
+
+                    <Divider size="S" marginY="size-100" />
+
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      expected: {safeJson(vfDiag.expected, 0)}
+                    </Text>
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      best: {safeJson(vfDiag.best, 0)}
+                    </Text>
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      sanitized: {safeJson(vfDiag.sanitized, 0)}
+                    </Text>
+                  </View>
 
                   <iframe
                     title="Email Preview"
