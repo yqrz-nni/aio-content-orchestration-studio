@@ -1,6 +1,6 @@
 // File: src/dx-excshell-1/web-src/src/screens/TemplateSelect.jsx
 
-import React, { useContext, useEffect, useMemo, useState } from "react";
+import React, { useContext, useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Heading,
@@ -13,12 +13,26 @@ import {
   Divider,
   TextField,
   StatusLight,
-  Grid, // ✅ FIX: was missing
+  Grid,
 } from "@adobe/react-spectrum";
 
 import actions from "../config.json";
 import actionWebInvoke from "../utils";
 import { ImsContext } from "../context/ImsContext";
+
+/**
+ * Prevent “setState on unmounted component” warnings for async flows that navigate away.
+ */
+function useIsMounted() {
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  return useCallback(() => mountedRef.current, []);
+}
 
 function buildHeaders(ims) {
   return {
@@ -40,6 +54,8 @@ export function TemplateSelect() {
   const nav = useNavigate();
   const { prbId } = useParams();
 
+  const isMounted = useIsMounted();
+
   const [prbOptions, setPrbOptions] = useState([]);
   const [selectedPrb, setSelectedPrb] = useState(null);
 
@@ -55,28 +71,37 @@ export function TemplateSelect() {
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
 
-  // NOTE: keep repoId consistent with Studio for now
+  // NOTE: keep repoId consistent with Studio for now (even if not used on this screen yet)
   const repoId = "author-p131724-e1294209.adobeaemcloud.com";
 
   async function loadPrbList() {
     try {
-      setErr("");
-      setIsLoadingPrb(true);
+      if (isMounted()) {
+        setErr("");
+        setIsLoadingPrb(true);
+      }
+
       const res = await actionWebInvoke(actions["aem-prb-list"]);
       const items = res?.data?.prbPropertiesList?.items || [];
+
+      if (!isMounted()) return;
+
       setPrbOptions(
         items.map((it) => ({
           id: it._id,
-          label: it.prbNumber && it.name ? `${it.prbNumber} — ${it.name}` : it.name || it.prbNumber || it._path || it._id,
+          label:
+            it.prbNumber && it.name
+              ? `${it.prbNumber} — ${it.name}`
+              : it.name || it.prbNumber || it._path || it._id,
           raw: it,
         }))
       );
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Load PRBs failed:", e);
-      setErr(e?.message || "Failed to load PRBs");
+      if (isMounted()) setErr(e?.message || "Failed to load PRBs");
     } finally {
-      setIsLoadingPrb(false);
+      if (isMounted()) setIsLoadingPrb(false);
     }
   }
 
@@ -85,15 +110,19 @@ export function TemplateSelect() {
     // If actions["ajo-template-list"] exists, we’ll call it. Otherwise we show the manual-open fallback.
     const listAction = actions["ajo-template-list"];
     if (!listAction) {
-      setTemplates([]);
-      setStatus("Template listing action not configured (ajo-template-list). Use “Open by Template ID” below.");
+      if (isMounted()) {
+        setTemplates([]);
+        setStatus("Template listing action not configured (ajo-template-list). Use “Open by Template ID” below.");
+      }
       return;
     }
 
     try {
-      setErr("");
-      setStatus("");
-      setIsLoadingTemplates(true);
+      if (isMounted()) {
+        setErr("");
+        setStatus("");
+        setIsLoadingTemplates(true);
+      }
 
       const prbNumber = prbObj?.raw?.prbNumber || null;
 
@@ -104,7 +133,10 @@ export function TemplateSelect() {
         labels: buildLabelsForPrb(prbNumber),
       });
 
+      if (!isMounted()) return;
+
       const items = res?.templates || res?.items || [];
+
       setTemplates(
         (Array.isArray(items) ? items : [])
           .map((t) => ({
@@ -119,9 +151,9 @@ export function TemplateSelect() {
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Load templates failed:", e);
-      setErr(e?.message || "Failed to load templates");
+      if (isMounted()) setErr(e?.message || "Failed to load templates");
     } finally {
-      setIsLoadingTemplates(false);
+      if (isMounted()) setIsLoadingTemplates(false);
     }
   }
 
@@ -133,7 +165,10 @@ export function TemplateSelect() {
   useEffect(() => {
     if (!prbId || !prbOptions.length) return;
     const hit = prbOptions.find((p) => p.id === prbId) || null;
+
+    // setSelectedPrb is safe here; component is mounted during effects
     setSelectedPrb(hit);
+
     if (hit) loadTemplatesForPrb(hit);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prbId, prbOptions]);
@@ -142,9 +177,11 @@ export function TemplateSelect() {
     try {
       if (!selectedPrb) return;
 
-      setErr("");
-      setStatus("");
-      setIsCreating(true);
+      if (isMounted()) {
+        setErr("");
+        setStatus("");
+        setIsCreating(true);
+      }
 
       const prbNumber = selectedPrb?.raw?.prbNumber || null;
 
@@ -158,17 +195,19 @@ export function TemplateSelect() {
 
       const templateId = res?.templateId;
       if (!templateId) {
-        setErr("Template created but no templateId returned.");
+        if (isMounted()) setErr("Template created but no templateId returned.");
         return;
       }
 
+      // Navigate away. After this, TemplateSelect unmounts, so we MUST NOT set state.
       nav(`/prb/${encodeURIComponent(prbId)}/templates/${encodeURIComponent(templateId)}/studio`);
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Create-from-baseline failed:", e);
-      setErr(e?.message || "Create failed");
+      if (isMounted()) setErr(e?.message || "Create failed");
     } finally {
-      setIsCreating(false);
+      // Guard against unmount during navigation
+      if (isMounted()) setIsCreating(false);
     }
   }
 
@@ -201,18 +240,15 @@ export function TemplateSelect() {
                 {selectedPrb?.label || prbId || "(none)"} {repoId ? `• repoId=${repoId}` : ""}
               </Text>
             </View>
-            <Button variant="secondary" onPress={() => nav("/prb")}>Change PRB</Button>
+            <Button variant="secondary" onPress={() => nav("/prb")}>
+              Change PRB
+            </Button>
           </Flex>
 
           <Divider size="S" />
 
           <Flex gap="size-200" alignItems="end" wrap>
-            <TextField
-              label="New template name"
-              value={templateName}
-              onChange={setTemplateName}
-              width="size-3600"
-            />
+            <TextField label="New template name" value={templateName} onChange={setTemplateName} width="size-3600" />
             <Button variant="cta" onPress={createFromBaselineAndOpen} isDisabled={!selectedPrb || isCreating}>
               {isCreating ? "Creating…" : "Create from baseline"}
             </Button>
