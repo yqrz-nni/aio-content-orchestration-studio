@@ -12,6 +12,10 @@
 // IMPORTANT CONTEXT SHAPE:
 // renderTokens passes ctx shaped like { cf: {...}, prbProperties: {...}, styles: {...} }
 // so templates can do: {{#each cf.bodyCopy}} ... {{/each}}
+//
+// IMPORTANT CHANGE:
+// - We now PRESERVE unknown {{token}}/{{{token}}} instead of blanking them out.
+//   This is critical so later stages (e.g., Liquid-let vars like {{prbYear}}) can still resolve.
 
 function escapeHtml(s) {
   return String(s ?? "")
@@ -97,13 +101,16 @@ function replaceSimpleTokens(segment, { rootCtx, localCtx, aliasName, aliasObj }
   const triple = /\{\{\{\s*([a-zA-Z_][a-zA-Z0-9_$.]*)\s*\}\}\}/g;
   const dbl = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_$.]*)\s*\}\}/g;
 
-  let out = segment.replace(triple, (_m, tokenPath) => {
+  // IMPORTANT: preserve unknown tokens (return the original match)
+  let out = segment.replace(triple, (m, tokenPath) => {
     const v = resolveTokenValue({ tokenPath, rootCtx, localCtx, aliasName, aliasObj });
+    if (v === undefined) return m; // preserve for later stages (e.g., Liquid vars)
     return coerceValue(v);
   });
 
-  out = out.replace(dbl, (_m, tokenPath) => {
+  out = out.replace(dbl, (m, tokenPath) => {
     const v = resolveTokenValue({ tokenPath, rootCtx, localCtx, aliasName, aliasObj });
+    if (v === undefined) return m; // preserve for later stages (e.g., Liquid vars)
     return escapeHtml(coerceValue(v));
   });
 
@@ -208,6 +215,7 @@ function renderMiniAjo(htmlSegment, ctx) {
   let out = renderEachBlocks(htmlSegment, rootCtx, 0, 8);
 
   // Replace any leftover simple tokens at root scope
+  // (unknown tokens are preserved now)
   out = replaceSimpleTokens(out, {
     rootCtx,
     localCtx: null,
