@@ -255,10 +255,48 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
   };
 }
 
+/* =============================================================================
+ * NEW: one-shot wrapper that returns VF diagnostics for the action response
+ * ============================================================================= */
+
+function summarizeVfState(html) {
+  // returns ["ajo:<id>", ...]
+  return extractAjoFragmentIds(html);
+}
+
+async function resolveStitchWithDiagnostics({ html, params, commonHeaders }) {
+  const vfBefore = summarizeVfState(html);
+
+  const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
+
+  const vfAfter = summarizeVfState(stitched.stitchedHtml);
+
+  const fragmentsResolvedAll = (stitched.fragmentsResolvedAll || []).map((f) => ({
+    id: `ajo:${f.id}`,
+    name: f.name || null,
+    type: f.type || null,
+    hasContent: !!(f.content && String(f.content).trim()),
+  }));
+
+  return {
+    stitchedHtml: stitched.stitchedHtml,
+    resolutionWarnings: stitched.resolutionWarnings || [],
+    stitchReport: stitched.stitchReport || null,
+    vfDiag: {
+      before: vfBefore,
+      after: vfAfter,
+      dropped: vfBefore.filter((id) => !vfAfter.includes(id)),
+      added: vfAfter.filter((id) => !vfBefore.includes(id)),
+    },
+    fragmentsResolvedAll,
+  };
+}
+
 module.exports = {
   extractAjoFragmentIds,
   fetchFragmentById,
   resolveFragmentsFromHtml,
   stitchFragmentsIntoHtml,
   resolveAndStitchRecursively,
+  resolveStitchWithDiagnostics,
 };

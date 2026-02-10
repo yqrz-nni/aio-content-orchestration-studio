@@ -6,13 +6,16 @@
 // 3) Conditional AEM GraphQL hydration only for missing/insufficient bindings
 // 4) Introspection disabled by default (opt-in via params.enableAemIntrospection=true)
 // 5) Best-effort renderedHtml: resolves {{cf.*}} and {{prbProperties.*}} and {{styles.*}} by binding order
+//
+// NEW:
+// - VF diagnostics around stitching: vfDiag + stitchReport + fragmentsResolvedAll
 
 const { ok, badRequest, serverError, corsPreflight } = require("../../../_lib/http");
 const { fetchRaw } = require("../../../_lib/fetchRaw");
 const { requireIms } = require("../../../_lib/ims");
 
 const { normalizeBearer, buildCommonHeaders, pickEtag } = require("./utils");
-const { resolveAndStitchRecursively } = require("./aajoFragments");
+const { resolveStitchWithDiagnostics } = require("./aajoFragments");
 const { resolveAemBindingValues } = require("./aemBindings");
 const { buildRenderedHtmlBestEffort } = require("./renderTokens");
 
@@ -41,11 +44,11 @@ async function main(params) {
     if (typeof params.html === "string" && params.html.trim()) {
       const html = params.html;
 
-      const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
-      const aem = await resolveAemBindingValues({ stitchedHtml: stitched.stitchedHtml, params });
+      const diag = await resolveStitchWithDiagnostics({ html, params, commonHeaders });
+      const aem = await resolveAemBindingValues({ stitchedHtml: diag.stitchedHtml, params });
 
       const renderedHtml = buildRenderedHtmlBestEffort({
-        stitchedHtml: stitched.stitchedHtml,
+        stitchedHtml: diag.stitchedHtml,
         aemBindingsEncountered: aem.aemBindingsEncountered,
         aemPrefetchDataByStreamKey: aem.aemPrefetchDataByStreamKey,
       });
@@ -54,12 +57,18 @@ async function main(params) {
         mode: "html",
         templateId,
         html,
-        stitchedHtml: stitched.stitchedHtml,
+        stitchedHtml: diag.stitchedHtml,
         renderedHtml,
         etag: null,
 
-        fragmentsResolved: stitched.fragmentsResolvedAll,
-        resolutionWarnings: stitched.resolutionWarnings,
+        // Back-compat: keep the old key too, but return the summarized version
+        fragmentsResolved: diag.fragmentsResolvedAll,
+        resolutionWarnings: diag.resolutionWarnings,
+
+        // NEW diagnostics
+        vfDiag: diag.vfDiag,
+        stitchReport: diag.stitchReport,
+        fragmentsResolvedAll: diag.fragmentsResolvedAll,
 
         aemBindingsEncountered: aem.aemBindingsEncountered,
         aemPrefetch: aem.aemPrefetch,
@@ -102,11 +111,11 @@ async function main(params) {
 
     const etag = pickEtag(templateResp?.headers || null);
 
-    const stitched = await resolveAndStitchRecursively({ html, params, commonHeaders });
-    const aem = await resolveAemBindingValues({ stitchedHtml: stitched.stitchedHtml, params });
+    const diag = await resolveStitchWithDiagnostics({ html, params, commonHeaders });
+    const aem = await resolveAemBindingValues({ stitchedHtml: diag.stitchedHtml, params });
 
     const renderedHtml = buildRenderedHtmlBestEffort({
-      stitchedHtml: stitched.stitchedHtml,
+      stitchedHtml: diag.stitchedHtml,
       aemBindingsEncountered: aem.aemBindingsEncountered,
       aemPrefetchDataByStreamKey: aem.aemPrefetchDataByStreamKey,
     });
@@ -115,12 +124,18 @@ async function main(params) {
       mode: "templateId",
       templateId,
       html,
-      stitchedHtml: stitched.stitchedHtml,
+      stitchedHtml: diag.stitchedHtml,
       renderedHtml,
       etag,
 
-      fragmentsResolved: stitched.fragmentsResolvedAll,
-      resolutionWarnings: stitched.resolutionWarnings,
+      // Back-compat: keep the old key too, but return the summarized version
+      fragmentsResolved: diag.fragmentsResolvedAll,
+      resolutionWarnings: diag.resolutionWarnings,
+
+      // NEW diagnostics
+      vfDiag: diag.vfDiag,
+      stitchReport: diag.stitchReport,
+      fragmentsResolvedAll: diag.fragmentsResolvedAll,
 
       aemBindingsEncountered: aem.aemBindingsEncountered,
       aemPrefetch: aem.aemPrefetch,
