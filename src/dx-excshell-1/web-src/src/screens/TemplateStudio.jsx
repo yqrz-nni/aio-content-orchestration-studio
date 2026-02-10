@@ -320,19 +320,6 @@ function safeJson(obj, space = 2) {
  * Preview sanitizer + diagnostics
  * ============================================================================= */
 
-/**
- * Strip *everything* between ACR start/end markers, regardless of type.
- * Also strip Liquid tags.
- *
- * IMPORTANT:
- * - This is for iframe preview only.
- * - It will remove your inline {{ fragment id="ajo:..." }} calls too (if they’re inside ACR markers),
- *   which is correct for “browser preview” unless your render action has already stitched the VF content.
- *
- * NOTE:
- * This is intentionally conservative for a browser preview, but it is also aggressive.
- * (Your server-side renderTokens.js is the "real" safe sanitizer for preview HTML coming from the action.)
- */
 function stripAjoSyntax(html) {
   if (!html || typeof html !== "string") return html;
 
@@ -438,7 +425,8 @@ function computePreviewWarnings({ canonicalHtml, bestHtml, sanitizedHtml, expect
       continue;
     }
 
-    const hasDomMarker = after.includes(`data-fragment-id="ajo:${id}"`) || after.includes(`data-fragment-id='ajo:${id}'`);
+    const hasDomMarker =
+      after.includes(`data-fragment-id="ajo:${id}"`) || after.includes(`data-fragment-id='ajo:${id}'`);
     const hasTemplateTag = after.includes(`ajo:${id}`);
 
     if (hasTemplateTag && !hasDomMarker) {
@@ -584,6 +572,22 @@ export function TemplateStudio() {
     };
   }, [vfDiag]);
 
+  // NEW: pluck server preview diagnostics (renderTokens) from the response
+  const serverPreviewDiagnostics = useMemo(() => {
+    const r = lastRenderResult || {};
+    return r.previewDiagnostics || r.diagnostics || r.diagnostic || null;
+  }, [lastRenderResult]);
+
+  const serverRenderTokens = useMemo(() => {
+    const rt = serverPreviewDiagnostics?.preview?.renderTokens || null;
+    return rt && typeof rt === "object" ? rt : null;
+  }, [serverPreviewDiagnostics]);
+
+  const serverDynamicRefs = useMemo(() => {
+    const dr = serverRenderTokens?.dynamicReferences || null;
+    return dr && typeof dr === "object" ? dr : null;
+  }, [serverRenderTokens]);
+
   // Operation queue
   const opQueueRef = useRef(Promise.resolve());
   function enqueue(asyncFn) {
@@ -611,9 +615,6 @@ export function TemplateStudio() {
         const m = msg?.data?.message || msg.type;
         setRenderError((cur) => cur || `Preview iframe error: ${m}`);
       }
-
-      // IMPORTANT: don't auto-inject warnings into Preview UI anymore.
-      // We keep these available in Diagnostics instead.
     }
 
     window.addEventListener("message", onMessage);
@@ -922,7 +923,7 @@ export function TemplateStudio() {
   const aemPrefetch = Array.isArray(lastRenderResult?.aemPrefetch) ? lastRenderResult.aemPrefetch : [];
   const perf = lastRenderResult?.perf || null;
 
-  // New: Stitch/VF diagnostics from server action (if present)
+  // Stitch/VF diagnostics from server action (if present)
   const serverVfDiag = lastRenderResult?.vfDiag || null;
   const stitchReport = lastRenderResult?.stitchReport || null;
   const fragmentsResolvedAll = Array.isArray(lastRenderResult?.fragmentsResolvedAll)
@@ -1204,7 +1205,7 @@ export function TemplateStudio() {
                   <View marginBottom="size-150">
                     <Heading level={5}>Runtime diagnostics</Heading>
                     <Text UNSAFE_style={{ opacity: 0.85 }}>
-                      Use this tab to inspect iframe messages, DOM checks, and server stitching diagnostics without spamming console logs.
+                      Use this tab to inspect iframe messages, DOM checks, and server diagnostics without spamming console logs.
                     </Text>
                   </View>
 
@@ -1287,17 +1288,39 @@ export function TemplateStudio() {
                     </Text>
                   </View>
 
-                  {/* Server renderTokens diagnostics (if present) */}
+                  {/* Server renderTokens diagnostics (NEW: previewDiagnostics) */}
                   <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
                     <Heading level={5}>Server render diagnostics</Heading>
                     <Divider size="S" marginY="size-100" />
+
                     {!lastRenderResult ? (
                       <Text UNSAFE_style={{ opacity: 0.85 }}>No render result yet. Render preview to populate.</Text>
                     ) : (
                       <View>
                         <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                          diagnostics: {safeJson(lastRenderResult?.diagnostics || lastRenderResult?.diagnostic || null, 2)}
+                          previewDiagnostics: {safeJson(serverPreviewDiagnostics, 2)}
                         </Text>
+
+                        {serverDynamicRefs ? (
+                          <View marginTop="size-150">
+                            <Divider size="S" marginY="size-100" />
+                            <Heading level={6}>Dynamic references</Heading>
+                            <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                              wrapperInferred: {String(serverDynamicRefs.wrapperInferred ?? "")} • placeholdersSeen:
+                              {String(serverDynamicRefs.totalPlaceholdersSeen ?? "")} • replacementsMade:
+                              {String(serverDynamicRefs.totalReplacementsMade ?? "")} • uniqueRefs:
+                              {String(serverDynamicRefs.totalUniqueReferences ?? "")}
+                            </Text>
+                            <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                              orderedReferenceNotes: {safeJson(serverDynamicRefs.orderedReferenceNotes || [], 0)}
+                            </Text>
+                            {!!(serverDynamicRefs.warnings && serverDynamicRefs.warnings.length) ? (
+                              <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                                warnings: {safeJson(serverDynamicRefs.warnings.slice(0, 10), 2)}
+                              </Text>
+                            ) : null}
+                          </View>
+                        ) : null}
                       </View>
                     )}
                   </View>
@@ -1342,7 +1365,7 @@ export function TemplateStudio() {
                     )}
                   </View>
 
-                  {/* Preview warning list (kept, but moved out of Preview) */}
+                  {/* Preview warning list */}
                   <View borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
                     <Heading level={5}>Computed preview warnings</Heading>
                     <Divider size="S" marginY="size-100" />
