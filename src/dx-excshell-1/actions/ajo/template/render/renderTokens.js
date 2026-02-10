@@ -590,33 +590,7 @@ function replaceLiquidVarTokens(html, vars) {
 }
 
 /**
- * Replace simple handlebars tokens ANYWHERE in the segment:
- * {{name}} / {{{name}}} -> vars[name]
- *
- * IMPORTANT: this is allowlist-only. Used to simulate fragment param injection
- * into rich text strings like "<sup>{{r1}}</sup>".
- */
-function replaceHandlebarsVarTokensAnywhere(html, vars, allowlist) {
-  if (!html || typeof html !== "string") return html;
-  if (!vars || typeof vars !== "object") return html;
-
-  const keys = (Array.isArray(allowlist) ? allowlist : []).filter((k) => typeof k === "string" && k.trim());
-  if (!keys.length) return html;
-
-  const keyAlt = keys.map(escapeRegExp).join("|");
-
-  const triple = new RegExp(`\\{\\{\\{\\s*(${keyAlt})\\s*\\}\\}\\}`, "g");
-  const dbl = new RegExp(`\\{\\{\\s*(${keyAlt})\\s*\\}\\}`, "g");
-
-  let out = html.replace(triple, (_m, k) => String(vars[k] ?? ""));
-  out = out.replace(dbl, (_m, k) => escapeHtml(String(vars[k] ?? "")));
-
-  return out;
-}
-
-/**
  * Evaluate liquid lets and replace tokens, then remove the let/assign tags themselves.
- * (kept for callers that want the original behavior)
  */
 function evaluateLiquidLetsAndReplace(html, { ctx, locale = "en-US", neededVars, diag } = {}) {
   if (!html || typeof html !== "string") return html;
@@ -736,6 +710,33 @@ function getCfIdForLogs(cfCtx) {
   );
 }
 
+// IMPORTANT: these are NOT Liquid lets; they are handlebars fragment param tokens.
+const REF_LOCAL_NAMES = ["r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"];
+
+/**
+ * Convert handlebars ref tokens to wrapper placeholders.
+ * Example: <sup>{{r1}}</sup> -> <sup>##1</sup>
+ *
+ * We do this BEFORE wrapper inference so inferWrapperFromHtml can see "##1".
+ * This is best-effort and intentionally narrow (only r1..r10).
+ */
+function rewriteRefHandlebarsToWrapperPlaceholders(html, dynState) {
+  if (!html || typeof html !== "string") return html;
+
+  const wrapper = (dynState && typeof dynState.wrapper === "string" && dynState.wrapper) || "##";
+
+  // Match {{rN}} or {{{rN}}} where rN is in allowlist (r1..r10)
+  const keyAlt = REF_LOCAL_NAMES.map(escapeRegExp).join("|");
+  const re = new RegExp(String.raw`\{\{\{?\s*(${keyAlt})\s*\}\}?\}`, "g");
+
+  return html.replace(re, (_m, k) => {
+    const mm = String(k || "").match(/^r(\d{1,2})$/i);
+    const n = mm ? Number(mm[1]) : null;
+    if (!n || !Number.isFinite(n)) return _m;
+    return `${wrapper}${n}`;
+  });
+}
+
 /**
  * Phase 2 (wrapper-based):
  * Resolve placeholders like "##1" in a segment using cf.references ordering.
@@ -831,7 +832,6 @@ function resolveWrapperPlaceholders({ html, notes, dynState, diag, segmentKey, c
 
 /**
  * Run wrapper-based dynamic reference resolution for a segment.
- * (We intentionally do NOT do the old sup-handlebars positional phase.)
  */
 function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmentKey }) {
   if (!html || typeof html !== "string") return html;
@@ -839,10 +839,14 @@ function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmen
 
   const notes = extractReferenceNotesFromCf(cfCtx);
   const cfId = getCfIdForLogs(cfCtx);
+
+  // Step 0: rewrite {{rN}} -> ##N so wrapper inference + placeholder scanning works.
+  let working = rewriteRefHandlebarsToWrapperPlaceholders(html, dynState);
+
   const combinedMapping = [];
 
   const wrap = resolveWrapperPlaceholders({
-    html,
+    html: working,
     notes,
     dynState,
     diag,
@@ -973,8 +977,6 @@ function buildMiniAjoRootCtx({ cfCtx, prbCtx, stylesCtx, localCtx }) {
   };
 }
 
-const REF_LOCAL_NAMES = ["r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"];
-
 function renderNamespaceByBindingOrder({
   html,
   namespace,
@@ -1012,18 +1014,13 @@ function renderNamespaceByBindingOrder({
 
     let maybeExpanded = renderMiniAjo(html, miniRoot);
 
-    // Compute lets once; reuse values for both Liquid vars and handlebars injection.
     const needed = collectTopLevelVarNames(maybeExpanded);
-    const letVars = computeLiquidLets(maybeExpanded, {
+    maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, {
       ctx: miniRoot,
       locale: "en-US",
       neededVars: needed,
       diag,
     });
-
-    maybeExpanded = replaceLiquidVarTokens(maybeExpanded, letVars);
-    maybeExpanded = replaceHandlebarsVarTokensAnywhere(maybeExpanded, letVars, REF_LOCAL_NAMES);
-    maybeExpanded = maybeExpanded.replace(/{%\s*(?:let|assign)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*[\s\S]*?\s*%}/g, "");
 
     // Dynamic references (only meaningful with cf context)
     if (dynEnabled && namespace === "cf") {
@@ -1063,17 +1060,8 @@ function renderNamespaceByBindingOrder({
 
     before = renderMiniAjo(before, miniRoot);
 
-    // Compute lets once so we can also inject r1..r10 handlebars tokens inside rich text strings.
     const needed = collectTopLevelVarNames(before);
-    const letVars = computeLiquidLets(before, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
-
-    before = replaceLiquidVarTokens(before, letVars);
-
-    // NEW: simulate "fragment param injection" into richtext: <sup>{{r1}}</sup> -> <sup>##1</sup>
-    before = replaceHandlebarsVarTokensAnywhere(before, letVars, REF_LOCAL_NAMES);
-
-    // Remove let/assign tags now (also stripped later)
-    before = before.replace(/{%\s*(?:let|assign)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*[\s\S]*?\s*%}/g, "");
+    before = evaluateLiquidLetsAndReplace(before, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
     // Dynamic references pass per segment (only cf)
     if (dynEnabled && namespace === "cf") {
@@ -1115,11 +1103,7 @@ function renderNamespaceByBindingOrder({
   tail = renderMiniAjo(tail, miniRoot);
 
   const needed = collectTopLevelVarNames(tail);
-  const letVars = computeLiquidLets(tail, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
-
-  tail = replaceLiquidVarTokens(tail, letVars);
-  tail = replaceHandlebarsVarTokensAnywhere(tail, letVars, REF_LOCAL_NAMES);
-  tail = tail.replace(/{%\s*(?:let|assign)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*[\s\S]*?\s*%}/g, "");
+  tail = evaluateLiquidLetsAndReplace(tail, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
   if (dynEnabled && namespace === "cf") {
     tail = resolveDynamicReferencesInSegment({
@@ -1428,7 +1412,6 @@ module.exports = {
   deriveStylesContext,
   stripKnownEmptyEachBlocks,
 
-  replaceHandlebarsVarTokensAnywhere, // NEW export
   evaluateLiquidLetsAndReplace,
   computeLiquidLets,
   evalLiquidExpr,
