@@ -15,7 +15,7 @@ const { renderMiniAjo } = require("./miniAjoRuntime");
  * We only strip:
  *   1) The ACR wrapper *comment markers themselves* (start/end), but NOT their enclosed content
  *   2) Handlebars comments ({{!-- ... --}})
- *   3) Liquid tags ({% ... %})
+ *   3) Liquid tags ({% ... %})   (NOTE: we evaluate {% let ... %} prior to stripping)
  *   4) Specific known "placeholder-only" each blocks that sometimes leak into preview HTML
  */
 function stripAjoSyntax(html) {
@@ -24,16 +24,10 @@ function stripAjoSyntax(html) {
   let out = html;
 
   // 1) Remove ACR wrapper markers ONLY (do not remove the content between them)
-  // Examples seen in templates:
-  //   {{!-- [acr-start-expr-field] --}} ... {{!-- [acr-end-expr-field] --}}
-  //   {{!-- [acr-start-...] --}} / {{!-- [acr-end-...] --}}
-  //
-  // This intentionally targets only comments that contain "[acr-start" or "[acr-end".
   const acrMarkerRe = /{{!--[\s\S]*?\[(?:acr-start|acr-end)[^\]]*][\s\S]*?--}}/gim;
   out = out.replace(acrMarkerRe, "");
 
   // 2) Remove any remaining Handlebars comments: {{!-- ... --}}
-  // Keep this non-greedy so it doesn't eat beyond a single comment.
   const hbCommentRe = /{{!--[\s\S]*?--}}/g;
   out = out.replace(hbCommentRe, "");
 
@@ -42,7 +36,6 @@ function stripAjoSyntax(html) {
   out = out.replace(liquidTagRe, "");
 
   // 4) Remove specific "empty each blocks" that are intended only to trigger reference collection
-  // but should never render visible in preview (e.g. {{#each refPlaceholders}} {{/each}}).
   out = stripKnownEmptyEachBlocks(out);
 
   return out;
@@ -57,23 +50,16 @@ function stripAjoSyntax(html) {
 function stripKnownEmptyEachBlocks(html) {
   if (!html || typeof html !== "string") return html;
 
-  // Add additional names here if you find more "ref placeholder" loops leaking into preview.
   const ALLOWLIST = ["refPlaceholders"];
-
   let out = html;
 
   for (const name of ALLOWLIST) {
-    // Matches:
-    //   {{#each refPlaceholders}} ... {{/each}}
-    // including optional "as |x|" blocks or other handlebars args.
     const re = new RegExp(
       String.raw`{{\s*#each\s+${escapeRegExp(name)}(?:\s+as\s+\|\s*[^|]+\s*\|)?\s*}}([\s\S]*?){{\s*\/each\s*}}`,
       "g"
     );
 
     out = out.replace(re, (_m, inner) => {
-      // If the body is only whitespace, drop the whole block.
-      // (HB comments are already stripped earlier in stripAjoSyntax.)
       const body = String(inner ?? "").trim();
       return body ? _m : "";
     });
@@ -115,7 +101,6 @@ function coerceValue(val) {
   if (val == null) return "";
 
   if (Array.isArray(val)) {
-    // No separator to avoid inserting unexpected whitespace into HTML
     return val.map(coerceValue).join("");
   }
 
@@ -125,7 +110,6 @@ function coerceValue(val) {
     if (typeof val._path === "string") return val._path;
     if (val._path && typeof val._path === "object" && typeof val._path._path === "string") return val._path._path;
 
-    // MultiFormatString-like
     if (typeof val.html === "string") return val.html;
     if (typeof val.plaintext === "string") return val.plaintext;
 
@@ -157,6 +141,166 @@ function replaceNamespaceVars(segment, namespace, ctx) {
 
   return out;
 }
+
+/* =============================================================================
+ * Liquid (minimal) evaluator for `{% let var = expr %}` + `{{var}}` substitution
+ * ============================================================================= */
+
+function safeDate(input) {
+  if (!input) return null;
+  const d = new Date(input);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function pad2(n) {
+  const s = String(n ?? "");
+  return s.length === 1 ? `0${s}` : s;
+}
+
+/**
+ * Minimal subset of strftime we need for typical email date formatting.
+ * Supports: %Y, %m, %d, %B, %b
+ */
+function formatDate(date, fmt, locale = "en-US") {
+  const d = safeDate(date);
+  if (!d) return "";
+
+  const fullMonth = new Intl.DateTimeFormat(locale, { month: "long" }).format(d);
+  const shortMonth = new Intl.DateTimeFormat(locale, { month: "short" }).format(d);
+
+  return String(fmt ?? "")
+    .replaceAll("%Y", String(d.getFullYear()))
+    .replaceAll("%m", pad2(d.getMonth() + 1))
+    .replaceAll("%d", pad2(d.getDate()))
+    .replaceAll("%B", fullMonth)
+    .replaceAll("%b", shortMonth);
+}
+
+/**
+ * Parse a quoted string literal: "..." or '...'
+ */
+function parseStringLiteral(expr) {
+  const s = String(expr ?? "").trim();
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1);
+  }
+  return null;
+}
+
+/**
+ * Evaluate a Liquid-ish expression:
+ *   - "literal"
+ *   - path.to.value
+ *   - <expr> | date: "%Y"
+ *
+ * `vars` are the computed let-vars so lets can reference prior lets.
+ * `ctx` is the mini root ctx: {cf, prbProperties, styles, ...un-namespaced locals...}
+ */
+function evalLiquidExpr(expr, { ctx, vars, locale = "en-US" }) {
+  const raw = String(expr ?? "").trim();
+  if (!raw) return "";
+
+  // Split pipelines: a | date: "%Y"
+  const parts = raw.split("|").map((p) => p.trim()).filter(Boolean);
+
+  let base = parts[0] || "";
+  let val;
+
+  const lit = parseStringLiteral(base);
+  if (lit != null) {
+    val = lit;
+  } else if (base in (vars || {})) {
+    val = vars[base];
+  } else {
+    val = getByPath(ctx, base);
+  }
+
+  // Apply filters
+  for (let i = 1; i < parts.length; i++) {
+    const f = parts[i];
+
+    // date: "%Y"
+    const m = f.match(/^date\s*:\s*(.+)$/i);
+    if (m) {
+      const fmtRaw = m[1] || "";
+      const fmt = parseStringLiteral(fmtRaw) ?? String(fmtRaw).trim();
+      val = formatDate(val, fmt, locale);
+      continue;
+    }
+
+    // Unknown filters: ignore (best-effort)
+  }
+
+  return coerceValue(val);
+}
+
+/**
+ * Evaluate all `{% let name = expr %}` blocks in-order, produce vars map.
+ * Also supports: `{% assign name = expr %}` (common Liquid alias) just in case.
+ */
+function computeLiquidLets(html, { ctx, locale = "en-US" } = {}) {
+  const out = {};
+  if (!html || typeof html !== "string") return out;
+
+  const root = ctx && typeof ctx === "object" ? ctx : {};
+
+  // Allow both let and assign
+  const re = /{%\s*(?:let|assign)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([\s\S]*?)\s*%}/g;
+
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const name = m[1];
+    const expr = m[2];
+    if (!name) continue;
+
+    out[name] = evalLiquidExpr(expr, { ctx: root, vars: out, locale });
+  }
+
+  return out;
+}
+
+/**
+ * Replace only top-level var tokens: {{var}} / {{{var}}}
+ * Does not touch namespaced tokens like {{cf.foo}}.
+ */
+function replaceLiquidVarTokens(html, vars) {
+  if (!html || typeof html !== "string") return html;
+  if (!vars || typeof vars !== "object") return html;
+
+  const keys = Object.keys(vars).filter(Boolean);
+  if (!keys.length) return html;
+
+  const keyAlt = keys.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+
+  const triple = new RegExp(`\\{\\{\\{\\s*(${keyAlt})\\s*\\}\\}\\}`, "g");
+  const dbl = new RegExp(`\\{\\{\\s*(${keyAlt})\\s*\\}\\}`, "g");
+
+  let out = html.replace(triple, (_m, k) => String(vars[k] ?? ""));
+  out = out.replace(dbl, (_m, k) => escapeHtml(String(vars[k] ?? "")));
+
+  return out;
+}
+
+/**
+ * Evaluate liquid lets and replace tokens, then remove the let/assign tags themselves.
+ * (We leave other non-let liquid tags to later stripping.)
+ */
+function evaluateLiquidLetsAndReplace(html, { ctx, locale = "en-US" } = {}) {
+  if (!html || typeof html !== "string") return html;
+
+  const vars = computeLiquidLets(html, { ctx, locale });
+
+  let out = replaceLiquidVarTokens(html, vars);
+
+  // Remove let/assign tags now (they will also be stripped later, but this keeps output cleaner)
+  out = out.replace(/{%\s*(?:let|assign)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*[\s\S]*?\s*%}/g, "");
+
+  return out;
+}
+
+/* =============================================================================
+ * Styles + binding-order render helpers
+ * ============================================================================= */
 
 /**
  * Determine a "default" context for a namespace:
@@ -207,13 +351,9 @@ function buildMiniAjoRootCtx({ cfCtx, prbCtx, stylesCtx, localCtx }) {
   const local = localCtx && typeof localCtx === "object" ? localCtx : null;
 
   return {
-    // allow templates to use {{this.*}} if they want
     this: local || {},
-
-    // allow un-namespaced access like {{#each bodyCopy}} / {{headlineText}}
     ...(local || {}),
 
-    // canonical namespaces
     cf: cfCtx && typeof cfCtx === "object" ? cfCtx : {},
     prbProperties: prbCtx && typeof prbCtx === "object" ? prbCtx : {},
     styles: stylesCtx && typeof stylesCtx === "object" ? stylesCtx : {},
@@ -250,7 +390,11 @@ function renderNamespaceByBindingOrder({
       localCtx: defaultCtx,
     });
 
-    const maybeExpanded = renderMiniAjo(html, miniRoot);
+    let maybeExpanded = renderMiniAjo(html, miniRoot);
+
+    // ✅ NEW: evaluate liquid lets (best-effort) with the same root ctx
+    maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, { ctx: miniRoot, locale: "en-US" });
+
     return replaceNamespaceVars(maybeExpanded, namespace, defaultCtx);
   }
 
@@ -264,7 +408,6 @@ function renderNamespaceByBindingOrder({
     if (tagPos < 0) continue;
 
     let before = html.slice(cursor, tagPos);
-
     const effectiveCtx = currentCtx || defaultCtx;
 
     const miniRoot = buildMiniAjoRootCtx({
@@ -277,8 +420,11 @@ function renderNamespaceByBindingOrder({
       localCtx: effectiveCtx,
     });
 
-    // Expand minimal AJO blocks (e.g., {{#each cf.bodyCopy}} OR {{#each bodyCopy}}) BEFORE namespaced replacements
+    // Expand minimal AJO blocks BEFORE namespaced replacements
     before = renderMiniAjo(before, miniRoot);
+
+    // ✅ NEW: evaluate liquid lets inside this segment with the effective ctx
+    before = evaluateLiquidLetsAndReplace(before, { ctx: miniRoot, locale: "en-US" });
 
     out += replaceNamespaceVars(before, namespace, effectiveCtx);
 
@@ -289,7 +435,7 @@ function renderNamespaceByBindingOrder({
 
     const skey = `${b.index}:${b.result}`;
     const nextCtx = dataByStreamKey?.[skey] ?? null;
-    currentCtx = nextCtx && typeof nextCtx === "object" ? nextCtx : currentCtx; // keep last good ctx
+    currentCtx = nextCtx && typeof nextCtx === "object" ? nextCtx : currentCtx;
   }
 
   let tail = html.slice(cursor);
@@ -306,6 +452,10 @@ function renderNamespaceByBindingOrder({
   });
 
   tail = renderMiniAjo(tail, miniRoot);
+
+  // ✅ NEW: evaluate liquid lets in tail with effective ctx
+  tail = evaluateLiquidLetsAndReplace(tail, { ctx: miniRoot, locale: "en-US" });
+
   out += replaceNamespaceVars(tail, namespace, effectiveCtx);
 
   return out;
@@ -340,7 +490,11 @@ function resolveStylesByBindings({
       localCtx: styles,
     });
 
-    const maybeExpanded = renderMiniAjo(stitchedHtml, miniRoot);
+    let maybeExpanded = renderMiniAjo(stitchedHtml, miniRoot);
+
+    // ✅ NEW: evaluate liquid lets (best-effort) using defaults
+    maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, { ctx: miniRoot, locale: "en-US" });
+
     return replaceNamespaceVars(maybeExpanded, "styles", styles);
   }
 
@@ -366,6 +520,10 @@ function resolveStylesByBindings({
     });
 
     seg = renderMiniAjo(seg, miniRoot);
+
+    // ✅ NEW: evaluate liquid lets in this segment with current styles root
+    seg = evaluateLiquidLetsAndReplace(seg, { ctx: miniRoot, locale: "en-US" });
+
     out += replaceNamespaceVars(seg, "styles", currentStyles);
 
     // strip binding tag from preview output
@@ -392,6 +550,10 @@ function resolveStylesByBindings({
   });
 
   tail = renderMiniAjo(tail, tailRoot);
+
+  // ✅ NEW: evaluate liquid lets in tail
+  tail = evaluateLiquidLetsAndReplace(tail, { ctx: tailRoot, locale: "en-US" });
+
   out += replaceNamespaceVars(tail, "styles", currentStyles);
 
   return out;
@@ -442,6 +604,18 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     defaultCfCtx,
   });
 
+  // ✅ NEW: final global liquid let evaluation using defaults (catches footer/global blocks)
+  {
+    const miniRoot = buildMiniAjoRootCtx({
+      cfCtx: defaultCfCtx,
+      prbCtx: defaultPrbCtx,
+      stylesCtx: deriveStylesContext({ prbCtx: defaultPrbCtx, cfCtx: defaultCfCtx }),
+      localCtx: null,
+    });
+
+    out = evaluateLiquidLetsAndReplace(out, { ctx: miniRoot, locale: "en-US" });
+  }
+
   // final sanitize for preview HTML
   return stripAjoSyntax(out);
 }
@@ -457,4 +631,9 @@ module.exports = {
   pickDefaultCtxForNamespace,
   deriveStylesContext,
   stripKnownEmptyEachBlocks,
+
+  // optional exports (handy for unit tests)
+  evaluateLiquidLetsAndReplace,
+  computeLiquidLets,
+  evalLiquidExpr,
 };
