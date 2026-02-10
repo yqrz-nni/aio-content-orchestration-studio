@@ -10,6 +10,7 @@
 // NEW:
 // - VF diagnostics around stitching: vfDiag + stitchReport + fragmentsResolvedAll
 // - Normalize diagnostics payloads so UI Diagnostics tab always has stable shapes to display
+// - Surface renderTokens diagnostics (previewDiagnostics) so the UI can show dynamic reference resolution details
 
 const { ok, badRequest, serverError, corsPreflight } = require("../../../_lib/http");
 const { fetchRaw } = require("../../../_lib/fetchRaw");
@@ -30,15 +31,19 @@ function normalizeStitchDiagnostics(diag) {
   const fragmentsResolvedAll = Array.isArray(diag?.fragmentsResolvedAll) ? diag.fragmentsResolvedAll : [];
   const resolutionWarnings = Array.isArray(diag?.resolutionWarnings) ? diag.resolutionWarnings : [];
 
+  // NOTE:
+  // aajoFragments.resolveStitchWithDiagnostics() currently returns vfDiag with shape:
+  // { before:[], after:[], dropped:[], added:[] }
+  // Keep that shape stable (and do not invent a different one).
   const vfDiag =
     diag?.vfDiag && typeof diag.vfDiag === "object"
-      ? diag.vfDiag
-      : {
-          expected: [],
-          resolved: [],
-          missing: [],
-          note: "vfDiag not produced by resolveStitchWithDiagnostics()",
-        };
+      ? {
+          before: Array.isArray(diag.vfDiag.before) ? diag.vfDiag.before : [],
+          after: Array.isArray(diag.vfDiag.after) ? diag.vfDiag.after : [],
+          dropped: Array.isArray(diag.vfDiag.dropped) ? diag.vfDiag.dropped : [],
+          added: Array.isArray(diag.vfDiag.added) ? diag.vfDiag.added : [],
+        }
+      : { before: [], after: [], dropped: [], added: [] };
 
   const stitchReport =
     diag?.stitchReport && typeof diag.stitchReport === "object"
@@ -48,6 +53,17 @@ function normalizeStitchDiagnostics(diag) {
         };
 
   return { stitchedHtml, fragmentsResolvedAll, resolutionWarnings, vfDiag, stitchReport };
+}
+
+/**
+ * Ensure previewDiagnostics (renderTokens diagnostics) always exists and has the expected top shape.
+ * We keep it permissive: renderTokens.js owns the detailed schema under preview.renderTokens.
+ */
+function normalizePreviewDiagnostics(d) {
+  const out = d && typeof d === "object" ? d : {};
+  if (!out.preview) out.preview = {};
+  if (!out.preview.renderTokens) out.preview.renderTokens = {};
+  return out;
 }
 
 async function main(params) {
@@ -80,14 +96,13 @@ async function main(params) {
 
       const aem = await resolveAemBindingValues({ stitchedHtml: diag.stitchedHtml, params });
 
+      // NEW: collect renderTokens diagnostics (dynamic references, unresolved vars, timings, etc.)
+      const previewDiagnostics = {};
       const renderedHtml = buildRenderedHtmlBestEffort({
         stitchedHtml: diag.stitchedHtml,
         aemBindingsEncountered: aem.aemBindingsEncountered,
         aemPrefetchDataByStreamKey: aem.aemPrefetchDataByStreamKey,
-        // NOTE: buildRenderedHtmlBestEffort currently accepts (and conditionally populates)
-        // diagnostics only if the caller provides an object. If/when you want to surface
-        // renderTokens diagnostics in the UI, pass a diagnostics object here and return it.
-        // diagnostics: {},
+        diagnostics: previewDiagnostics,
       });
 
       return ok({
@@ -98,14 +113,17 @@ async function main(params) {
         renderedHtml,
         etag: null,
 
-        // Back-compat: keep the old key too, but return the normalized version
+        // Back-compat
         fragmentsResolved: diag.fragmentsResolvedAll,
         resolutionWarnings: diag.resolutionWarnings,
 
-        // NEW diagnostics (normalized, stable shapes)
+        // Stitch/VF diagnostics
         vfDiag: diag.vfDiag,
         stitchReport: diag.stitchReport,
         fragmentsResolvedAll: diag.fragmentsResolvedAll,
+
+        // NEW: renderTokens diagnostics (what you need for dynamic reference debugging)
+        previewDiagnostics: normalizePreviewDiagnostics(previewDiagnostics),
 
         aemBindingsEncountered: aem.aemBindingsEncountered,
         aemPrefetch: aem.aemPrefetch,
@@ -153,11 +171,13 @@ async function main(params) {
 
     const aem = await resolveAemBindingValues({ stitchedHtml: diag.stitchedHtml, params });
 
+    // NEW: collect renderTokens diagnostics (dynamic references, unresolved vars, timings, etc.)
+    const previewDiagnostics = {};
     const renderedHtml = buildRenderedHtmlBestEffort({
       stitchedHtml: diag.stitchedHtml,
       aemBindingsEncountered: aem.aemBindingsEncountered,
       aemPrefetchDataByStreamKey: aem.aemPrefetchDataByStreamKey,
-      // diagnostics: {},
+      diagnostics: previewDiagnostics,
     });
 
     return ok({
@@ -168,14 +188,17 @@ async function main(params) {
       renderedHtml,
       etag,
 
-      // Back-compat: keep the old key too, but return the normalized version
+      // Back-compat
       fragmentsResolved: diag.fragmentsResolvedAll,
       resolutionWarnings: diag.resolutionWarnings,
 
-      // NEW diagnostics (normalized, stable shapes)
+      // Stitch/VF diagnostics
       vfDiag: diag.vfDiag,
       stitchReport: diag.stitchReport,
       fragmentsResolvedAll: diag.fragmentsResolvedAll,
+
+      // NEW: renderTokens diagnostics (what you need for dynamic reference debugging)
+      previewDiagnostics: normalizePreviewDiagnostics(previewDiagnostics),
 
       aemBindingsEncountered: aem.aemBindingsEncountered,
       aemPrefetch: aem.aemPrefetch,
