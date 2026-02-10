@@ -1246,8 +1246,10 @@ function resolveStylesByBindings({
     const needed = collectTopLevelVarNames(seg);
     seg = evaluateLiquidLetsAndReplace(seg, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
-    out += replaceNamespaceVars(seg, "styles", currentStyles);
-    out += replaceNamespaceVars(seg, "brandProps", currentBrandProps);
+    // ✅ apply both replacements, then append ONCE (prevents visual fragment duplication)
+    let rendered = replaceNamespaceVars(seg, "styles", currentStyles);
+    rendered = replaceNamespaceVars(rendered, "brandProps", currentBrandProps);
+    out += rendered;
 
     // IMPORTANT:
     // Preserve the binding tag so later passes (prbProperties + cf) can still locate it.
@@ -1280,8 +1282,10 @@ function resolveStylesByBindings({
   const needed = collectTopLevelVarNames(tail);
   tail = evaluateLiquidLetsAndReplace(tail, { ctx: tailRoot, locale: "en-US", neededVars: needed, diag });
 
-  out += replaceNamespaceVars(tail, "styles", currentStyles);
-  out += replaceNamespaceVars(tail, "brandProps", currentBrandProps);
+  // ✅ apply both replacements, then append ONCE (prevents visual fragment duplication)
+  let renderedTail = replaceNamespaceVars(tail, "styles", currentStyles);
+  renderedTail = replaceNamespaceVars(renderedTail, "brandProps", currentBrandProps);
+  out += renderedTail;
 
   return out;
 }
