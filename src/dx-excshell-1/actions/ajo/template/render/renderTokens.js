@@ -78,6 +78,11 @@ function stripAjoSyntax(html) {
 
   let out = html;
 
+  // 0) Remove non-conditional HTML comments (keep MSO conditionals like <!--[if mso]> ... <![endif]-->)
+  // This specifically gets rid of things like <!-- Brand Logo --> without breaking email conditionals.
+  const nonConditionalHtmlCommentsRe = /<!--(?!\s*\[if|\s*<!\[endif|\s*\[endif)([\s\S]*?)-->/gim;
+  out = out.replace(nonConditionalHtmlCommentsRe, "");
+
   // 1) Remove ACR wrapper markers ONLY (do not remove the content between them)
   const acrMarkerRe = /{{!--[\s\S]*?\[(?:acr-start|acr-end)[^\]]*][\s\S]*?--}}/gim;
   out = out.replace(acrMarkerRe, "");
@@ -944,6 +949,13 @@ function deriveStylesContext({ prbCtx, cfCtx }) {
   return cfOverride || prbStyle || null;
 }
 
+function deriveBrandPropsContext(prbCtx) {
+  const brands = prbCtx?.brands;
+  if (!Array.isArray(brands) || !brands.length) return null;
+  const first = brands[0];
+  return first && typeof first === "object" ? first : null;
+}
+
 function buildPrbDerivedLocals(prbCtx, locale = "en-US") {
   const prbNumber = prbCtx?.prbNumber ?? "";
 
@@ -955,7 +967,7 @@ function buildPrbDerivedLocals(prbCtx, locale = "en-US") {
   return { prbNumber, prbYear, prbMonth, prbMonthName };
 }
 
-function buildMiniAjoRootCtx({ cfCtx, prbCtx, stylesCtx, localCtx }) {
+function buildMiniAjoRootCtx({ cfCtx, prbCtx, stylesCtx, brandPropsCtx, localCtx }) {
   const local = localCtx && typeof localCtx === "object" ? localCtx : null;
 
   const prbLocals = buildPrbDerivedLocals(prbCtx, "en-US");
@@ -969,6 +981,7 @@ function buildMiniAjoRootCtx({ cfCtx, prbCtx, stylesCtx, localCtx }) {
     cf: cfCtx && typeof cfCtx === "object" ? cfCtx : {},
     prbProperties: prbCtx && typeof prbCtx === "object" ? prbCtx : {},
     styles: stylesCtx && typeof stylesCtx === "object" ? stylesCtx : {},
+    brandProps: brandPropsCtx && typeof brandPropsCtx === "object" ? brandPropsCtx : {},
   };
 }
 
@@ -997,13 +1010,17 @@ function renderNamespaceByBindingOrder({
   if (!binds.length) {
     if (!defaultCtx) return html;
 
+    const effectivePrb = namespace === "prbProperties" ? defaultCtx : defaultPrbCtx;
+    const brandPropsCtx = deriveBrandPropsContext(effectivePrb);
+
     const miniRoot = buildMiniAjoRootCtx({
       cfCtx: namespace === "cf" ? defaultCtx : defaultCfCtx,
-      prbCtx: namespace === "prbProperties" ? defaultCtx : defaultPrbCtx,
+      prbCtx: effectivePrb,
       stylesCtx: deriveStylesContext({
-        prbCtx: namespace === "prbProperties" ? defaultCtx : defaultPrbCtx,
+        prbCtx: effectivePrb,
         cfCtx: namespace === "cf" ? defaultCtx : defaultCfCtx,
       }),
+      brandPropsCtx,
       localCtx: defaultCtx,
     });
 
@@ -1028,6 +1045,9 @@ function renderNamespaceByBindingOrder({
       });
     }
 
+    // Resolve brandProps tokens anywhere in this pass (header links, logo src, etc.)
+    maybeExpanded = replaceNamespaceVars(maybeExpanded, "brandProps", brandPropsCtx);
+
     return replaceNamespaceVars(maybeExpanded, namespace, defaultCtx);
   }
 
@@ -1043,13 +1063,17 @@ function renderNamespaceByBindingOrder({
     let before = html.slice(cursor, tagPos);
     const effectiveCtx = currentCtx || defaultCtx;
 
+    const effectivePrb = namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx;
+    const brandPropsCtx = deriveBrandPropsContext(effectivePrb);
+
     const miniRoot = buildMiniAjoRootCtx({
       cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
-      prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
+      prbCtx: effectivePrb,
       stylesCtx: deriveStylesContext({
-        prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
+        prbCtx: effectivePrb,
         cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
       }),
+      brandPropsCtx,
       localCtx: effectiveCtx,
     });
 
@@ -1084,6 +1108,9 @@ function renderNamespaceByBindingOrder({
       });
     }
 
+    // Resolve style + brandProps vars that can appear outside fragments
+    before = replaceNamespaceVars(before, "brandProps", brandPropsCtx);
+
     out += replaceNamespaceVars(before, namespace, effectiveCtx);
 
     // strip binding tag from preview output (we only needed it for ordering)
@@ -1099,13 +1126,17 @@ function renderNamespaceByBindingOrder({
   let tail = html.slice(cursor);
 
   const effectiveCtx = currentCtx || defaultCtx;
+  const effectivePrb = namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx;
+  const brandPropsCtx = deriveBrandPropsContext(effectivePrb);
+
   const miniRoot = buildMiniAjoRootCtx({
     cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
-    prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
+    prbCtx: effectivePrb,
     stylesCtx: deriveStylesContext({
-      prbCtx: namespace === "prbProperties" ? effectiveCtx : defaultPrbCtx,
+      prbCtx: effectivePrb,
       cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
     }),
+    brandPropsCtx,
     localCtx: effectiveCtx,
   });
 
@@ -1123,6 +1154,8 @@ function renderNamespaceByBindingOrder({
       segmentKey: "cf:tail",
     });
   }
+
+  tail = replaceNamespaceVars(tail, "brandProps", brandPropsCtx);
 
   out += replaceNamespaceVars(tail, namespace, effectiveCtx);
 
@@ -1148,10 +1181,13 @@ function resolveStylesByBindings({
     const styles = deriveStylesContext({ prbCtx: defaultPrbCtx, cfCtx: defaultCfCtx });
     if (!styles) return stitchedHtml;
 
+    const brandPropsCtx = deriveBrandPropsContext(defaultPrbCtx);
+
     const miniRoot = buildMiniAjoRootCtx({
       cfCtx: defaultCfCtx,
       prbCtx: defaultPrbCtx,
       stylesCtx: styles,
+      brandPropsCtx,
       localCtx: styles,
     });
 
@@ -1165,6 +1201,8 @@ function resolveStylesByBindings({
       diag,
     });
 
+    maybeExpanded = replaceNamespaceVars(maybeExpanded, "brandProps", brandPropsCtx);
+
     return replaceNamespaceVars(maybeExpanded, "styles", styles);
   }
 
@@ -1174,6 +1212,7 @@ function resolveStylesByBindings({
   let currentPrb = null;
   let currentCf = null;
   let currentStyles = deriveStylesContext({ prbCtx: defaultPrbCtx, cfCtx: defaultCfCtx }) || null;
+  let currentBrandProps = deriveBrandPropsContext(currentPrb || defaultPrbCtx) || null;
 
   for (const b of binds) {
     const tag = b.rawTag;
@@ -1198,6 +1237,7 @@ function resolveStylesByBindings({
       cfCtx: currentCf || defaultCfCtx,
       prbCtx: currentPrb || defaultPrbCtx,
       stylesCtx: currentStyles,
+      brandPropsCtx: currentBrandProps,
       localCtx: currentStyles,
     });
 
@@ -1207,6 +1247,7 @@ function resolveStylesByBindings({
     seg = evaluateLiquidLetsAndReplace(seg, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
     out += replaceNamespaceVars(seg, "styles", currentStyles);
+    out += replaceNamespaceVars(seg, "brandProps", currentBrandProps);
 
     // IMPORTANT:
     // Preserve the binding tag so later passes (prbProperties + cf) can still locate it.
@@ -1221,6 +1262,7 @@ function resolveStylesByBindings({
     if (b.result === "cf" && ctx && typeof ctx === "object") currentCf = ctx;
 
     currentStyles = deriveStylesContext({ prbCtx: currentPrb || defaultPrbCtx, cfCtx: currentCf || defaultCfCtx });
+    currentBrandProps = deriveBrandPropsContext(currentPrb || defaultPrbCtx);
   }
 
   let tail = stitchedHtml.slice(cursor);
@@ -1229,6 +1271,7 @@ function resolveStylesByBindings({
     cfCtx: currentCf || defaultCfCtx,
     prbCtx: currentPrb || defaultPrbCtx,
     stylesCtx: currentStyles,
+    brandPropsCtx: currentBrandProps,
     localCtx: currentStyles,
   });
 
@@ -1238,6 +1281,7 @@ function resolveStylesByBindings({
   tail = evaluateLiquidLetsAndReplace(tail, { ctx: tailRoot, locale: "en-US", neededVars: needed, diag });
 
   out += replaceNamespaceVars(tail, "styles", currentStyles);
+  out += replaceNamespaceVars(tail, "brandProps", currentBrandProps);
 
   return out;
 }
@@ -1326,15 +1370,21 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
   // Final global liquid let evaluation using defaults (catches footer/global blocks)
   {
     const t = nowMs();
+    const brandPropsCtx = deriveBrandPropsContext(defaultPrbCtx);
+
     const miniRoot = buildMiniAjoRootCtx({
       cfCtx: defaultCfCtx,
       prbCtx: defaultPrbCtx,
       stylesCtx: deriveStylesContext({ prbCtx: defaultPrbCtx, cfCtx: defaultCfCtx }),
+      brandPropsCtx,
       localCtx: null,
     });
 
     const needed = collectTopLevelVarNames(out);
     out = evaluateLiquidLetsAndReplace(out, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
+
+    // Catch any lingering brandProps.* tokens in footer/global blocks
+    out = replaceNamespaceVars(out, "brandProps", brandPropsCtx);
 
     if (diag) diag.timings.finalLiquidMs = nowMs() - t;
   }
