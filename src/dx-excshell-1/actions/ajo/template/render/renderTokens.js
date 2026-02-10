@@ -4,13 +4,16 @@ const { renderMiniAjo } = require("./miniAjoRuntime");
 
 /**
  * Preview sanitizer:
- * Remove AJO/Handlebars syntax from rendered preview HTML only.
+ * Remove *wrapper syntax* from rendered preview HTML only.
  * (Canonical AJO HTML remains untouched; this is for iframe preview output.)
  *
  * IMPORTANT:
  * - DO NOT remove generic {{ ... }} tokens; those include legitimate {{cf.*}}/{{prbProperties.*}} references.
- * - Only strip:
- *   1) ACR wrapped blocks
+ * - DO NOT remove large "ACR wrapped blocks" by spanning regex ranges — that can delete real HTML
+ *   (especially with nested ACR markers / email table markup) and leave stray closing tags.
+ *
+ * We only strip:
+ *   1) The ACR wrapper *comment markers themselves* (start/end), but NOT their enclosed content
  *   2) Handlebars comments ({{!-- ... --}})
  *   3) Liquid tags ({% ... %})
  */
@@ -19,12 +22,17 @@ function stripAjoSyntax(html) {
 
   let out = html;
 
-  // 1) Remove ACR wrapped blocks:
-  const acrBlockRe =
-    /{{!--\s*\[acr-start[\s\S]*?}}[\s\S]*?{{!--[\s\S]*?\[acr-end[\s\S]*?}}/gim;
-  out = out.replace(acrBlockRe, "");
+  // 1) Remove ACR wrapper markers ONLY (do not remove the content between them)
+  // Examples seen in templates:
+  //   {{!-- [acr-start-expr-field] --}} ... {{!-- [acr-end-expr-field] --}}
+  //   {{!-- [acr-start-...] --}} / {{!-- [acr-end-...] --}}
+  //
+  // This intentionally targets only comments that contain "[acr-start" or "[acr-end".
+  const acrMarkerRe = /{{!--[\s\S]*?\[(?:acr-start|acr-end)[^\]]*][\s\S]*?--}}/gim;
+  out = out.replace(acrMarkerRe, "");
 
   // 2) Remove any remaining Handlebars comments: {{!-- ... --}}
+  // Keep this non-greedy so it doesn't eat beyond a single comment.
   const hbCommentRe = /{{!--[\s\S]*?--}}/g;
   out = out.replace(hbCommentRe, "");
 
@@ -391,7 +399,7 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     defaultCfCtx,
   });
 
-  // final sanitize for preview HTML
+  // final sanitize for preview HTML (now safe: no block-spanning deletes)
   return stripAjoSyntax(out);
 }
 
