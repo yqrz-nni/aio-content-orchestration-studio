@@ -710,14 +710,10 @@ export function TemplateStudio() {
             <Heading level={4}>Composition</Heading>
 
             <DialogTrigger>
-              {(close) => (
-                <>
-                  <Button variant="cta" isDisabled={!templateId || !canonicalHtml}>
-                    Add pattern
-                  </Button>
-                  <PatternPickerDialog vfItems={vfItems} onSelect={addPattern} close={close} />
-                </>
-              )}
+              <Button variant="cta" isDisabled={!templateId || !canonicalHtml}>
+                Add pattern
+              </Button>
+              <PatternPickerDialog vfItems={vfItems} onSelect={addPattern} />
             </DialogTrigger>
           </Flex>
 

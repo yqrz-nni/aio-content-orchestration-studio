@@ -2,15 +2,19 @@
 
 import React, { useState } from "react";
 import { Heading, Text, Divider, ListView, Item, Button, ButtonGroup, Dialog, Content } from "@adobe/react-spectrum";
+import { useDialogContainer } from "@react-spectrum/dialog";
 
-export function PatternPickerDialog({ vfItems, onSelect, close }) {
+export function PatternPickerDialog({ vfItems, onSelect }) {
   const [selected, setSelected] = useState(null);
+  const dialog = useDialogContainer();
 
   return (
     <Dialog>
       <Heading>Add pattern</Heading>
       <Content>
-        <Text UNSAFE_style={{ opacity: 0.85 }}>Choose a Visual Fragment pattern. You can bind content after it’s added.</Text>
+        <Text UNSAFE_style={{ opacity: 0.85 }}>
+          Choose a Visual Fragment pattern. You can bind content after it’s added.
+        </Text>
         <Divider size="S" marginY="size-150" />
         <ListView
           aria-label="Patterns"
@@ -25,7 +29,7 @@ export function PatternPickerDialog({ vfItems, onSelect, close }) {
         </ListView>
       </Content>
       <ButtonGroup>
-        <Button variant="secondary" onPress={close}>
+        <Button variant="secondary" onPress={() => dialog.dismiss()}>
           Cancel
         </Button>
         <Button
@@ -34,7 +38,7 @@ export function PatternPickerDialog({ vfItems, onSelect, close }) {
           onPress={() => {
             if (!selected) return;
             onSelect(selected);
-            close();
+            dialog.dismiss();
           }}
         >
           Add
