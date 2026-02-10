@@ -2,7 +2,45 @@
 
 const { renderMiniAjo } = require("./miniAjoRuntime");
 
-/**
+/* =============================================================================
+ * Diagnostics helpers (non-breaking: caller may pass an object to populate)
+ * ============================================================================= */
+
+function nowMs() {
+  return Date.now();
+}
+
+function ensureDiagnostics(d) {
+  if (!d || typeof d !== "object") return null;
+  if (!d.preview) d.preview = {};
+  if (!d.preview.renderTokens) d.preview.renderTokens = {};
+  const rt = d.preview.renderTokens;
+
+  if (!rt.timings) rt.timings = {};
+  if (!rt.counts) rt.counts = {};
+  if (!rt.liquid) rt.liquid = {};
+  if (!rt.unresolved) rt.unresolved = {};
+  if (!rt.warnings) rt.warnings = [];
+  if (!rt.errors) rt.errors = [];
+
+  // convenience counters
+  if (!rt.liquid.unknownFns) rt.liquid.unknownFns = {};
+  if (!rt.liquid.evaluatedLets) rt.liquid.evaluatedLets = [];
+
+  return rt;
+}
+
+function diagAddWarning(rt, msg, meta) {
+  if (!rt) return;
+  rt.warnings.push(meta ? { message: msg, ...meta } : { message: msg });
+}
+
+function diagAddError(rt, msg, meta) {
+  if (!rt) return;
+  rt.errors.push(meta ? { message: msg, ...meta } : { message: msg });
+}
+
+/* =============================================================================
  * Preview sanitizer:
  * Remove *wrapper syntax* from rendered preview HTML only.
  * (Canonical AJO HTML remains untouched; this is for iframe preview output.)
@@ -17,7 +55,8 @@ const { renderMiniAjo } = require("./miniAjoRuntime");
  *   2) Handlebars comments ({{!-- ... --}})
  *   3) Liquid tags ({% ... %})   (NOTE: we evaluate {% let ... %} prior to stripping)
  *   4) Specific known "placeholder-only" each blocks that sometimes leak into preview HTML
- */
+ * ============================================================================= */
+
 function stripAjoSyntax(html) {
   if (!html || typeof html !== "string") return html;
 
@@ -143,7 +182,36 @@ function replaceNamespaceVars(segment, namespace, ctx) {
 }
 
 /* =============================================================================
- * Liquid (minimal) evaluator for `{% let var = expr %}` + `{{var}}` substitution
+ * Top-level token detection (Option 2 “small piece”)
+ * ============================================================================= */
+
+function collectTopLevelVarNames(html) {
+  const out = new Set();
+  if (!html || typeof html !== "string") return out;
+
+  // Match {{foo}} or {{{foo}}} where foo is a simple identifier (no dots)
+  const re = /\{\{\{?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}?\}/g;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const name = m[1];
+    if (!name) continue;
+    // ignore known structural keywords (conservative)
+    if (name === "fragment" || name === "each" || name === "if" || name === "else") continue;
+    out.add(name);
+  }
+  return out;
+}
+
+/* =============================================================================
+ * Liquid (minimal+) evaluator for `{% let var = expr %}` + `{{var}}` substitution
+ *
+ * Supports:
+ * - let/assign
+ * - string literal, number literal, ctx path, prior let-var reference
+ * - tiny arithmetic: a + b, a - b
+ * - function calls used in templates (subset):
+ *   formatDate, concat, toString, toInt, split, head, get, replaceAll, includes, equals
+ * - pipeline filter: | date: "%Y" (strftime-ish subset via formatDate())
  * ============================================================================= */
 
 function safeDate(input) {
@@ -187,18 +255,132 @@ function parseStringLiteral(expr) {
   return null;
 }
 
+function parseNumberLiteral(expr) {
+  const t = String(expr ?? "").trim();
+  if (!t) return null;
+  if (!/^-?\d+(\.\d+)?$/.test(t)) return null;
+  return Number(t);
+}
+
+function splitArgs(raw) {
+  const s = String(raw ?? "");
+  const out = [];
+  let cur = "";
+  let depth = 0;
+  let quote = null;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+
+    if (quote) {
+      cur += ch;
+      if (ch === quote && s[i - 1] !== "\\") quote = null;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+
+    if (ch === "(") {
+      depth++;
+      cur += ch;
+      continue;
+    }
+    if (ch === ")") {
+      depth = Math.max(0, depth - 1);
+      cur += ch;
+      continue;
+    }
+
+    if (ch === "," && depth === 0) {
+      out.push(cur.trim());
+      cur = "";
+      continue;
+    }
+
+    cur += ch;
+  }
+
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+function parseFnCall(expr) {
+  const s = String(expr ?? "").trim();
+  const m = s.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([\s\S]*)\)$/);
+  if (!m) return null;
+  return { name: m[1], argsRaw: m[2] };
+}
+
+/**
+ * Extract possible let-var references from an expression (best-effort).
+ * Used to compute a dependency closure for “evaluate only what’s needed”.
+ */
+function extractLetRefs(expr) {
+  const out = new Set();
+  const s = String(expr ?? "");
+  if (!s.trim()) return out;
+
+  // Remove string literals to avoid false positives
+  const noStrings = s.replace(/(["'])(?:\\.|(?!\1)[\s\S])*\1/g, " ");
+
+  // Tokenize identifiers and dotted paths; pick the first segment (foo in foo.bar)
+  const re = /\b([a-zA-Z_][a-zA-Z0-9_]*)(?:\.[a-zA-Z0-9_]+)*\b/g;
+  let m;
+  while ((m = re.exec(noStrings)) !== null) {
+    const id = m[1];
+    if (!id) continue;
+    // ignore common function names / keywords (conservative allowlist)
+    if (
+      id === "true" ||
+      id === "false" ||
+      id === "null" ||
+      id === "undefined" ||
+      id === "date" ||
+      id === "assign" ||
+      id === "let"
+    ) {
+      continue;
+    }
+    out.add(id);
+  }
+  return out;
+}
+
 /**
  * Evaluate a Liquid-ish expression:
  *   - "literal"
+ *   - 123 / 12.3
  *   - path.to.value
+ *   - fn(arg1, arg2, ...)
  *   - <expr> | date: "%Y"
+ *   - tiny arithmetic: a + b, a - b
  *
  * `vars` are the computed let-vars so lets can reference prior lets.
  * `ctx` is the mini root ctx: {cf, prbProperties, styles, ...un-namespaced locals...}
  */
-function evalLiquidExpr(expr, { ctx, vars, locale = "en-US" }) {
+function evalLiquidExpr(expr, { ctx, vars, locale = "en-US", diag }) {
   const raw = String(expr ?? "").trim();
   if (!raw) return "";
+
+  // Very small arithmetic: a + b, a - b (no precedence, left-to-right)
+  // Only at top-level (not inside fn calls)
+  {
+    const arith = raw.match(/^(.+?)\s*([+-])\s*(.+)$/);
+    if (arith && !parseFnCall(raw)) {
+      const left = evalLiquidExpr(arith[1], { ctx, vars, locale, diag });
+      const right = evalLiquidExpr(arith[3], { ctx, vars, locale, diag });
+      const ln = Number(left);
+      const rn = Number(right);
+      if (!Number.isNaN(ln) && !Number.isNaN(rn)) {
+        return String(arith[2] === "+" ? ln + rn : ln - rn);
+      }
+      // if not numeric, fall through to default behavior
+    }
+  }
 
   // Split pipelines: a | date: "%Y"
   const parts = raw.split("|").map((p) => p.trim()).filter(Boolean);
@@ -206,13 +388,23 @@ function evalLiquidExpr(expr, { ctx, vars, locale = "en-US" }) {
   let base = parts[0] || "";
   let val;
 
-  const lit = parseStringLiteral(base);
-  if (lit != null) {
-    val = lit;
-  } else if (base in (vars || {})) {
-    val = vars[base];
+  // fn calls
+  const call = parseFnCall(base);
+  if (call) {
+    val = evalLiquidFn(call.name, call.argsRaw, { ctx, vars, locale, diag });
   } else {
-    val = getByPath(ctx, base);
+    const lit = parseStringLiteral(base);
+    const num = lit == null ? parseNumberLiteral(base) : null;
+
+    if (lit != null) {
+      val = lit;
+    } else if (num != null) {
+      val = num;
+    } else if (base in (vars || {})) {
+      val = vars[base];
+    } else {
+      val = getByPath(ctx, base);
+    }
   }
 
   // Apply filters
@@ -234,26 +426,144 @@ function evalLiquidExpr(expr, { ctx, vars, locale = "en-US" }) {
   return coerceValue(val);
 }
 
+function evalLiquidFn(name, argsRaw, { ctx, vars, locale, diag }) {
+  const args = splitArgs(argsRaw).map((a) => evalLiquidExpr(a, { ctx, vars, locale, diag }));
+
+  switch (name) {
+    case "toString":
+      return String(args[0] ?? "");
+    case "toInt":
+      return String(parseInt(args[0] ?? "0", 10) || 0);
+    case "concat":
+      return args.map((a) => String(a ?? "")).join("");
+    case "split": {
+      const str = String(args[0] ?? "");
+      const delim = String(args[1] ?? "");
+      return str.split(delim);
+    }
+    case "head": {
+      const arr = args[0];
+      return Array.isArray(arr) && arr.length ? arr[0] : "";
+    }
+    case "get": {
+      // get(obj, "path")
+      const obj = args[0];
+      const p = String(args[1] ?? "");
+      if (obj && typeof obj === "object") return getByPath(obj, p);
+      return "";
+    }
+    case "replaceAll": {
+      const str = String(args[0] ?? "");
+      const search = String(args[1] ?? "");
+      const repl = String(args[2] ?? "");
+      return str.split(search).join(repl);
+    }
+    case "includes": {
+      const hay = args[0];
+      const needle = String(args[1] ?? "");
+      if (Array.isArray(hay)) return hay.map(String).includes(needle);
+      return String(hay ?? "").includes(needle);
+    }
+    case "equals":
+      return String(args[0] ?? "") === String(args[1] ?? "");
+    case "formatDate": {
+      // templates commonly use: formatDate(prbDate, "MM"/"LLLL"/"YYYY")
+      const date = args[0];
+      const fmt = String(args[1] ?? "");
+      const d = safeDate(date);
+      if (!d) return "";
+
+      if (fmt === "YYYY") return String(d.getFullYear());
+      if (fmt === "MM") return pad2(d.getMonth() + 1);
+      if (fmt === "LLLL") return new Intl.DateTimeFormat(locale, { month: "long" }).format(d);
+
+      return "";
+    }
+    default: {
+      if (diag) {
+        diag.liquid.unknownFns[name] = (diag.liquid.unknownFns[name] || 0) + 1;
+      }
+      return ""; // unknown fn: best-effort
+    }
+  }
+}
+
 /**
- * Evaluate all `{% let name = expr %}` blocks in-order, produce vars map.
- * Also supports: `{% assign name = expr %}` (common Liquid alias) just in case.
+ * Parse all `{% let name = expr %}` blocks in-order.
+ * Also supports `{% assign name = expr %}`.
  */
-function computeLiquidLets(html, { ctx, locale = "en-US" } = {}) {
-  const out = {};
-  if (!html || typeof html !== "string") return out;
+function parseLiquidLets(html) {
+  const lets = [];
+  if (!html || typeof html !== "string") return lets;
 
-  const root = ctx && typeof ctx === "object" ? ctx : {};
-
-  // Allow both let and assign
   const re = /{%\s*(?:let|assign)\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*([\s\S]*?)\s*%}/g;
-
   let m;
   while ((m = re.exec(html)) !== null) {
     const name = m[1];
     const expr = m[2];
     if (!name) continue;
+    lets.push({ name, expr, raw: m[0] });
+  }
+  return lets;
+}
 
-    out[name] = evalLiquidExpr(expr, { ctx: root, vars: out, locale });
+/**
+ * Expand needed vars by following dependencies on other let-vars.
+ */
+function expandNeededLets(lets, neededVars) {
+  const needed = new Set(Array.isArray(neededVars) ? neededVars : neededVars instanceof Set ? [...neededVars] : []);
+  if (!needed.size) return needed;
+
+  // Build deps: letName -> referenced identifiers
+  const deps = new Map();
+  for (const l of lets) {
+    deps.set(l.name, extractLetRefs(l.expr));
+  }
+
+  // Fixpoint expansion: if a needed let references another let, include it
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const l of lets) {
+      if (!needed.has(l.name)) continue;
+      const refIds = deps.get(l.name);
+      if (!refIds) continue;
+
+      for (const id of refIds) {
+        if (deps.has(id) && !needed.has(id)) {
+          needed.add(id);
+          changed = true;
+        }
+      }
+    }
+  }
+
+  return needed;
+}
+
+/**
+ * Evaluate `{% let %}`/`{% assign %}` blocks.
+ * If `neededVars` is provided, only evaluates the dependency-closed set of lets.
+ */
+function computeLiquidLets(html, { ctx, locale = "en-US", neededVars, diag } = {}) {
+  const out = {};
+  if (!html || typeof html !== "string") return out;
+
+  const root = ctx && typeof ctx === "object" ? ctx : {};
+  const lets = parseLiquidLets(html);
+
+  const effectiveNeeded =
+    neededVars && (Array.isArray(neededVars) || neededVars instanceof Set) ? expandNeededLets(lets, neededVars) : null;
+
+  if (diag) {
+    diag.counts.liquidLetsTotal = lets.length;
+    diag.liquid.neededLets = effectiveNeeded ? Array.from(effectiveNeeded) : null;
+  }
+
+  for (const l of lets) {
+    if (effectiveNeeded && !effectiveNeeded.has(l.name)) continue;
+    out[l.name] = evalLiquidExpr(l.expr, { ctx: root, vars: out, locale, diag });
+    if (diag) diag.liquid.evaluatedLets.push(l.name);
   }
 
   return out;
@@ -284,11 +594,15 @@ function replaceLiquidVarTokens(html, vars) {
 /**
  * Evaluate liquid lets and replace tokens, then remove the let/assign tags themselves.
  * (We leave other non-let liquid tags to later stripping.)
+ *
+ * Options:
+ * - neededVars: Set/Array of top-level tokens we want to resolve (and their let deps)
+ * - diag: diagnostics sink (from ensureDiagnostics)
  */
-function evaluateLiquidLetsAndReplace(html, { ctx, locale = "en-US" } = {}) {
+function evaluateLiquidLetsAndReplace(html, { ctx, locale = "en-US", neededVars, diag } = {}) {
   if (!html || typeof html !== "string") return html;
 
-  const vars = computeLiquidLets(html, { ctx, locale });
+  const vars = computeLiquidLets(html, { ctx, locale, neededVars, diag });
 
   let out = replaceLiquidVarTokens(html, vars);
 
@@ -336,6 +650,21 @@ function deriveStylesContext({ prbCtx, cfCtx }) {
 }
 
 /**
+ * Derived locals from PRB (Option 2 “small piece”):
+ * Provide common computed values at top-level even if Liquid lets aren’t evaluated.
+ */
+function buildPrbDerivedLocals(prbCtx, locale = "en-US") {
+  const prbNumber = prbCtx?.prbNumber ?? "";
+
+  const d = safeDate(prbCtx?.startingDate ?? prbCtx?.startDate ?? null);
+  const prbYear = d ? String(d.getFullYear()) : "";
+  const prbMonth = d ? pad2(d.getMonth() + 1) : "";
+  const prbMonthName = d ? new Intl.DateTimeFormat(locale, { month: "long" }).format(d) : "";
+
+  return { prbNumber, prbYear, prbMonth, prbMonthName };
+}
+
+/**
  * Build the root context for the mini AJO runtime.
  *
  * CRITICAL:
@@ -343,6 +672,7 @@ function deriveStylesContext({ prbCtx, cfCtx }) {
  * and then reference fields un-namespaced (e.g. {{#each bodyCopy}}).
  *
  * So we:
+ * - add derived PRB locals at the top-level (footer/global usage)
  * - spread localCtx at the top-level for un-namespaced access
  * - expose it as {{this.*}} as well
  * - ALSO keep canonical namespaces { cf, prbProperties, styles } so {{#each cf.bodyCopy}} works too
@@ -350,7 +680,15 @@ function deriveStylesContext({ prbCtx, cfCtx }) {
 function buildMiniAjoRootCtx({ cfCtx, prbCtx, stylesCtx, localCtx }) {
   const local = localCtx && typeof localCtx === "object" ? localCtx : null;
 
+  // Derived PRB locals should be available globally, BUT allow the current local scope
+  // (e.g., module item) to override if it defines the same keys.
+  const prbLocals = buildPrbDerivedLocals(prbCtx, "en-US");
+
   return {
+    // expose derived locals at root scope (footer/global usage)
+    ...prbLocals,
+
+    // existing behavior
     this: local || {},
     ...(local || {}),
 
@@ -368,6 +706,7 @@ function renderNamespaceByBindingOrder({
   defaultCtx,
   defaultPrbCtx,
   defaultCfCtx,
+  diag,
 }) {
   if (!html) return html;
 
@@ -392,8 +731,9 @@ function renderNamespaceByBindingOrder({
 
     let maybeExpanded = renderMiniAjo(html, miniRoot);
 
-    // ✅ NEW: evaluate liquid lets (best-effort) with the same root ctx
-    maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, { ctx: miniRoot, locale: "en-US" });
+    // Evaluate only what’s needed (top-level vars present in this segment)
+    const needed = collectTopLevelVarNames(maybeExpanded);
+    maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
     return replaceNamespaceVars(maybeExpanded, namespace, defaultCtx);
   }
@@ -423,8 +763,9 @@ function renderNamespaceByBindingOrder({
     // Expand minimal AJO blocks BEFORE namespaced replacements
     before = renderMiniAjo(before, miniRoot);
 
-    // ✅ NEW: evaluate liquid lets inside this segment with the effective ctx
-    before = evaluateLiquidLetsAndReplace(before, { ctx: miniRoot, locale: "en-US" });
+    // Evaluate only what’s needed inside this segment
+    const needed = collectTopLevelVarNames(before);
+    before = evaluateLiquidLetsAndReplace(before, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
     out += replaceNamespaceVars(before, namespace, effectiveCtx);
 
@@ -453,8 +794,8 @@ function renderNamespaceByBindingOrder({
 
   tail = renderMiniAjo(tail, miniRoot);
 
-  // ✅ NEW: evaluate liquid lets in tail with effective ctx
-  tail = evaluateLiquidLetsAndReplace(tail, { ctx: miniRoot, locale: "en-US" });
+  const needed = collectTopLevelVarNames(tail);
+  tail = evaluateLiquidLetsAndReplace(tail, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
   out += replaceNamespaceVars(tail, namespace, effectiveCtx);
 
@@ -470,6 +811,7 @@ function resolveStylesByBindings({
   aemPrefetchDataByStreamKey,
   defaultPrbCtx,
   defaultCfCtx,
+  diag,
 }) {
   if (!stitchedHtml) return stitchedHtml;
 
@@ -492,8 +834,8 @@ function resolveStylesByBindings({
 
     let maybeExpanded = renderMiniAjo(stitchedHtml, miniRoot);
 
-    // ✅ NEW: evaluate liquid lets (best-effort) using defaults
-    maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, { ctx: miniRoot, locale: "en-US" });
+    const needed = collectTopLevelVarNames(maybeExpanded);
+    maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
     return replaceNamespaceVars(maybeExpanded, "styles", styles);
   }
@@ -521,8 +863,8 @@ function resolveStylesByBindings({
 
     seg = renderMiniAjo(seg, miniRoot);
 
-    // ✅ NEW: evaluate liquid lets in this segment with current styles root
-    seg = evaluateLiquidLetsAndReplace(seg, { ctx: miniRoot, locale: "en-US" });
+    const needed = collectTopLevelVarNames(seg);
+    seg = evaluateLiquidLetsAndReplace(seg, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
     out += replaceNamespaceVars(seg, "styles", currentStyles);
 
@@ -551,15 +893,26 @@ function resolveStylesByBindings({
 
   tail = renderMiniAjo(tail, tailRoot);
 
-  // ✅ NEW: evaluate liquid lets in tail
-  tail = evaluateLiquidLetsAndReplace(tail, { ctx: tailRoot, locale: "en-US" });
+  const needed = collectTopLevelVarNames(tail);
+  tail = evaluateLiquidLetsAndReplace(tail, { ctx: tailRoot, locale: "en-US", neededVars: needed, diag });
 
   out += replaceNamespaceVars(tail, "styles", currentStyles);
 
   return out;
 }
 
-function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aemPrefetchDataByStreamKey }) {
+/**
+ * Build best-effort preview HTML.
+ *
+ * Backwards compatible:
+ * - returns a string
+ * - accepts optional `diagnostics` object to populate for your Diagnostics tab
+ */
+function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aemPrefetchDataByStreamKey, diagnostics }) {
+  const diag = ensureDiagnostics(diagnostics);
+  const t0 = nowMs();
+  if (diag) diag.timings.totalStartMs = t0;
+
   let out = stitchedHtml;
 
   const defaultPrbCtx = pickDefaultCtxForNamespace({
@@ -574,38 +927,62 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     dataByStreamKey: aemPrefetchDataByStreamKey,
   });
 
+  if (diag) {
+    diag.counts.bindingsEncountered = Array.isArray(aemBindingsEncountered) ? aemBindingsEncountered.length : 0;
+    diag.counts.prefetchKeys = aemPrefetchDataByStreamKey ? Object.keys(aemPrefetchDataByStreamKey).length : 0;
+    diag.counts.hasDefaultPrbCtx = !!defaultPrbCtx;
+    diag.counts.hasDefaultCfCtx = !!defaultCfCtx;
+  }
+
   // styles first (derived from PRB/CF binding order)
-  out = resolveStylesByBindings({
-    stitchedHtml: out,
-    aemBindingsEncountered,
-    aemPrefetchDataByStreamKey,
-    defaultPrbCtx,
-    defaultCfCtx,
-  });
+  {
+    const t = nowMs();
+    out = resolveStylesByBindings({
+      stitchedHtml: out,
+      aemBindingsEncountered,
+      aemPrefetchDataByStreamKey,
+      defaultPrbCtx,
+      defaultCfCtx,
+      diag,
+    });
+    if (diag) diag.timings.stylesMs = nowMs() - t;
+  }
 
   // then normal namespaces
-  out = renderNamespaceByBindingOrder({
-    html: out,
-    namespace: "prbProperties",
-    bindings: aemBindingsEncountered,
-    dataByStreamKey: aemPrefetchDataByStreamKey,
-    defaultCtx: defaultPrbCtx,
-    defaultPrbCtx,
-    defaultCfCtx,
-  });
-
-  out = renderNamespaceByBindingOrder({
-    html: out,
-    namespace: "cf",
-    bindings: aemBindingsEncountered,
-    dataByStreamKey: aemPrefetchDataByStreamKey,
-    defaultCtx: defaultCfCtx,
-    defaultPrbCtx,
-    defaultCfCtx,
-  });
-
-  // ✅ NEW: final global liquid let evaluation using defaults (catches footer/global blocks)
   {
+    const t = nowMs();
+    out = renderNamespaceByBindingOrder({
+      html: out,
+      namespace: "prbProperties",
+      bindings: aemBindingsEncountered,
+      dataByStreamKey: aemPrefetchDataByStreamKey,
+      defaultCtx: defaultPrbCtx,
+      defaultPrbCtx,
+      defaultCfCtx,
+      diag,
+    });
+    if (diag) diag.timings.prbNsMs = nowMs() - t;
+  }
+
+  {
+    const t = nowMs();
+    out = renderNamespaceByBindingOrder({
+      html: out,
+      namespace: "cf",
+      bindings: aemBindingsEncountered,
+      dataByStreamKey: aemPrefetchDataByStreamKey,
+      defaultCtx: defaultCfCtx,
+      defaultPrbCtx,
+      defaultCfCtx,
+      diag,
+    });
+    if (diag) diag.timings.cfNsMs = nowMs() - t;
+  }
+
+  // Final global liquid let evaluation using defaults (catches footer/global blocks),
+  // but evaluate only what’s needed in the final output.
+  {
+    const t = nowMs();
     const miniRoot = buildMiniAjoRootCtx({
       cfCtx: defaultCfCtx,
       prbCtx: defaultPrbCtx,
@@ -613,11 +990,55 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
       localCtx: null,
     });
 
-    out = evaluateLiquidLetsAndReplace(out, { ctx: miniRoot, locale: "en-US" });
+    const needed = collectTopLevelVarNames(out);
+    out = evaluateLiquidLetsAndReplace(out, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
+
+    if (diag) diag.timings.finalLiquidMs = nowMs() - t;
+  }
+
+  // Track unresolved top-level vars remaining
+  if (diag) {
+    const names = Array.from(collectTopLevelVarNames(out));
+    const unresolved = names.filter((k) => out.includes(`{{${k}}}`) || out.includes(`{{{${k}}}}`));
+
+    diag.unresolved.topLevelVars = unresolved;
+    diag.counts.unresolvedTopLevelVarCount = unresolved.length;
+
+    // Helpful rollups
+    diag.counts.liquidLetsEvaluated = Array.isArray(diag.liquid.evaluatedLets) ? diag.liquid.evaluatedLets.length : 0;
+
+    // Provide a concise “why” hint when common vars remain
+    if (unresolved.length) {
+      diagAddWarning(diag, "Unresolved top-level variables remain after preview render.", {
+        unresolvedTopLevelVars: unresolved.slice(0, 50),
+      });
+    }
   }
 
   // final sanitize for preview HTML
-  return stripAjoSyntax(out);
+  {
+    const t = nowMs();
+    out = stripAjoSyntax(out);
+    if (diag) diag.timings.stripMs = nowMs() - t;
+  }
+
+  if (diag) {
+    diag.timings.totalMs = nowMs() - t0;
+
+    // If unknown Liquid fns were encountered, add a warning with the top offenders
+    const unknown = diag.liquid.unknownFns || {};
+    const keys = Object.keys(unknown);
+    if (keys.length) {
+      const top = keys
+        .map((k) => ({ fn: k, count: unknown[k] }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 20);
+
+      diagAddWarning(diag, "Unknown Liquid function(s) encountered during preview let evaluation.", { top });
+    }
+  }
+
+  return out;
 }
 
 module.exports = {
@@ -636,4 +1057,6 @@ module.exports = {
   evaluateLiquidLetsAndReplace,
   computeLiquidLets,
   evalLiquidExpr,
+  collectTopLevelVarNames,
+  parseLiquidLets,
 };
