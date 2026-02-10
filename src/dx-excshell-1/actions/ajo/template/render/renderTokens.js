@@ -22,7 +22,7 @@ function ensureDiagnostics(d) {
   if (!rt.unresolved) rt.unresolved = {};
   if (!rt.warnings) rt.warnings = [];
   if (!rt.errors) rt.errors = [];
-  if (!rt.info) rt.info = []; // NEW: "INFO-level" events
+  if (!rt.info) rt.info = []; // "INFO-level" events
 
   // convenience counters
   if (!rt.liquid.unknownFns) rt.liquid.unknownFns = {};
@@ -40,7 +40,7 @@ function ensureDiagnostics(d) {
       orderedReferenceNotes: [],
       perSegment: [],
       warnings: [],
-      info: [], // NEW: "INFO-level" dynamic refs events
+      info: [], // "INFO-level" dynamic refs events
     };
   } else {
     // ensure new keys exist even if older object
@@ -63,7 +63,6 @@ function diagAddError(rt, msg, meta) {
   rt.errors.push(meta ? { message: msg, ...meta } : { message: msg });
 }
 
-// NEW
 function diagAddInfo(rt, msg, meta) {
   if (!rt) return;
   rt.info.push(meta ? { message: msg, ...meta } : { message: msg });
@@ -253,9 +252,6 @@ function formatDate(date, fmt, locale = "en-US") {
     .replaceAll("%b", shortMonth);
 }
 
-/**
- * Parse a quoted string literal: "..." or '...'
- */
 function parseStringLiteral(expr) {
   const s = String(expr ?? "").trim();
   if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
@@ -342,7 +338,6 @@ function extractLetRefs(expr) {
   while ((m = re.exec(noStrings)) !== null) {
     const id = m[1];
     if (!id) continue;
-    // ignore common function names / keywords (conservative allowlist)
     if (
       id === "true" ||
       id === "false" ||
@@ -359,9 +354,6 @@ function extractLetRefs(expr) {
   return out;
 }
 
-/**
- * Evaluate a Liquid-ish expression.
- */
 function evalLiquidExpr(expr, { ctx, vars, locale = "en-US", diag }) {
   const raw = String(expr ?? "").trim();
   if (!raw) return "";
@@ -378,17 +370,14 @@ function evalLiquidExpr(expr, { ctx, vars, locale = "en-US", diag }) {
       if (!Number.isNaN(ln) && !Number.isNaN(rn)) {
         return String(arith[2] === "+" ? ln + rn : ln - rn);
       }
-      // if not numeric, fall through to default behavior
     }
   }
 
-  // Split pipelines: a | date: "%Y"
   const parts = raw.split("|").map((p) => p.trim()).filter(Boolean);
 
   let base = parts[0] || "";
   let val;
 
-  // fn calls
   const call = parseFnCall(base);
   if (call) {
     val = evalLiquidFn(call.name, call.argsRaw, { ctx, vars, locale, diag });
@@ -407,11 +396,9 @@ function evalLiquidExpr(expr, { ctx, vars, locale = "en-US", diag }) {
     }
   }
 
-  // Apply filters
   for (let i = 1; i < parts.length; i++) {
     const f = parts[i];
 
-    // date: "%Y"
     const m = f.match(/^date\s*:\s*(.+)$/i);
     if (m) {
       const fmtRaw = m[1] || "";
@@ -419,8 +406,6 @@ function evalLiquidExpr(expr, { ctx, vars, locale = "en-US", diag }) {
       val = formatDate(val, fmt, locale);
       continue;
     }
-
-    // Unknown filters: ignore (best-effort)
   }
 
   return coerceValue(val);
@@ -481,15 +466,11 @@ function evalLiquidFn(name, argsRaw, { ctx, vars, locale, diag }) {
       if (diag) {
         diag.liquid.unknownFns[name] = (diag.liquid.unknownFns[name] || 0) + 1;
       }
-      return ""; // unknown fn: best-effort
+      return "";
     }
   }
 }
 
-/**
- * Parse all `{% let name = expr %}` blocks in-order.
- * Also supports `{% assign name = expr %}`.
- */
 function parseLiquidLets(html) {
   const lets = [];
   if (!html || typeof html !== "string") return lets;
@@ -505,20 +486,15 @@ function parseLiquidLets(html) {
   return lets;
 }
 
-/**
- * Expand needed vars by following dependencies on other let-vars.
- */
 function expandNeededLets(lets, neededVars) {
   const needed = new Set(Array.isArray(neededVars) ? neededVars : neededVars instanceof Set ? [...neededVars] : []);
   if (!needed.size) return needed;
 
-  // Build deps: letName -> referenced identifiers
   const deps = new Map();
   for (const l of lets) {
     deps.set(l.name, extractLetRefs(l.expr));
   }
 
-  // Fixpoint expansion: if a needed let references another let, include it
   let changed = true;
   while (changed) {
     changed = false;
@@ -539,10 +515,6 @@ function expandNeededLets(lets, neededVars) {
   return needed;
 }
 
-/**
- * Evaluate `{% let %}`/`{% assign %}` blocks.
- * If `neededVars` is provided, only evaluates the dependency-closed set of lets.
- */
 function computeLiquidLets(html, { ctx, locale = "en-US", neededVars, diag } = {}) {
   const out = {};
   if (!html || typeof html !== "string") return out;
@@ -567,10 +539,6 @@ function computeLiquidLets(html, { ctx, locale = "en-US", neededVars, diag } = {
   return out;
 }
 
-/**
- * Replace only top-level var tokens: {{var}} / {{{var}}}
- * Does not touch namespaced tokens like {{cf.foo}}.
- */
 function replaceLiquidVarTokens(html, vars) {
   if (!html || typeof html !== "string") return html;
   if (!vars || typeof vars !== "object") return html;
@@ -589,9 +557,6 @@ function replaceLiquidVarTokens(html, vars) {
   return out;
 }
 
-/**
- * Evaluate liquid lets and replace tokens, then remove the let/assign tags themselves.
- */
 function evaluateLiquidLetsAndReplace(html, { ctx, locale = "en-US", neededVars, diag } = {}) {
   if (!html || typeof html !== "string") return html;
 
@@ -628,10 +593,6 @@ function createDynamicReferencesState() {
   };
 }
 
-/**
- * Infer wrapper from HTML content by looking for <sup>WRAPdigits</sup> patterns.
- * We keep it conservative to avoid matching HTML tokens.
- */
 function inferWrapperFromHtml(html) {
   if (!html || typeof html !== "string") return null;
 
@@ -664,10 +625,6 @@ function snapshotWrapperCandidates(map) {
   return arr.slice(0, 20);
 }
 
-/**
- * Extract referenceNote strings from a cf-like context.
- * Heuristic: prefer ctx.references[*].referenceNote if present.
- */
 function extractReferenceNotesFromCf(cfCtx) {
   const refs = cfCtx?.references;
   if (!Array.isArray(refs) || !refs.length) return [];
@@ -713,19 +670,11 @@ function getCfIdForLogs(cfCtx) {
 // IMPORTANT: these are NOT Liquid lets; they are handlebars fragment param tokens.
 const REF_LOCAL_NAMES = ["r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10"];
 
-/**
- * Convert handlebars ref tokens to wrapper placeholders.
- * Example: <sup>{{r1}}</sup> -> <sup>##1</sup>
- *
- * We do this BEFORE wrapper inference so inferWrapperFromHtml can see "##1".
- * This is best-effort and intentionally narrow (only r1..r10).
- */
 function rewriteRefHandlebarsToWrapperPlaceholders(html, dynState) {
   if (!html || typeof html !== "string") return html;
 
   const wrapper = (dynState && typeof dynState.wrapper === "string" && dynState.wrapper) || "##";
 
-  // Match {{rN}} or {{{rN}}} where rN is in allowlist (r1..r10)
   const keyAlt = REF_LOCAL_NAMES.map(escapeRegExp).join("|");
   const re = new RegExp(String.raw`\{\{\{?\s*(${keyAlt})\s*\}\}?\}`, "g");
 
@@ -737,27 +686,19 @@ function rewriteRefHandlebarsToWrapperPlaceholders(html, dynState) {
   });
 }
 
-/**
- * Phase 2 (wrapper-based):
- * Resolve placeholders like "##1" in a segment using cf.references ordering.
- */
 function resolveWrapperPlaceholders({ html, notes, dynState, diag, segmentKey, cfId }) {
   if (!html || typeof html !== "string") return { out: html, mapping: [] };
   if (!dynState) return { out: html, mapping: [] };
 
-  // Always attempt to infer from this segment (for candidates + visibility)
   const inferred = inferWrapperFromHtml(html);
   if (inferred) {
     dynState.wrapperCandidates.set(inferred, (dynState.wrapperCandidates.get(inferred) || 0) + 1);
   }
 
-  // If wrapper not known yet, adopt inferred wrapper
   if (!dynState.wrapper && inferred) dynState.wrapper = inferred;
 
-  // Always refresh diagnostics wrapper candidates + inferred wrapper (even if wrapper already set)
   if (diag?.dynamicReferences) {
     diag.dynamicReferences.wrapperCandidates = snapshotWrapperCandidates(dynState.wrapperCandidates);
-
     if (dynState.wrapper && typeof dynState.wrapper === "string") {
       diag.dynamicReferences.wrapperInferred = dynState.wrapper;
     }
@@ -766,10 +707,8 @@ function resolveWrapperPlaceholders({ html, notes, dynState, diag, segmentKey, c
   if (!dynState.wrapper) return { out: html, mapping: [] };
 
   const wrapper = dynState.wrapper;
-
   const phRe = new RegExp(`${escapeRegExp(wrapper)}(\\d{1,3})`, "g");
 
-  // Collect unique local indices in this segment
   const localIdxs = new Set();
   let m;
   while ((m = phRe.exec(html)) !== null) {
@@ -830,9 +769,19 @@ function resolveWrapperPlaceholders({ html, notes, dynState, diag, segmentKey, c
   return { out, mapping };
 }
 
-/**
- * Run wrapper-based dynamic reference resolution for a segment.
- */
+function diagAddCfContext(diag, segmentKey, cfCtx) {
+  if (!diag?.dynamicReferences) return;
+  if (diag.dynamicReferences.info.length >= 500) return;
+
+  const cfId = getCfIdForLogs(cfCtx);
+  diag.dynamicReferences.info.push({
+    message: `CF context for segment ${segmentKey || "cf:?"}: ${cfId || "(unknown)"}`,
+    segmentKey: segmentKey || null,
+    cfId: cfId || null,
+    kind: "cf-context",
+  });
+}
+
 function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmentKey }) {
   if (!html || typeof html !== "string") return html;
   if (!dynState) return html;
@@ -857,7 +806,6 @@ function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmen
   let out = wrap.out;
   combinedMapping.push(...wrap.mapping);
 
-  // INFO logging: tell user exactly what was resolved for this CF segment
   if (diag?.dynamicReferences && combinedMapping.length) {
     for (const m of combinedMapping) {
       if (m.kind !== "wrapper") continue;
@@ -866,7 +814,6 @@ function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmen
         m.note ?? ""
       )}")`;
 
-      // cap growth
       if (diag.dynamicReferences.info.length < 500) {
         diag.dynamicReferences.info.push({
           message: msg,
@@ -906,16 +853,11 @@ function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmen
   return out;
 }
 
-/**
- * Render any leftover {{#each refArray ...}} blocks at the very end using dynState.orderedNotes.
- * This avoids needing to emulate the author’s split/allReferences logic.
- */
 function renderRefArrayBlocksBestEffort(html, dynState) {
   if (!html || typeof html !== "string") return html;
   if (!dynState || !Array.isArray(dynState.orderedNotes)) return html;
   if (!dynState.orderedNotes.length) return html;
 
-  // This is intentionally global: if an author used refArray loop anywhere, we fill it.
   return renderMiniAjo(html, { refArray: dynState.orderedNotes });
 }
 
@@ -998,7 +940,6 @@ function renderNamespaceByBindingOrder({
   const dynEnabled = !!dynamicReferences?.enabled;
   const dynState = dynamicReferences?.state || null;
 
-  // If no binding tags for this namespace, still attempt a global replace using defaultCtx
   if (!binds.length) {
     if (!defaultCtx) return html;
 
@@ -1022,8 +963,8 @@ function renderNamespaceByBindingOrder({
       diag,
     });
 
-    // Dynamic references (only meaningful with cf context)
     if (dynEnabled && namespace === "cf") {
+      diagAddCfContext(diag, "cf:default", defaultCtx);
       maybeExpanded = resolveDynamicReferencesInSegment({
         html: maybeExpanded,
         cfCtx: defaultCtx,
@@ -1063,9 +1004,9 @@ function renderNamespaceByBindingOrder({
     const needed = collectTopLevelVarNames(before);
     before = evaluateLiquidLetsAndReplace(before, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
-    // Dynamic references pass per segment (only cf)
     if (dynEnabled && namespace === "cf") {
       const segKey = `cf:${b.index ?? "?"}`;
+      diagAddCfContext(diag, segKey, effectiveCtx);
       before = resolveDynamicReferencesInSegment({
         html: before,
         cfCtx: effectiveCtx,
@@ -1076,9 +1017,6 @@ function renderNamespaceByBindingOrder({
     }
 
     out += replaceNamespaceVars(before, namespace, effectiveCtx);
-
-    // strip binding tag from preview output (we only needed it for ordering)
-    out += "";
 
     cursor = tagPos + tag.length;
 
@@ -1106,6 +1044,7 @@ function renderNamespaceByBindingOrder({
   tail = evaluateLiquidLetsAndReplace(tail, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
   if (dynEnabled && namespace === "cf") {
+    diagAddCfContext(diag, "cf:tail", effectiveCtx);
     tail = resolveDynamicReferencesInSegment({
       html: tail,
       cfCtx: effectiveCtx,
@@ -1187,8 +1126,6 @@ function resolveStylesByBindings({
 
     out += replaceNamespaceVars(seg, "styles", currentStyles);
 
-    out += "";
-
     cursor = tagPos + tag.length;
 
     const streamKey = `${b.index}:${b.result}`;
@@ -1219,9 +1156,6 @@ function resolveStylesByBindings({
   return out;
 }
 
-/**
- * Build best-effort preview HTML.
- */
 function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aemPrefetchDataByStreamKey, diagnostics }) {
   const diag = ensureDiagnostics(diagnostics);
   const t0 = nowMs();
@@ -1248,11 +1182,9 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     diag.counts.hasDefaultCfCtx = !!defaultCfCtx;
   }
 
-  // Dynamic refs global state for the full email render
   const dynState = createDynamicReferencesState();
   const dynConfig = { enabled: true, state: dynState };
 
-  // styles first
   {
     const t = nowMs();
     out = resolveStylesByBindings({
@@ -1266,7 +1198,6 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     if (diag) diag.timings.stylesMs = nowMs() - t;
   }
 
-  // prbProperties namespace
   {
     const t = nowMs();
     out = renderNamespaceByBindingOrder({
@@ -1283,7 +1214,6 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     if (diag) diag.timings.prbNsMs = nowMs() - t;
   }
 
-  // cf namespace (dynamic refs are primarily tied to cf.references)
   {
     const t = nowMs();
     out = renderNamespaceByBindingOrder({
@@ -1300,7 +1230,6 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     if (diag) diag.timings.cfNsMs = nowMs() - t;
   }
 
-  // Final global liquid let evaluation using defaults (catches footer/global blocks)
   {
     const t = nowMs();
     const miniRoot = buildMiniAjoRootCtx({
@@ -1316,17 +1245,13 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     if (diag) diag.timings.finalLiquidMs = nowMs() - t;
   }
 
-  // Render any leftover refArray loops using our accumulated orderedNotes
   {
     const t = nowMs();
     out = renderRefArrayBlocksBestEffort(out, dynState);
     if (diag) diag.timings.dynamicRefsRefArrayMs = nowMs() - t;
 
     if (diag?.dynamicReferences) {
-      // Always set wrapperInferred when known
       diag.dynamicReferences.wrapperInferred = dynState.wrapper || diag.dynamicReferences.wrapperInferred || null;
-
-      // Always publish wrapper candidates (even if wrapper was already known)
       diag.dynamicReferences.wrapperCandidates = snapshotWrapperCandidates(dynState.wrapperCandidates);
 
       diag.dynamicReferences.totalPlaceholdersSeen = dynState.placeholdersSeen;
@@ -1341,7 +1266,6 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     }
   }
 
-  // Track unresolved top-level vars remaining
   if (diag) {
     const names = Array.from(collectTopLevelVarNames(out));
     const unresolved = names.filter((k) => out.includes(`{{${k}}}`) || out.includes(`{{{${k}}}}`));
@@ -1357,7 +1281,6 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
       });
     }
 
-    // Bubble a compact INFO summary at the top-level too (handy for your UI)
     const drInfo = diag.dynamicReferences?.info || [];
     if (drInfo.length) {
       diagAddInfo(diag, "Dynamic references: wrapper-based replacements performed.", {
@@ -1367,7 +1290,6 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     }
   }
 
-  // final sanitize for preview HTML
   {
     const t = nowMs();
     out = stripAjoSyntax(out);
@@ -1388,7 +1310,6 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
       diagAddWarning(diag, "Unknown Liquid function(s) encountered during preview let evaluation.", { top });
     }
 
-    // also bubble dynamic reference warnings into main warnings (light touch)
     const drw = diag.dynamicReferences?.warnings || [];
     if (drw.length) {
       diagAddWarning(diag, "Dynamic references: warnings encountered during placeholder resolution.", {
