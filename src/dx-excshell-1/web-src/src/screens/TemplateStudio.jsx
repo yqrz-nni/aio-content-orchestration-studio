@@ -355,66 +355,80 @@ function stripAjoSyntax(html) {
 }
 
 /* =============================================================================
- * Helpers: detect unresolved tokens in preview HTML
+ * Helpers: warnings + iframe instrumentation
  * ============================================================================= */
 
-function findPreviewTokenIssues(html) {
-  if (!html || typeof html !== "string") return [];
+function detectPreviewWarnings(html) {
+  const warnings = [];
+  if (!html || typeof html !== "string") return warnings;
 
-  const issues = [];
-
-  // Liquid tags (AJO evaluates these; our preview does not)
+  // AJO Liquid tags: our iframe preview will never execute these, so they can explain missing VFs/content.
   const liquidRe = /{%\s*[\s\S]*?\s*%}/g;
-  const liquidMatches = html.match(liquidRe) || [];
-  if (liquidMatches.length) {
-    issues.push({
-      kind: "liquid",
-      count: liquidMatches.length,
-      samples: liquidMatches.slice(0, 3),
-    });
-  }
+  const liquidCount = (html.match(liquidRe) || []).length;
+  if (liquidCount) warnings.push(`Liquid tags present (${liquidCount}). Preview will not evaluate {% ... %} locals.`);
 
-  // Handlebars tokens (double or triple)
-  const hbRe = /{{{?\s*([a-zA-Z_][a-zA-Z0-9_$.]*)\s*}?}}/g;
-  const suspicious = [];
+  // Any remaining AJO VF directives suggest VF expansion didn't happen in render step.
+  const ajoVfDirectiveRe = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:[^'"]+\1[^}]*}}/gi;
+  const vfDirectiveCount = (html.match(ajoVfDirectiveRe) || []).length;
+  if (vfDirectiveCount) warnings.push(`AJO VF directives still present (${vfDirectiveCount}). VFs may not be expanded.`);
 
+  // Un-namespaced handlebars tokens like {{prbYear}} {{prbMonthName}} etc
+  // (common when template uses local variables created via Liquid).
+  const bareTokenRe = /{{{?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}?}}/g;
+  const bad = new Set();
   let m;
-  while ((m = hbRe.exec(html)) !== null) {
-    const token = m[1] || "";
-
-    // ignore expected namespaces
-    if (token.startsWith("cf.") || token.startsWith("prbProperties.") || token.startsWith("styles.")) continue;
-
-    // ignore structural/known tokens that can legitimately remain in canonical HTML
-    if (token === "fragment" || token.startsWith("fragment ")) continue;
-
-    suspicious.push(token);
-    if (suspicious.length >= 50) break;
+  while ((m = bareTokenRe.exec(html)) !== null) {
+    const t = m[1] || "";
+    if (!t) continue;
+    if (t === "fragment") continue; // ignore helper name itself
+    if (t.startsWith("cf") || t.startsWith("prbProperties") || t.startsWith("styles")) continue;
+    // ignore some harmless handlebars-ish things that could appear in comments (rare)
+    if (t === "!--") continue;
+    bad.add(t);
+    if (bad.size >= 20) break;
   }
+  if (bad.size) warnings.push(`Unresolved tokens detected: ${[...bad].slice(0, 12).join(", ")}${bad.size > 12 ? "…" : ""}`);
 
-  const uniq = [...new Set(suspicious)];
-  if (uniq.length) {
-    issues.push({
-      kind: "handlebars",
-      count: uniq.length,
-      samples: uniq.slice(0, 12),
-    });
-  }
-
-  return issues;
+  return warnings;
 }
 
-function formatPreviewTokenIssues(issues) {
-  if (!issues?.length) return "";
+function injectIframeLogger(html) {
+  if (!html || typeof html !== "string") return html;
 
-  return issues
-    .map((it) => {
-      if (it.kind === "liquid") return `Liquid tags present: ${it.count}`;
-      if (it.kind === "handlebars")
-        return `Unresolved tokens: ${it.samples.join(", ")}${it.count > it.samples.length ? "…" : ""}`;
-      return `${it.kind}: ${it.count}`;
-    })
-    .join(" | ");
+  // Don't double-inject.
+  if (html.includes("data-ts-iframe-logger")) return html;
+
+  const script = `
+<script data-ts-iframe-logger>
+(function(){
+  function post(payload){
+    try{
+      window.parent && window.parent.postMessage({ __ts_preview_log: true, ...payload }, "*");
+    }catch(e){}
+  }
+
+  window.addEventListener("error", function(ev){
+    var msg = (ev && ev.message) ? ev.message : "Unknown error";
+    post({ type: "error", message: msg, filename: ev && ev.filename, lineno: ev && ev.lineno, colno: ev && ev.colno });
+  });
+
+  window.addEventListener("unhandledrejection", function(ev){
+    var reason = ev && ev.reason;
+    var msg = (reason && (reason.message || String(reason))) || "Unhandled promise rejection";
+    post({ type: "unhandledrejection", message: msg });
+  });
+
+  // Helpful: report that the iframe DOM loaded
+  document.addEventListener("DOMContentLoaded", function(){
+    post({ type: "info", message: "Preview iframe DOMContentLoaded" });
+  });
+})();
+</script>`;
+
+  // Best: inject before </head>. Else before </body>. Else append.
+  if (html.includes("</head>")) return html.replace("</head>", `${script}</head>`);
+  if (html.includes("</body>")) return html.replace("</body>", `${script}</body>`);
+  return html + script;
 }
 
 /* =============================================================================
@@ -462,6 +476,10 @@ export function TemplateStudio() {
   const [isRendering, setIsRendering] = useState(false);
   const [renderError, setRenderError] = useState("");
 
+  // NEW: preview warnings + iframe logs (surfaced in UI)
+  const [previewWarnings, setPreviewWarnings] = useState([]); // string[]
+  const [iframeLogs, setIframeLogs] = useState([]); // {ts,type,message,...}[]
+
   // Optional advanced renderContext controls
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [bindingStreamText, setBindingStreamText] = useState("[]");
@@ -476,6 +494,41 @@ export function TemplateStudio() {
     const v = safeParseJson(cacheText, {});
     return v && typeof v === "object" ? v : {};
   }, [cacheText]);
+
+  // ---------------------------------------------------------------------------
+  // Listen for iframe logs (window.onerror inside preview iframe)
+  // ---------------------------------------------------------------------------
+
+  useEffect(() => {
+    function onMessage(ev) {
+      const data = ev?.data;
+      if (!data || data.__ts_preview_log !== true) return;
+
+      setIframeLogs((prev) => {
+        const next = [
+          ...prev,
+          {
+            ts: Date.now(),
+            type: data.type || "info",
+            message: data.message || "",
+            filename: data.filename,
+            lineno: data.lineno,
+            colno: data.colno,
+          },
+        ];
+        return next.slice(-50);
+      });
+
+      // Promote iframe runtime errors into the existing error UI area
+      if (data.type === "error" || data.type === "unhandledrejection") {
+        const msg = `Preview runtime error: ${data.message || "Unknown error"}`;
+        setRenderError((cur) => cur || msg);
+      }
+    }
+
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Simple “operation queue” so rapid clicks don’t interleave PUT-like updates
@@ -643,8 +696,9 @@ export function TemplateStudio() {
 
   async function renderPreview() {
     try {
-      // don't clear renderError here; we may set warnings below
       setIsRendering(true);
+      setIframeLogs([]);
+      setPreviewWarnings([]);
 
       if (!canonicalHtml) {
         setRenderError("");
@@ -679,20 +733,18 @@ export function TemplateStudio() {
         return;
       }
 
-      // Detect token issues BEFORE stripping, so Liquid is visible in detection.
-      const issues = findPreviewTokenIssues(best);
-      if (issues.length) {
-        const msg =
-          "Preview warning: HTML contains tokens AJO resolves (Liquid/locals), but the preview renderer does not. " +
-          formatPreviewTokenIssues(issues);
+      // NEW: warnings for common “silent failures” (VF not expanded, Liquid locals, etc)
+      const warnings = detectPreviewWarnings(best);
+      setPreviewWarnings(warnings);
 
-        setRenderError(msg);
-        console.warn(msg, { issues, templateId, selectedPrbId });
-      } else {
-        setRenderError("");
-      }
+      // Keep renderError for actual failures / runtime parse errors; do not clobber it with warnings
+      setRenderError("");
 
-      setPreviewHtml(stripAjoSyntax(best));
+      // Preview HTML should be safe-ish for iframe and instrumented for runtime errors.
+      const stripped = stripAjoSyntax(best);
+      const instrumented = injectIframeLogger(stripped);
+
+      setPreviewHtml(instrumented);
 
       // Optional: merge hydrated values into cache editor for reuse
       if (res?.aemCacheKeys && res?.aemPrefetchDataByStreamKey && Array.isArray(res?.aemBindingsEncountered)) {
@@ -752,6 +804,8 @@ export function TemplateStudio() {
   const resolutionWarnings = Array.isArray(lastRenderResult?.resolutionWarnings) ? lastRenderResult.resolutionWarnings : [];
   const aemPrefetch = Array.isArray(lastRenderResult?.aemPrefetch) ? lastRenderResult.aemPrefetch : [];
   const perf = lastRenderResult?.perf || null;
+
+  const mergedWarnings = [...previewWarnings, ...resolutionWarnings, ...aemWarnings].filter(Boolean);
 
   return (
     <View>
@@ -819,9 +873,10 @@ export function TemplateStudio() {
           <Text>templateId: {templateId || "(not created yet)"}</Text>
         </View>
 
-        {aemWarnings.length ? (
+        {/* Warnings shown near the top too (so you don't miss them) */}
+        {mergedWarnings.length ? (
           <View marginTop="size-150">
-            <StatusLight variant="negative">{aemWarnings[0]}</StatusLight>
+            <StatusLight variant="negative">{mergedWarnings[0]}</StatusLight>
           </View>
         ) : null}
 
@@ -918,12 +973,44 @@ export function TemplateStudio() {
                       <StatusLight variant="negative">{renderError}</StatusLight>
                     </View>
                   ) : null}
+
+                  {previewWarnings.length ? (
+                    <View marginBottom="size-100">
+                      {previewWarnings.slice(0, 5).map((w, i) => (
+                        <View key={`pw-${i}`} marginBottom="size-50">
+                          <StatusLight variant="negative">{w}</StatusLight>
+                        </View>
+                      ))}
+                    </View>
+                  ) : null}
+
                   <iframe
                     title="Email Preview"
                     style={{ width: "100%", height: "100%", border: "none" }}
-                    sandbox="allow-same-origin"
+                    sandbox="allow-same-origin allow-scripts"
                     srcDoc={previewHtml}
                   />
+
+                  {iframeLogs.length ? (
+                    <View marginTop="size-150" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-100">
+                      <Heading level={5}>Preview iframe logs</Heading>
+                      <Divider size="S" marginY="size-100" />
+                      <View height="size-1200" overflow="auto">
+                        {iframeLogs
+                          .slice()
+                          .reverse()
+                          .slice(0, 12)
+                          .map((l, idx) => (
+                            <View key={`log-${l.ts}-${idx}`} marginBottom="size-50">
+                              <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: "12px" }}>
+                                [{new Date(l.ts).toLocaleTimeString()}] {l.type}: {l.message}
+                                {l.filename ? ` (${l.filename}:${l.lineno}:${l.colno})` : ""}
+                              </Text>
+                            </View>
+                          ))}
+                      </View>
+                    </View>
+                  ) : null}
                 </View>
               </Item>
 
