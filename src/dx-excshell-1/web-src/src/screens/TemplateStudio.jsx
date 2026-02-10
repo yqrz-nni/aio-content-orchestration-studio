@@ -1,13 +1,4 @@
 // File: src/dx-excshell-1/web-src/src/screens/TemplateStudio.jsx
-//
-// NOTE:
-// - Preserves your existing render pipeline, diagnostics, and sequential cf rebinding model.
-// - Adds routing support via prbId/templateId params.
-// - Implements “Add pattern” (VF-first) + inline “Bind content” per module,
-//   without stripping out your existing left/right libraries or diagnostics tabs.
-//
-// IMPORTANT: You will likely want to create a dedicated action to LIST templates by PRB.
-// This file does not require that action.
 
 import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -18,8 +9,6 @@ import {
   Flex,
   Button,
   Text,
-  ListView,
-  Item,
   Tabs,
   TabList,
   TabPanels,
@@ -29,6 +18,7 @@ import {
   StatusLight,
   Switch,
   DialogTrigger,
+  Item,
 } from "@adobe/react-spectrum";
 
 import actions from "../config.json";
@@ -40,6 +30,7 @@ import {
   appendPatternOnlyToTemplateHtml,
   bindContentInModuleHtml,
   hydrateFromHtml,
+  removeModuleFromTemplateHtml,
 } from "../studio/templateEngine";
 
 import {
@@ -90,16 +81,14 @@ function safeJson(obj, space = 2) {
   }
 }
 
-/* =============================================================================
- * Component
- * ============================================================================= */
-
-export function TemplateStudio() {
+export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverride }) {
   const ims = useContext(ImsContext);
   const headers = useMemo(() => buildHeaders(ims), [ims]);
 
   const nav = useNavigate();
-  const { prbId, templateId } = useParams();
+  const params = useParams();
+  const prbId = mode === "embedded" ? prbIdOverride : params.prbId;
+  const templateId = mode === "embedded" ? templateIdOverride : params.templateId;
   const [searchParams] = useSearchParams();
 
   // TODO: make repoId dynamic from env/selection
@@ -109,7 +98,6 @@ export function TemplateStudio() {
   const [previewHtml, setPreviewHtml] = useState("");
 
   const [lastRenderResult, setLastRenderResult] = useState(null);
-
   const [lastBestHtml, setLastBestHtml] = useState("");
   const [lastSanitizedHtml, setLastSanitizedHtml] = useState("");
 
@@ -122,10 +110,6 @@ export function TemplateStudio() {
   const [vfItems, setVfItems] = useState([]);
   const [contentOptions, setContentOptions] = useState([]);
 
-  // Legacy selections (kept, but no longer required for “Add pattern”)
-  const [selectedVfId, setSelectedVfId] = useState(null);
-  const [selectedContentId, setSelectedContentId] = useState(null);
-
   const [modules, setModules] = useState([]);
 
   const [isUpdatingPrb, setIsUpdatingPrb] = useState(false);
@@ -134,17 +118,16 @@ export function TemplateStudio() {
   const [renderError, setRenderError] = useState("");
   const [previewWarnings, setPreviewWarnings] = useState([]);
 
-  // iframe runtime messages
   const [iframeMsgs, setIframeMsgs] = useState([]);
 
-  const [showAdvanced, setShowAdvanced] = useState(searchParams.get("advanced") === "1");
+  // Kept for backwards-compat with your advanced renderContext inputs (we’ll keep hidden by default)
   const [bindingStreamText, setBindingStreamText] = useState("[]");
   const [cacheText, setCacheText] = useState("{}");
 
   // Diagnostics gating
   const [enableIframeBridge, setEnableIframeBridge] = useState(searchParams.get("bridge") === "1");
 
-  // Tabs
+  // Tabs (preview-side)
   const [activeTab, setActiveTab] = useState(searchParams.get("tab") || "preview");
   const enableDiagnostics = activeTab === "diagnostics";
 
@@ -161,17 +144,11 @@ export function TemplateStudio() {
   const expectedVfIds = useMemo(() => {
     const fromModules = [];
     for (const m of Array.isArray(modules) ? modules : []) if (m?.vfId) fromModules.push(m.vfId);
-
     const fromCanonical = extractAllAjoVfIdsFromHtml(canonicalHtml);
-
     return [...new Set([...fromModules, ...fromCanonical])];
   }, [modules, canonicalHtml]);
 
-  const [vfDiag, setVfDiag] = useState({
-    expected: [],
-    best: [],
-    sanitized: [],
-  });
+  const [vfDiag, setVfDiag] = useState({ expected: [], best: [], sanitized: [] });
 
   const vfDiagSummary = useMemo(() => {
     const expected = Array.isArray(vfDiag.expected) ? vfDiag.expected : [];
@@ -189,21 +166,6 @@ export function TemplateStudio() {
       missingAfterSanitize,
     };
   }, [vfDiag]);
-
-  const serverPreviewDiagnostics = useMemo(() => {
-    const r = lastRenderResult || {};
-    return r.previewDiagnostics || r.diagnostics || r.diagnostic || null;
-  }, [lastRenderResult]);
-
-  const serverRenderTokens = useMemo(() => {
-    const rt = serverPreviewDiagnostics?.preview?.renderTokens || null;
-    return rt && typeof rt === "object" ? rt : null;
-  }, [serverPreviewDiagnostics]);
-
-  const serverDynamicRefs = useMemo(() => {
-    const dr = serverRenderTokens?.dynamicReferences || null;
-    return dr && typeof dr === "object" ? dr : null;
-  }, [serverRenderTokens]);
 
   // Operation queue
   const opQueueRef = useRef(Promise.resolve());
@@ -238,7 +200,6 @@ export function TemplateStudio() {
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  // Load PRB list so we can show labels, and resolve selectedPrb
   async function loadPrbList() {
     const res = await actionWebInvoke(actions["aem-prb-list"]);
     const items = res?.data?.prbPropertiesList?.items || [];
@@ -249,14 +210,14 @@ export function TemplateStudio() {
         return {
           id: it._id,
           label: it.prbNumber && it.name ? `${it.prbNumber} — ${it.name}` : displayName,
-          path: it._path,
+          prbNumber: it.prbNumber || "",
+          name: it.name || "",
           raw: it,
         };
       })
     );
   }
 
-  // Load template HTML by templateId on entry (deep-link safe)
   async function loadTemplateById(tid) {
     if (!tid) return;
     const getRes = await actionWebInvoke(actions["ajo-template-get"], headers, { templateId: tid });
@@ -281,26 +242,6 @@ export function TemplateStudio() {
     setModules(Array.isArray(hydrated?.modules) ? hydrated.modules : []);
   }
 
-  useEffect(() => {
-    // Deep-link entry: ensure we have PRB list + template loaded
-    loadPrbList();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!templateId) return;
-    loadTemplateById(templateId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [templateId]);
-
-  // Resolve selectedPrb once options are loaded
-  useEffect(() => {
-    if (!selectedPrbId) return;
-    const prbObj = prbOptions.find((o) => o.id === selectedPrbId) || null;
-    setSelectedPrb(prbObj);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prbOptions, selectedPrbId]);
-
   async function loadVfs() {
     const res = await actionWebInvoke(actions["ajo-vf-demo"], headers);
     setVfItems(res?.fragments || []);
@@ -323,6 +264,29 @@ export function TemplateStudio() {
       console.error("Load Content CFs failed:", e);
     }
   }
+
+  // Initial load: PRBs + (auto) vf/content libraries
+  useEffect(() => {
+    loadPrbList();
+    loadVfs();
+    loadContentList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Deep-link: load template on entry
+  useEffect(() => {
+    if (!templateId) return;
+    loadTemplateById(templateId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateId]);
+
+  // Resolve selectedPrb once options are loaded
+  useEffect(() => {
+    if (!selectedPrbId) return;
+    const prbObj = prbOptions.find((o) => o.id === selectedPrbId) || null;
+    setSelectedPrb(prbObj);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prbOptions, selectedPrbId]);
 
   async function setPrb(prbIdNext) {
     if (isUpdatingPrb) return;
@@ -361,7 +325,6 @@ export function TemplateStudio() {
     });
   }
 
-  // Add pattern first (VF only), then bind content inline.
   function addPattern(vfId) {
     if (!templateId) return;
     if (!vfId) return;
@@ -380,11 +343,7 @@ export function TemplateStudio() {
       ];
       setModules(nextModules);
 
-      const nextHtml = appendPatternOnlyToTemplateHtml(canonicalHtml, {
-        vfId,
-        moduleId,
-      });
-
+      const nextHtml = appendPatternOnlyToTemplateHtml(canonicalHtml, { vfId, moduleId });
       setCanonicalHtml(nextHtml);
     });
   }
@@ -414,8 +373,12 @@ export function TemplateStudio() {
   }
 
   function removeModule(moduleId) {
-    // UI-only for now (canonical HTML removal can be added later using markers)
-    setModules((prev) => prev.filter((m) => m.moduleId !== moduleId));
+    if (!moduleId) return;
+
+    enqueue(async () => {
+      setModules((prev) => prev.filter((m) => m.moduleId !== moduleId));
+      setCanonicalHtml((prevHtml) => removeModuleFromTemplateHtml(prevHtml, moduleId));
+    });
   }
 
   async function renderPreview() {
@@ -481,29 +444,6 @@ export function TemplateStudio() {
 
       const bridged = enableIframeBridge ? injectPreviewBridge(sanitized, expectedVfIds) : sanitized;
       setPreviewHtml(bridged);
-
-      if (res?.aemCacheKeys && res?.aemPrefetchDataByStreamKey && Array.isArray(res?.aemBindingsEncountered)) {
-        const keys = res.aemCacheKeys || [];
-        const byStreamKey = res.aemPrefetchDataByStreamKey || {};
-        const encountered = res.aemBindingsEncountered || [];
-
-        const nextCache = { ...(cache || {}) };
-
-        for (const b of encountered) {
-          const model =
-            b?.result === "cf" ? "unifiedPromotionalContent" : b?.result === "prbProperties" ? "prbProperties" : null;
-          if (!model || !b?.aemId) continue;
-
-          const ck = `${model}:${b.aemId}`;
-          if (!keys.includes(ck)) continue;
-
-          const sk = `${b.index}:${b.result}`;
-          const item = byStreamKey?.[sk];
-          if (item && typeof item === "object") nextCache[ck] = item;
-        }
-
-        setCacheText(safeJson(nextCache, 2));
-      }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Render preview failed:", e);
@@ -515,6 +455,7 @@ export function TemplateStudio() {
     }
   }
 
+  // Auto-render on canonicalHtml changes (same behavior)
   useEffect(() => {
     if (!canonicalHtml) return;
 
@@ -526,7 +467,7 @@ export function TemplateStudio() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canonicalHtml]);
 
-  // Diagnostics recompute on tab switch (unchanged behavior)
+  // Diagnostics recompute on tab switch (same behavior)
   useEffect(() => {
     if (activeTab !== "diagnostics") return;
     if (!canonicalHtml || !lastBestHtml || !lastSanitizedHtml) return;
@@ -553,6 +494,21 @@ export function TemplateStudio() {
   const aemPrefetch = Array.isArray(lastRenderResult?.aemPrefetch) ? lastRenderResult.aemPrefetch : [];
   const perf = lastRenderResult?.perf || null;
 
+  const serverPreviewDiagnostics = useMemo(() => {
+    const r = lastRenderResult || {};
+    return r.previewDiagnostics || r.diagnostics || r.diagnostic || null;
+  }, [lastRenderResult]);
+
+  const serverRenderTokens = useMemo(() => {
+    const rt = serverPreviewDiagnostics?.preview?.renderTokens || null;
+    return rt && typeof rt === "object" ? rt : null;
+  }, [serverPreviewDiagnostics]);
+
+  const serverDynamicRefs = useMemo(() => {
+    const dr = serverRenderTokens?.dynamicReferences || null;
+    return dr && typeof dr === "object" ? dr : null;
+  }, [serverRenderTokens]);
+
   const serverVfDiag = lastRenderResult?.vfDiag || null;
   const stitchReport = lastRenderResult?.stitchReport || null;
   const fragmentsResolvedAll = Array.isArray(lastRenderResult?.fragmentsResolvedAll)
@@ -566,7 +522,6 @@ export function TemplateStudio() {
       <Flex justifyContent="space-between" alignItems="center" wrap>
         <View>
           <Heading level={2}>Template Studio</Heading>
-          <Text UNSAFE_style={{ opacity: 0.85 }}>Step 3 of 3 — Compose deterministically: pick patterns, then bind data.</Text>
           <Text UNSAFE_style={{ opacity: 0.75 }}>
             PRB: {selectedPrb?.label || selectedPrbId || prbId || "(none)"} • templateId: {templateId || "(none)"}
           </Text>
@@ -584,56 +539,36 @@ export function TemplateStudio() {
 
       <Divider size="S" marginY="size-200" />
 
-      {/* Global config bar */}
+      {/* Template name (full-width) */}
       <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
         <Flex gap="size-200" alignItems="end" wrap>
-          <TextField label="Template name" value={templateName} onChange={setTemplateName} width="size-3600" />
+          <TextField label="Template name" value={templateName} onChange={setTemplateName} width="size-6000" />
 
           <Divider orientation="vertical" size="S" />
 
-          <Flex direction="column" gap="size-50">
-            <Text>Global configuration</Text>
-            <Flex gap="size-200" alignItems="center">
-              <ComboBox
-                label="PRB Properties (global)"
-                placeholder="Paste/type PRB number…"
-                selectedKey={selectedPrbId}
-                onSelectionChange={(key) => setPrb(key)}
-                width="size-3600"
-                menuTrigger="focus"
-              >
-                {prbOptions.map((o) => (
-                  <Item key={o.id}>{o.label}</Item>
-                ))}
-              </ComboBox>
+          <ComboBox
+            label="PRB Properties (global)"
+            placeholder="Paste/type PRB number…"
+            selectedKey={selectedPrbId}
+            onSelectionChange={(key) => setPrb(key)}
+            width="size-4600"
+            menuTrigger="focus"
+          >
+            {prbOptions.map((o) => (
+              <Item key={o.id}>
+                <Flex direction="column" gap="size-0">
+                  <Text UNSAFE_style={{ fontWeight: 600 }}>{o.prbNumber || o.label}</Text>
+                  {o.name ? <Text UNSAFE_style={{ opacity: 0.7, fontSize: 12 }}>{o.name}</Text> : null}
+                </Flex>
+              </Item>
+            ))}
+          </ComboBox>
 
-              {prbStatus === "configured" ? (
-                <StatusLight variant="positive">PRB set</StatusLight>
-              ) : (
-                <StatusLight variant="negative">PRB missing</StatusLight>
-              )}
-            </Flex>
-          </Flex>
-
-          <Divider orientation="vertical" size="S" />
-
-          <Flex gap="size-200" alignItems="end">
-            <Button variant="secondary" onPress={loadVfs}>
-              Load VFs
-            </Button>
-            <Button variant="secondary" onPress={loadContentList}>
-              Load Content CFs
-            </Button>
-            <Button variant="primary" onPress={renderPreview} isDisabled={!canonicalHtml || isRendering}>
-              {isRendering ? "Rendering…" : "Render preview"}
-            </Button>
-          </Flex>
-
-          <Divider orientation="vertical" size="S" />
-
-          <Button variant="secondary" onPress={() => setShowAdvanced((v) => !v)}>
-            {showAdvanced ? "Hide advanced" : "Show advanced"}
-          </Button>
+          {prbStatus === "configured" ? (
+            <StatusLight variant="positive">PRB set</StatusLight>
+          ) : (
+            <StatusLight variant="negative">PRB missing</StatusLight>
+          )}
         </Flex>
 
         {aemWarnings.length ? (
@@ -641,70 +576,13 @@ export function TemplateStudio() {
             <StatusLight variant="negative">{aemWarnings[0]}</StatusLight>
           </View>
         ) : null}
-
-        {showAdvanced ? (
-          <View marginTop="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-200">
-            <Heading level={4}>Advanced renderContext (optional)</Heading>
-            <Text UNSAFE_style={{ opacity: 0.8 }}>
-              These are passed to the render action under <code>renderContext.bindingStream</code> and{" "}
-              <code>renderContext.cache</code>. If you leave them empty, the action will hydrate normally.
-            </Text>
-
-            <Divider size="S" marginY="size-150" />
-
-            <Grid columns={["1fr", "1fr"]} gap="size-200">
-              <View>
-                <Heading level={5}>bindingStream</Heading>
-                <TextField
-                  aria-label="bindingStream"
-                  value={bindingStreamText}
-                  onChange={setBindingStreamText}
-                  isMultiline
-                  height="size-3000"
-                  width="100%"
-                />
-              </View>
-              <View>
-                <Heading level={5}>cache</Heading>
-                <TextField
-                  aria-label="cache"
-                  value={cacheText}
-                  onChange={setCacheText}
-                  isMultiline
-                  height="size-3000"
-                  width="100%"
-                />
-              </View>
-            </Grid>
-          </View>
-        ) : null}
       </View>
 
       <Divider size="S" marginY="size-200" />
 
-      {/* Main grid */}
-      <Grid columns={["1fr", "2fr", "1fr"]} gap="size-200" height="78vh">
-        {/* Left: VF library (still useful as a reference) */}
-        <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
-          <Flex justifyContent="space-between" alignItems="center">
-            <Heading level={4}>Visual Fragments</Heading>
-            <Text>{vfItems.length ? `${vfItems.length}` : ""}</Text>
-          </Flex>
-
-          <ListView
-            aria-label="VFs"
-            selectionMode="single"
-            selectedKeys={selectedVfId ? [selectedVfId] : []}
-            onSelectionChange={(keys) => setSelectedVfId([...keys][0])}
-            height="70vh"
-          >
-            {vfItems.map((vf) => (
-              <Item key={vf.id}>{vf.name}</Item>
-            ))}
-          </ListView>
-        </View>
-
-        {/* Center: Composition timeline + Preview */}
+      {/* 2-column Studio */}
+      <Grid columns={["1fr", "1fr"]} gap="size-200" height="78vh">
+        {/* Left: Composition */}
         <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
           <Flex justifyContent="space-between" alignItems="center">
             <Heading level={4}>Composition</Heading>
@@ -718,12 +596,12 @@ export function TemplateStudio() {
           </Flex>
 
           <Text marginTop="size-100" UNSAFE_style={{ opacity: 0.8 }}>
-            Add a pattern first, then bind content inline. This keeps composition deterministic (pattern + data).
+            Add a pattern first, then bind content inline.
           </Text>
 
           <Divider size="S" marginY="size-200" />
 
-          <View height="size-2000" overflow="auto">
+          <View height="72vh" overflow="auto">
             {!modules.length ? (
               <Text UNSAFE_style={{ opacity: 0.85 }}>No modules yet. Add a pattern to start.</Text>
             ) : (
@@ -740,13 +618,22 @@ export function TemplateStudio() {
               ))
             )}
           </View>
+        </View>
 
-          <Divider size="S" marginY="size-200" />
+        {/* Right: Preview + Diagnostics tabs */}
+        <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
+          <Flex justifyContent="space-between" alignItems="center">
+            <Heading level={4}>Preview</Heading>
+            <Button variant="primary" onPress={renderPreview} isDisabled={!canonicalHtml || isRendering}>
+              {isRendering ? "Rendering…" : "Render preview"}
+            </Button>
+          </Flex>
 
-          <Tabs aria-label="Canvas Tabs" selectedKey={activeTab} onSelectionChange={setActiveTab}>
+          <Divider size="S" marginY="size-150" />
+
+          <Tabs aria-label="Preview Tabs" selectedKey={activeTab} onSelectionChange={setActiveTab}>
             <TabList>
               <Item key="preview">Preview</Item>
-              <Item key="modules">Modules</Item>
               <Item key="html">AJO HTML</Item>
               <Item key="aem">AEM</Item>
               <Item key="diagnostics">Diagnostics</Item>
@@ -754,7 +641,7 @@ export function TemplateStudio() {
 
             <TabPanels>
               <Item key="preview">
-                <View borderWidth="thin" borderColor="light" borderRadius="small" height="42vh" padding="size-100">
+                <View borderWidth="thin" borderColor="light" borderRadius="small" height="64vh" padding="size-100">
                   {renderError ? (
                     <View marginBottom="size-100">
                       <StatusLight variant="negative">{renderError}</StatusLight>
@@ -770,38 +657,14 @@ export function TemplateStudio() {
                 </View>
               </Item>
 
-              <Item key="modules">
-                <View height="42vh" overflow="auto">
-                  {!modules.length ? (
-                    <Text>No modules yet.</Text>
-                  ) : (
-                    modules.map((m, idx) => (
-                      <View key={m.moduleId} marginBottom="size-150">
-                        <Text>
-                          {idx + 1}. VF: {m.vfId || "(not paired)"} | CF: {m.contentId || "(unbound)"} | moduleId:{" "}
-                          {m.moduleId}
-                        </Text>
-                      </View>
-                    ))
-                  )}
-                </View>
-              </Item>
-
               <Item key="html">
-                <View
-                  borderWidth="thin"
-                  borderColor="light"
-                  borderRadius="small"
-                  padding="size-200"
-                  height="42vh"
-                  overflow="auto"
-                >
+                <View borderWidth="thin" borderColor="light" borderRadius="small" padding="size-200" height="64vh" overflow="auto">
                   <pre style={{ whiteSpace: "pre-wrap" }}>{canonicalHtml || "(empty)"}</pre>
                 </View>
               </Item>
 
               <Item key="aem">
-                <View height="42vh" overflow="auto">
+                <View height="64vh" overflow="auto">
                   <View marginBottom="size-150">
                     <Heading level={5}>Render diagnostics</Heading>
                     {perf ? (
@@ -847,14 +710,7 @@ export function TemplateStudio() {
                     <View marginTop="size-200">
                       <Heading level={5}>Raw render result</Heading>
                       <Divider size="S" marginY="size-100" />
-                      <View
-                        borderWidth="thin"
-                        borderColor="light"
-                        borderRadius="small"
-                        padding="size-200"
-                        overflow="auto"
-                        height="size-2400"
-                      >
+                      <View borderWidth="thin" borderColor="light" borderRadius="small" padding="size-200" overflow="auto" height="size-2400">
                         <pre style={{ whiteSpace: "pre-wrap" }}>{safeJson(lastRenderResult, 2)}</pre>
                       </View>
                     </View>
@@ -863,7 +719,7 @@ export function TemplateStudio() {
               </Item>
 
               <Item key="diagnostics">
-                <View height="42vh" overflow="auto">
+                <View height="64vh" overflow="auto">
                   <View marginBottom="size-150">
                     <Heading level={5}>Runtime diagnostics</Heading>
                     <Text UNSAFE_style={{ opacity: 0.85 }}>
@@ -878,25 +734,27 @@ export function TemplateStudio() {
                     <Text UNSAFE_style={{ opacity: 0.8, marginTop: 6 }}>
                       When enabled, next render injects a small script into preview HTML to report DOM checks and runtime errors.
                     </Text>
+                  </View>
+
+                  <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
+                    <Heading level={5}>VF survival diagnostics</Heading>
+
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      expected(from canonical)={vfDiagSummary.expectedCount} • best(after render)={vfDiagSummary.bestCount} •
+                      sanitized(after strip)={vfDiagSummary.sanitizedCount}
+                    </Text>
+
                     <Divider size="S" marginY="size-100" />
-                    <Flex gap="size-100">
-                      <Button variant="secondary" onPress={() => setIframeMsgs([])}>
-                        Clear iframe messages
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        onPress={() => {
-                          try {
-                            navigator.clipboard.writeText(safeJson(iframeMsgs, 2));
-                          } catch {
-                            /* ignore */
-                          }
-                        }}
-                        isDisabled={!iframeMsgs.length}
-                      >
-                        Copy iframe messages JSON
-                      </Button>
-                    </Flex>
+
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      expected: {safeJson(vfDiag.expected, 0)}
+                    </Text>
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      best: {safeJson(vfDiag.best, 0)}
+                    </Text>
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      sanitized: {safeJson(vfDiag.sanitized, 0)}
+                    </Text>
                   </View>
 
                   <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
@@ -915,115 +773,6 @@ export function TemplateStudio() {
                     )}
                   </View>
 
-                  <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
-                    <Heading level={5}>VF survival diagnostics</Heading>
-
-                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                      expected(from canonical)={vfDiagSummary.expectedCount} • best(after render)={vfDiagSummary.bestCount} •
-                      sanitized(after strip)={vfDiagSummary.sanitizedCount}
-                    </Text>
-
-                    {vfDiagSummary.missingInBest.length ? (
-                      <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                        missing in best: {vfDiagSummary.missingInBest.map((id) => `ajo:${id}`).join(", ")}
-                      </Text>
-                    ) : null}
-
-                    {vfDiagSummary.missingAfterSanitize.length ? (
-                      <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                        missing after sanitize: {vfDiagSummary.missingAfterSanitize.map((id) => `ajo:${id}`).join(", ")}
-                      </Text>
-                    ) : null}
-
-                    <Divider size="S" marginY="size-100" />
-
-                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                      expected: {safeJson(vfDiag.expected, 0)}
-                    </Text>
-                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                      best: {safeJson(vfDiag.best, 0)}
-                    </Text>
-                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                      sanitized: {safeJson(vfDiag.sanitized, 0)}
-                    </Text>
-                  </View>
-
-                  <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
-                    <Heading level={5}>Server render diagnostics</Heading>
-                    <Divider size="S" marginY="size-100" />
-
-                    {!lastRenderResult ? (
-                      <Text UNSAFE_style={{ opacity: 0.85 }}>No render result yet. Render preview to populate.</Text>
-                    ) : (
-                      <View>
-                        <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                          previewDiagnostics: {safeJson(serverPreviewDiagnostics, 2)}
-                        </Text>
-
-                        {serverDynamicRefs ? (
-                          <View marginTop="size-150">
-                            <Divider size="S" marginY="size-100" />
-                            <Heading level={6}>Dynamic references</Heading>
-                            <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                              wrapperInferred: {String(serverDynamicRefs.wrapperInferred ?? "")} • placeholdersSeen:
-                              {String(serverDynamicRefs.totalPlaceholdersSeen ?? "")} • replacementsMade:
-                              {String(serverDynamicRefs.totalReplacementsMade ?? "")} • uniqueRefs:
-                              {String(serverDynamicRefs.totalUniqueReferences ?? "")}
-                            </Text>
-                            <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                              orderedReferenceNotes: {safeJson(serverDynamicRefs.orderedReferenceNotes || [], 0)}
-                            </Text>
-                            {!!(serverDynamicRefs.warnings && serverDynamicRefs.warnings.length) ? (
-                              <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                                warnings: {safeJson(serverDynamicRefs.warnings.slice(0, 10), 2)}
-                              </Text>
-                            ) : null}
-                          </View>
-                        ) : null}
-                      </View>
-                    )}
-                  </View>
-
-                  <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
-                    <Heading level={5}>Server stitching diagnostics</Heading>
-                    <Divider size="S" marginY="size-100" />
-
-                    {!lastRenderResult ? (
-                      <Text UNSAFE_style={{ opacity: 0.85 }}>No render result yet. Render preview to populate.</Text>
-                    ) : (
-                      <View>
-                        <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                          vfDiag: {safeJson(serverVfDiag, 2)}
-                        </Text>
-                        <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                          stitchReport: {safeJson(stitchReport, 2)}
-                        </Text>
-                        <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                          fragmentsResolvedAll(count): {Array.isArray(fragmentsResolvedAll) ? fragmentsResolvedAll.length : 0}
-                        </Text>
-
-                        {Array.isArray(fragmentsResolvedAll) && fragmentsResolvedAll.length ? (
-                          <View marginTop="size-100">
-                            <Divider size="S" marginY="size-100" />
-                            {fragmentsResolvedAll.slice(0, 30).map((f, i) => (
-                              <View key={`fr-${i}`} marginBottom="size-50">
-                                <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
-                                  {f.id} — {f.name || "(unnamed)"} — hasContent={String(!!f.hasContent)}
-                                </Text>
-                              </View>
-                            ))}
-                            {fragmentsResolvedAll.length > 30 ? (
-                              <Text UNSAFE_style={{ opacity: 0.8 }}>
-                                Showing first 30 of {fragmentsResolvedAll.length}. See AEM tab “Raw render result” for full
-                                payload.
-                              </Text>
-                            ) : null}
-                          </View>
-                        ) : null}
-                      </View>
-                    )}
-                  </View>
-
                   <View borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
                     <Heading level={5}>Computed preview warnings</Heading>
                     <Divider size="S" marginY="size-100" />
@@ -1037,30 +786,37 @@ export function TemplateStudio() {
                       ))
                     )}
                   </View>
+
+                  <View marginTop="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
+                    <Heading level={5}>Server stitching diagnostics</Heading>
+                    <Divider size="S" marginY="size-100" />
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      vfDiag: {safeJson(serverVfDiag, 2)}
+                    </Text>
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      stitchReport: {safeJson(stitchReport, 2)}
+                    </Text>
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      fragmentsResolvedAll(count): {Array.isArray(fragmentsResolvedAll) ? fragmentsResolvedAll.length : 0}
+                    </Text>
+                  </View>
+
+                  <View marginTop="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
+                    <Heading level={5}>Server render diagnostics</Heading>
+                    <Divider size="S" marginY="size-100" />
+                    <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                      previewDiagnostics: {safeJson(serverPreviewDiagnostics, 2)}
+                    </Text>
+                    {serverDynamicRefs ? (
+                      <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                        dynamicReferences: {safeJson(serverDynamicRefs, 2)}
+                      </Text>
+                    ) : null}
+                  </View>
                 </View>
               </Item>
             </TabPanels>
           </Tabs>
-        </View>
-
-        {/* Right: Content CF library */}
-        <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
-          <Flex justifyContent="space-between" alignItems="center">
-            <Heading level={4}>Content Fragments</Heading>
-            <Text>{contentOptions.length ? `${contentOptions.length}` : ""}</Text>
-          </Flex>
-
-          <ListView
-            aria-label="Content CFs"
-            selectionMode="single"
-            selectedKeys={selectedContentId ? [selectedContentId] : []}
-            onSelectionChange={(keys) => setSelectedContentId([...keys][0])}
-            height="70vh"
-          >
-            {contentOptions.map((cf) => (
-              <Item key={cf.id}>{cf.label}</Item>
-            ))}
-          </ListView>
         </View>
       </Grid>
     </View>

@@ -134,6 +134,21 @@ export function bindContentInModuleHtml(html, { moduleId, vfId, aemCfId, repoId,
 }
 
 /**
+ * Remove a module block from canonical HTML using ts:module markers.
+ * If markers are missing, returns original HTML (safe).
+ */
+export function removeModuleFromTemplateHtml(html, moduleId) {
+  if (!html || !moduleId) return html;
+
+  const re = new RegExp(
+    `<!--\\s*ts:module\\s+id="${moduleId}"\\s*-->[\\s\\S]*?<!--\\s*ts:module-end\\s+id="${moduleId}"\\s*-->\\s*`,
+    "gim"
+  );
+
+  return html.replace(re, "");
+}
+
+/**
  * Hydrate state from an existing AJO template HTML.
  * Best-effort parsing:
  *  - PRB: result='prbProperties' binding => selectedPrbId

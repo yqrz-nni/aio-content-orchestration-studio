@@ -11,6 +11,7 @@ import { ImsContext } from "../context/ImsContext";
 import { PrbSelect } from "../screens/PrbSelect";
 import { TemplateSelect } from "../screens/TemplateSelect";
 import { TemplateStudio } from "../screens/TemplateStudio";
+import { TemplateFlow } from "../screens/TemplateFlow";
 
 function App (props) {
   // eslint-disable-next-line no-console
@@ -18,13 +19,11 @@ function App (props) {
   // eslint-disable-next-line no-console
   console.log('ims object:', props.ims)
 
-  // use exc runtime event handlers
-  // respond to configuration change events (e.g. user switches org)
   props.runtime.on('configuration', ({ imsOrg, imsToken, locale }) => {
     // eslint-disable-next-line no-console
     console.log('configuration change', { imsOrg, imsToken, locale })
   })
-  // respond to history change events
+
   props.runtime.on('history', ({ type, path }) => {
     // eslint-disable-next-line no-console
     console.log('history change', { type, path })
@@ -37,10 +36,17 @@ function App (props) {
           <ImsContext.Provider value={props.ims}>
             <View padding="size-200">
               <Routes>
+                {/* Choose your default. If you want the unified flow as default, change "/" to "/flow". */}
                 <Route path="/" element={<Navigate to="/prb" replace />} />
+
+                {/* Unified single-screen flow */}
+                <Route path="/flow" element={<TemplateFlow />} />
+
+                {/* Keep existing deep-link routes */}
                 <Route path="/prb" element={<PrbSelect />} />
                 <Route path="/prb/:prbId/templates" element={<TemplateSelect />} />
                 <Route path="/prb/:prbId/templates/:templateId/studio" element={<TemplateStudio />} />
+
                 <Route path="*" element={<Navigate to="/prb" replace />} />
               </Routes>
             </View>
@@ -50,12 +56,8 @@ function App (props) {
     </ErrorBoundary>
   )
 
-  // Methods
-
-  // error handler on UI rendering failure
   function onError (e, componentStack) { }
 
-  // component to show if UI fails rendering
   function fallbackComponent ({ componentStack, error }) {
     return (
       <React.Fragment>

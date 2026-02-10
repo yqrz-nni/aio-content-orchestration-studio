@@ -1,6 +1,6 @@
 // File: src/dx-excshell-1/web-src/src/studio/components/ModuleCard.jsx
 
-import React from "react";
+import React, { useMemo } from "react";
 import { View, Flex, Text, Divider, ComboBox, Item, StatusLight, Button } from "@adobe/react-spectrum";
 
 function vfNameById(vfItems, vfId) {
@@ -16,6 +16,18 @@ export function ModuleCard({ module, index, vfItems, contentOptions, onBindConte
   ) : (
     <StatusLight variant="negative">Unbound</StatusLight>
   );
+
+  // If hydrated contentId isn’t in the loaded list yet, add a visible placeholder option.
+  const options = useMemo(() => {
+    const base = Array.isArray(contentOptions) ? contentOptions : [];
+    const cid = module?.contentId || null;
+    if (!cid) return base;
+
+    const exists = base.some((o) => o?.id === cid);
+    if (exists) return base;
+
+    return [{ id: cid, label: `Unknown CF — ${cid}` }, ...base];
+  }, [contentOptions, module?.contentId]);
 
   return (
     <View
@@ -43,7 +55,7 @@ export function ModuleCard({ module, index, vfItems, contentOptions, onBindConte
         width="size-4600"
         menuTrigger="focus"
       >
-        {(contentOptions || []).map((cf) => (
+        {options.map((cf) => (
           <Item key={cf.id}>{cf.label}</Item>
         ))}
       </ComboBox>

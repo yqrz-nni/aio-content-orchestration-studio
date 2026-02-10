@@ -47,12 +47,14 @@ function buildLabelsForPrb(prbNumber) {
   return labels;
 }
 
-export function TemplateSelect() {
+export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = false, onOpenTemplate }) {
   const ims = useContext(ImsContext);
   const headers = useMemo(() => buildHeaders(ims), [ims]);
 
   const nav = useNavigate();
-  const { prbId } = useParams();
+  const params = useParams();
+
+  const prbId = mode === "embedded" ? prbIdOverride : params.prbId;
 
   const isMounted = useIsMounted();
 
@@ -89,10 +91,7 @@ export function TemplateSelect() {
       setPrbOptions(
         items.map((it) => ({
           id: it._id,
-          label:
-            it.prbNumber && it.name
-              ? `${it.prbNumber} — ${it.name}`
-              : it.name || it.prbNumber || it._path || it._id,
+          label: it.prbNumber && it.name ? `${it.prbNumber} — ${it.name}` : it.name || it.prbNumber || it._path || it._id,
           raw: it,
         }))
       );
@@ -106,8 +105,6 @@ export function TemplateSelect() {
   }
 
   async function loadTemplatesForPrb(prbObj) {
-    // IMPORTANT: You may or may not have an action for this yet.
-    // If actions["ajo-template-list"] exists, we’ll call it. Otherwise we show the manual-open fallback.
     const listAction = actions["ajo-template-list"];
     if (!listAction) {
       if (isMounted()) {
@@ -126,9 +123,6 @@ export function TemplateSelect() {
 
       const prbNumber = prbObj?.raw?.prbNumber || null;
 
-      // Expected contract (you can adjust your action to match):
-      // input: { labels: ["PRB:1234"] }
-      // output: { templates: [{ id, name, modifiedAt, labels }] }
       const res = await actionWebInvoke(listAction, headers, {
         labels: buildLabelsForPrb(prbNumber),
       });
@@ -166,7 +160,6 @@ export function TemplateSelect() {
     if (!prbId || !prbOptions.length) return;
     const hit = prbOptions.find((p) => p.id === prbId) || null;
 
-    // setSelectedPrb is safe here; component is mounted during effects
     setSelectedPrb(hit);
 
     if (hit) loadTemplatesForPrb(hit);
@@ -175,7 +168,7 @@ export function TemplateSelect() {
 
   async function createFromBaselineAndOpen() {
     try {
-      if (!selectedPrb) return;
+      if (!selectedPrb || !prbId) return;
 
       if (isMounted()) {
         setErr("");
@@ -193,41 +186,51 @@ export function TemplateSelect() {
         prbName: selectedPrb?.raw?.name || null,
       });
 
-      const templateId = res?.templateId;
-      if (!templateId) {
+      const newTemplateId = res?.templateId;
+      if (!newTemplateId) {
         if (isMounted()) setErr("Template created but no templateId returned.");
         return;
       }
 
-      // Navigate away. After this, TemplateSelect unmounts, so we MUST NOT set state.
-      nav(`/prb/${encodeURIComponent(prbId)}/templates/${encodeURIComponent(templateId)}/studio`);
+      if (mode === "embedded") {
+        onOpenTemplate?.(newTemplateId);
+        return;
+      }
+
+      nav(`/prb/${encodeURIComponent(prbId)}/templates/${encodeURIComponent(newTemplateId)}/studio`);
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Create-from-baseline failed:", e);
       if (isMounted()) setErr(e?.message || "Create failed");
     } finally {
-      // Guard against unmount during navigation
       if (isMounted()) setIsCreating(false);
     }
   }
 
+  function openTemplateId(tid) {
+    if (!tid || !prbId) return;
+    if (mode === "embedded") {
+      onOpenTemplate?.(tid);
+      return;
+    }
+    nav(`/prb/${encodeURIComponent(prbId)}/templates/${encodeURIComponent(tid)}/studio`);
+  }
+
   function openSelectedTemplate() {
     if (!selectedTemplateId) return;
-    nav(`/prb/${encodeURIComponent(prbId)}/templates/${encodeURIComponent(selectedTemplateId)}/studio`);
+    openTemplateId(selectedTemplateId);
   }
 
   function openManualTemplate() {
     const tid = String(manualTemplateId || "").trim();
     if (!tid) return;
-    nav(`/prb/${encodeURIComponent(prbId)}/templates/${encodeURIComponent(tid)}/studio`);
+    openTemplateId(tid);
   }
 
   return (
-    <View>
-      <Heading level={2}>Template Studio</Heading>
-      <Text UNSAFE_style={{ opacity: 0.85 }}>
-        Step 2 of 3 — Open an existing template tagged to this PRB, or create a new one from the enterprise baseline.
-      </Text>
+    <View UNSAFE_style={{ opacity: isDisabled ? 0.5 : 1, pointerEvents: isDisabled ? "none" : "auto" }}>
+      <Heading level={2}>Templates</Heading>
+      <Text UNSAFE_style={{ opacity: 0.85 }}>Open an existing template for this PRB, or create a new one from baseline.</Text>
 
       <Divider size="S" marginY="size-200" />
 
@@ -240,16 +243,13 @@ export function TemplateSelect() {
                 {selectedPrb?.label || prbId || "(none)"} {repoId ? `• repoId=${repoId}` : ""}
               </Text>
             </View>
-            <Button variant="secondary" onPress={() => nav("/prb")}>
-              Change PRB
-            </Button>
           </Flex>
 
           <Divider size="S" />
 
           <Flex gap="size-200" alignItems="end" wrap>
             <TextField label="New template name" value={templateName} onChange={setTemplateName} width="size-3600" />
-            <Button variant="cta" onPress={createFromBaselineAndOpen} isDisabled={!selectedPrb || isCreating}>
+            <Button variant="cta" onPress={createFromBaselineAndOpen} isDisabled={!selectedPrb || isCreating || isDisabled}>
               {isCreating ? "Creating…" : "Create from baseline"}
             </Button>
           </Flex>
@@ -261,7 +261,7 @@ export function TemplateSelect() {
 
       <Divider size="S" marginY="size-200" />
 
-      <Grid columns={["2fr", "1fr"]} gap="size-200" height="70vh">
+      <Grid columns={["2fr", "1fr"]} gap="size-200" height="60vh">
         <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
           <Flex justifyContent="space-between" alignItems="center">
             <Heading level={4}>Templates for PRB</Heading>
@@ -269,11 +269,11 @@ export function TemplateSelect() {
               <Button
                 variant="secondary"
                 onPress={() => selectedPrb && loadTemplatesForPrb(selectedPrb)}
-                isDisabled={isLoadingTemplates || !selectedPrb}
+                isDisabled={isLoadingTemplates || !selectedPrb || isDisabled}
               >
                 {isLoadingTemplates ? "Loading…" : "Refresh"}
               </Button>
-              <Button variant="primary" onPress={openSelectedTemplate} isDisabled={!selectedTemplateId}>
+              <Button variant="primary" onPress={openSelectedTemplate} isDisabled={!selectedTemplateId || isDisabled}>
                 Open
               </Button>
             </Flex>
@@ -291,7 +291,7 @@ export function TemplateSelect() {
               selectionMode="single"
               selectedKeys={selectedTemplateId ? [selectedTemplateId] : []}
               onSelectionChange={(keys) => setSelectedTemplateId([...keys][0])}
-              height="60vh"
+              height="48vh"
             >
               {templates.map((t) => (
                 <Item key={t.id}>{t.name}</Item>
@@ -302,9 +302,7 @@ export function TemplateSelect() {
 
         <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
           <Heading level={4}>Open by Template ID</Heading>
-          <Text UNSAFE_style={{ opacity: 0.85 }}>
-            Useful as a fallback if template listing isn’t available yet.
-          </Text>
+          <Text UNSAFE_style={{ opacity: 0.85 }}>Useful as a fallback if template listing isn’t available yet.</Text>
 
           <Divider size="S" marginY="size-150" />
 
@@ -315,7 +313,7 @@ export function TemplateSelect() {
             onChange={setManualTemplateId}
             width="100%"
           />
-          <Button marginTop="size-150" variant="primary" onPress={openManualTemplate} isDisabled={!manualTemplateId.trim()}>
+          <Button marginTop="size-150" variant="primary" onPress={openManualTemplate} isDisabled={!manualTemplateId.trim() || isDisabled}>
             Open
           </Button>
         </View>
