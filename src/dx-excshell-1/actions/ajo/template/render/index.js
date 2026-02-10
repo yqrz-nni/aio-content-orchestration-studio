@@ -9,6 +9,7 @@
 //
 // NEW:
 // - VF diagnostics around stitching: vfDiag + stitchReport + fragmentsResolvedAll
+// - Normalize diagnostics payloads so UI Diagnostics tab always has stable shapes to display
 
 const { ok, badRequest, serverError, corsPreflight } = require("../../../_lib/http");
 const { fetchRaw } = require("../../../_lib/fetchRaw");
@@ -18,6 +19,36 @@ const { normalizeBearer, buildCommonHeaders, pickEtag } = require("./utils");
 const { resolveStitchWithDiagnostics } = require("./aajoFragments");
 const { resolveAemBindingValues } = require("./aemBindings");
 const { buildRenderedHtmlBestEffort } = require("./renderTokens");
+
+/**
+ * Ensure the render response always contains stable diagnostics objects.
+ * This prevents the UI Diagnostics tab from looking "unchanged" when a producer omitted fields.
+ */
+function normalizeStitchDiagnostics(diag) {
+  const stitchedHtml = typeof diag?.stitchedHtml === "string" ? diag.stitchedHtml : "";
+
+  const fragmentsResolvedAll = Array.isArray(diag?.fragmentsResolvedAll) ? diag.fragmentsResolvedAll : [];
+  const resolutionWarnings = Array.isArray(diag?.resolutionWarnings) ? diag.resolutionWarnings : [];
+
+  const vfDiag =
+    diag?.vfDiag && typeof diag.vfDiag === "object"
+      ? diag.vfDiag
+      : {
+          expected: [],
+          resolved: [],
+          missing: [],
+          note: "vfDiag not produced by resolveStitchWithDiagnostics()",
+        };
+
+  const stitchReport =
+    diag?.stitchReport && typeof diag.stitchReport === "object"
+      ? diag.stitchReport
+      : {
+          note: "stitchReport not produced by resolveStitchWithDiagnostics()",
+        };
+
+  return { stitchedHtml, fragmentsResolvedAll, resolutionWarnings, vfDiag, stitchReport };
+}
 
 async function main(params) {
   if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
@@ -44,13 +75,19 @@ async function main(params) {
     if (typeof params.html === "string" && params.html.trim()) {
       const html = params.html;
 
-      const diag = await resolveStitchWithDiagnostics({ html, params, commonHeaders });
+      const diagRaw = await resolveStitchWithDiagnostics({ html, params, commonHeaders });
+      const diag = normalizeStitchDiagnostics(diagRaw);
+
       const aem = await resolveAemBindingValues({ stitchedHtml: diag.stitchedHtml, params });
 
       const renderedHtml = buildRenderedHtmlBestEffort({
         stitchedHtml: diag.stitchedHtml,
         aemBindingsEncountered: aem.aemBindingsEncountered,
         aemPrefetchDataByStreamKey: aem.aemPrefetchDataByStreamKey,
+        // NOTE: buildRenderedHtmlBestEffort currently accepts (and conditionally populates)
+        // diagnostics only if the caller provides an object. If/when you want to surface
+        // renderTokens diagnostics in the UI, pass a diagnostics object here and return it.
+        // diagnostics: {},
       });
 
       return ok({
@@ -61,11 +98,11 @@ async function main(params) {
         renderedHtml,
         etag: null,
 
-        // Back-compat: keep the old key too, but return the summarized version
+        // Back-compat: keep the old key too, but return the normalized version
         fragmentsResolved: diag.fragmentsResolvedAll,
         resolutionWarnings: diag.resolutionWarnings,
 
-        // NEW diagnostics
+        // NEW diagnostics (normalized, stable shapes)
         vfDiag: diag.vfDiag,
         stitchReport: diag.stitchReport,
         fragmentsResolvedAll: diag.fragmentsResolvedAll,
@@ -111,13 +148,16 @@ async function main(params) {
 
     const etag = pickEtag(templateResp?.headers || null);
 
-    const diag = await resolveStitchWithDiagnostics({ html, params, commonHeaders });
+    const diagRaw = await resolveStitchWithDiagnostics({ html, params, commonHeaders });
+    const diag = normalizeStitchDiagnostics(diagRaw);
+
     const aem = await resolveAemBindingValues({ stitchedHtml: diag.stitchedHtml, params });
 
     const renderedHtml = buildRenderedHtmlBestEffort({
       stitchedHtml: diag.stitchedHtml,
       aemBindingsEncountered: aem.aemBindingsEncountered,
       aemPrefetchDataByStreamKey: aem.aemPrefetchDataByStreamKey,
+      // diagnostics: {},
     });
 
     return ok({
@@ -128,11 +168,11 @@ async function main(params) {
       renderedHtml,
       etag,
 
-      // Back-compat: keep the old key too, but return the summarized version
+      // Back-compat: keep the old key too, but return the normalized version
       fragmentsResolved: diag.fragmentsResolvedAll,
       resolutionWarnings: diag.resolutionWarnings,
 
-      // NEW diagnostics
+      // NEW diagnostics (normalized, stable shapes)
       vfDiag: diag.vfDiag,
       stitchReport: diag.stitchReport,
       fragmentsResolvedAll: diag.fragmentsResolvedAll,
