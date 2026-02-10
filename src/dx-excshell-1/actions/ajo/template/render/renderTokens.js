@@ -16,6 +16,7 @@ const { renderMiniAjo } = require("./miniAjoRuntime");
  *   1) The ACR wrapper *comment markers themselves* (start/end), but NOT their enclosed content
  *   2) Handlebars comments ({{!-- ... --}})
  *   3) Liquid tags ({% ... %})
+ *   4) Specific known "placeholder-only" each blocks that sometimes leak into preview HTML
  */
 function stripAjoSyntax(html) {
   if (!html || typeof html !== "string") return html;
@@ -40,7 +41,49 @@ function stripAjoSyntax(html) {
   const liquidTagRe = /{%\s*[\s\S]*?\s*%}/g;
   out = out.replace(liquidTagRe, "");
 
+  // 4) Remove specific "empty each blocks" that are intended only to trigger reference collection
+  // but should never render visible in preview (e.g. {{#each refPlaceholders}} {{/each}}).
+  out = stripKnownEmptyEachBlocks(out);
+
   return out;
+}
+
+/**
+ * Removes specific Handlebars each-blocks when their body is effectively empty.
+ * We keep this conservative:
+ * - only applies to a small allowlist of known "ref placeholder" arrays
+ * - only removes when the inner content is whitespace (after trimming)
+ */
+function stripKnownEmptyEachBlocks(html) {
+  if (!html || typeof html !== "string") return html;
+
+  // Add additional names here if you find more "ref placeholder" loops leaking into preview.
+  const ALLOWLIST = ["refPlaceholders"];
+
+  let out = html;
+
+  for (const name of ALLOWLIST) {
+    // Matches:
+    //   {{#each refPlaceholders}} ... {{/each}}
+    // including optional "as |x|" blocks or other handlebars args.
+    const re = new RegExp(
+      String.raw`{{\s*#each\s+${escapeRegExp(name)}(?:\s+as\s+\|\s*[^|]+\s*\|)?\s*}}([\s\S]*?){{\s*\/each\s*}}`,
+      "g"
+    );
+
+    out = out.replace(re, (_m, inner) => {
+      // If the body is only whitespace, drop the whole block.
+      // (HB comments are already stripped earlier in stripAjoSyntax.)
+      const body = String(inner ?? "").trim();
+      return body ? _m : "";
+    });
+  }
+
+  return out;
+}
+
+function escapeRegExp(s) {
+  return String(s ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function escapeHtml(s) {
@@ -399,7 +442,7 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     defaultCfCtx,
   });
 
-  // final sanitize for preview HTML (now safe: no block-spanning deletes)
+  // final sanitize for preview HTML
   return stripAjoSyntax(out);
 }
 
@@ -413,4 +456,5 @@ module.exports = {
   resolveStylesByBindings,
   pickDefaultCtxForNamespace,
   deriveStylesContext,
+  stripKnownEmptyEachBlocks,
 };
