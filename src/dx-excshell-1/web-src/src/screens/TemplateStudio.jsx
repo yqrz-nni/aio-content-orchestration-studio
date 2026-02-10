@@ -46,8 +46,7 @@ function applyPrbToTemplateHtml(html, { prbCfId, repoId }) {
 
   const newCall = `{{fragment id='aem:${prbCfId}?repoId=${repoId}' result='prbProperties'}}`;
 
-  const re =
-    /{{\s*fragment\s+id=(['"])aem:[^'"]+\?repoId=[^'"]+\1\s+result=(['"])prbProperties\2\s*}}/g;
+  const re = /{{\s*fragment\s+id=(['"])aem:[^'"]+\?repoId=[^'"]+\1\s+result=(['"])prbProperties\2\s*}}/g;
 
   if (!re.test(html)) {
     console.warn("Baseline HTML did not contain prbProperties binding; refusing to inject automatically.");
@@ -317,29 +316,25 @@ function safeJson(obj, space = 2) {
  * Preview sanitizer + diagnostics
  * ============================================================================= */
 
+/**
+ * Strip *everything* between ACR start/end markers, regardless of type.
+ * Also strip Liquid tags.
+ *
+ * IMPORTANT:
+ * - This is for iframe preview only.
+ * - It will remove your inline {{ fragment id="ajo:..." }} calls too (if they’re inside ACR markers),
+ *   which is correct for “browser preview” unless your render action has already stitched the VF content.
+ */
 function stripAjoSyntax(html) {
   if (!html || typeof html !== "string") return html;
 
   let out = html;
 
-  // Remove Liquid tags
+  // Remove Liquid tags like {% let x = ... %}
   out = out.replace(/{%\s*[\s\S]*?\s*%}/g, "");
 
-  // Strip ACR-wrapped blocks BUT preserve VF include blocks (ajo:) by keeping inner content
-  const acrBlockRe = /{{!--\s*\[acr-start([^\]]*)\]\s*--}}([\s\S]*?){{!--\s*\[acr-end[^\]]*\]\s*--}}/gim;
-
-  out = out.replace(acrBlockRe, (_m, startSuffix, inner) => {
-    const kind = String(startSuffix || "").trim().toLowerCase();
-
-    // Keep AJO fragments (these can be resolved upstream; if not resolved, at least we can detect them)
-    if (/\{\{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:/i.test(inner)) return inner;
-
-    // Strip expression noise
-    if (kind.includes("expr-field") || kind.includes("expr") || kind.includes("field")) return "";
-
-    // Default: strip other ACR blocks
-    return "";
-  });
+  // Strip ALL ACR marker blocks (everything from start marker to end marker)
+  out = out.replace(/{{!--\s*\[acr-start[\s\S]*?--}}[\s\S]*?{{!--\s*\[acr-end[\s\S]*?--}}/gim, "");
 
   // Remove any stray marker comments
   out = out.replace(/{{!--\s*\[acr-(?:start|end)[^\]]*\]\s*--}}/gim, "");
@@ -347,16 +342,7 @@ function stripAjoSyntax(html) {
   return out;
 }
 
-function escapeForJsString(s) {
-  return String(s ?? "")
-    .replaceAll("\\", "\\\\")
-    .replaceAll("`", "\\`")
-    .replaceAll("$", "\\$");
-}
-
 function injectPreviewBridge(html, expectedVfIds = []) {
-  // Add a small script to post DOM + error signals back to parent.
-  // We look for "data-fragment-id" markers which exist in resolved VF HTML.
   const uniq = [...new Set((expectedVfIds || []).filter(Boolean))];
 
   const payload = uniq.map((id) => ({
@@ -392,12 +378,15 @@ function injectPreviewBridge(html, expectedVfIds = []) {
       found[c.id] = !!document.querySelector(c.selector);
     }
     post("vf-dom-check", { found: found, total: checks.length });
+
+    // Generic VF presence check (even when you don’t know IDs)
+    var any = Array.prototype.slice.call(document.querySelectorAll('[data-fragment-id^="ajo:"]')).map(function(n){ return n.getAttribute("data-fragment-id"); });
+    post("vf-dom-any", { count: any.length, ids: any.slice(0, 15) });
   });
 })();
 </script>
 `;
 
-  // Insert before </body> if possible
   if (typeof html === "string" && html.includes("</body>")) {
     return html.replace("</body>", `${script}</body>`);
   }
@@ -413,14 +402,19 @@ function computePreviewWarnings({ canonicalHtml, bestHtml, sanitizedHtml, expect
 
   const uniq = [...new Set((expectedVfIds || []).filter(Boolean))];
 
-  // If VF exists in canonical AJO HTML but is missing from best -> render action likely dropped it.
   for (const id of uniq) {
     const hasInCanonical =
-      canon.includes(`ajo:${id}`) || canon.includes(`data-fragment-id="ajo:${id}"`) || canon.includes(`data-fragment-id='ajo:${id}'`);
+      canon.includes(`ajo:${id}`) ||
+      canon.includes(`data-fragment-id="ajo:${id}"`) ||
+      canon.includes(`data-fragment-id='ajo:${id}'`);
     const hasInBest =
-      best.includes(`ajo:${id}`) || best.includes(`data-fragment-id="ajo:${id}"`) || best.includes(`data-fragment-id='ajo:${id}'`);
+      best.includes(`ajo:${id}`) ||
+      best.includes(`data-fragment-id="ajo:${id}"`) ||
+      best.includes(`data-fragment-id='ajo:${id}'`);
     const hasInAfter =
-      after.includes(`ajo:${id}`) || after.includes(`data-fragment-id="ajo:${id}"`) || after.includes(`data-fragment-id='ajo:${id}'`);
+      after.includes(`ajo:${id}`) ||
+      after.includes(`data-fragment-id="ajo:${id}"`) ||
+      after.includes(`data-fragment-id='ajo:${id}'`);
 
     if (hasInCanonical && !hasInBest) {
       warnings.push(
@@ -429,7 +423,6 @@ function computePreviewWarnings({ canonicalHtml, bestHtml, sanitizedHtml, expect
       continue;
     }
 
-    // If it exists in best but not after -> sanitizer removed it.
     if (hasInBest && !hasInAfter) {
       warnings.push(
         `VF ajo:${id} was present in render result HTML (best) but missing after sanitization. This points to the sanitizer stripping it.`
@@ -437,7 +430,6 @@ function computePreviewWarnings({ canonicalHtml, bestHtml, sanitizedHtml, expect
       continue;
     }
 
-    // If it only exists as templating include (ajo:...) and not as DOM marker, it won't render in browser
     const hasDomMarker =
       after.includes(`data-fragment-id="ajo:${id}"`) || after.includes(`data-fragment-id='ajo:${id}'`);
     const hasTemplateTag = after.includes(`ajo:${id}`);
@@ -449,7 +441,6 @@ function computePreviewWarnings({ canonicalHtml, bestHtml, sanitizedHtml, expect
     }
   }
 
-  // General: if any ajo fragment tags remain, that means they weren't stitched
   const anyAjoTags = /\{\{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:/i.test(after);
   if (anyAjoTags) {
     warnings.push(
@@ -457,15 +448,33 @@ function computePreviewWarnings({ canonicalHtml, bestHtml, sanitizedHtml, expect
     );
   }
 
-  // Check for leftover ACR marker comments
   const acrMarkerCount = (after.match(/{{!--\s*\[acr-(?:start|end)[^\]]*\]\s*--}}/gim) || []).length;
   if (acrMarkerCount > 0) warnings.push(`ACR marker comments still present in preview HTML (${acrMarkerCount}).`);
 
-  // Liquid tags should be gone
   const liquidCount = (after.match(/{%\s*[\s\S]*?\s*%}/g) || []).length;
   if (liquidCount > 0) warnings.push(`Liquid tags still present in preview HTML (${liquidCount}).`);
 
   return warnings.slice(0, 12);
+}
+
+function extractAllAjoVfIdsFromHtml(html) {
+  if (!html || typeof html !== "string") return [];
+  const ids = new Set();
+
+  // Matches {{ fragment id="ajo:<uuid>" ... }} and {{fragment id='ajo:<uuid>' ...}}
+  const re = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:([^'"]+)\1[^}]*}}/gim;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    if (m[2]) ids.add(m[2]);
+  }
+
+  // If already stitched: data-fragment-id="ajo:<id>"
+  const re2 = /data-fragment-id\s*=\s*(['"])ajo:([^'"]+)\1/gim;
+  while ((m = re2.exec(html)) !== null) {
+    if (m[2]) ids.add(m[2]);
+  }
+
+  return [...ids];
 }
 
 /* =============================================================================
@@ -505,7 +514,7 @@ export function TemplateStudio() {
   const [renderError, setRenderError] = useState("");
   const [previewWarnings, setPreviewWarnings] = useState([]);
 
-  // NEW: iframe runtime messages
+  // iframe runtime messages
   const [iframeMsgs, setIframeMsgs] = useState([]);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -522,12 +531,17 @@ export function TemplateStudio() {
     return v && typeof v === "object" ? v : {};
   }, [cacheText]);
 
-  // Expected VF IDs: what we think should be present (modules + selectedVfId if you’re testing)
+  // IMPORTANT CHANGE:
+  // Track ALL AJO VFs present in canonical HTML (including “standalone” VFs like footer),
+  // not just those inferred from modules[].
   const expectedVfIds = useMemo(() => {
-    const ids = [];
-    for (const m of Array.isArray(modules) ? modules : []) if (m?.vfId) ids.push(m.vfId);
-    return [...new Set(ids)];
-  }, [modules]);
+    const fromModules = [];
+    for (const m of Array.isArray(modules) ? modules : []) if (m?.vfId) fromModules.push(m.vfId);
+
+    const fromCanonical = extractAllAjoVfIdsFromHtml(canonicalHtml);
+
+    return [...new Set([...fromModules, ...fromCanonical])];
+  }, [modules, canonicalHtml]);
 
   // ---------------------------------------------------------------------------
   // Operation queue
@@ -552,7 +566,7 @@ export function TemplateStudio() {
 
       setIframeMsgs((prev) => {
         const next = [...prev, { at: new Date().toISOString(), ...msg }];
-        return next.slice(-50);
+        return next.slice(-80);
       });
 
       if (msg.type === "error" || msg.type === "unhandledrejection") {
@@ -571,6 +585,18 @@ export function TemplateStudio() {
             const add = [`Iframe DOM check: missing rendered VF DOM for ${missing.map((x) => `ajo:${x}`).join(", ")}.`];
             const merged = [...add, ...(Array.isArray(cur) ? cur : [])];
             return [...new Set(merged)].slice(0, 12);
+          });
+        }
+      }
+
+      if (msg.type === "vf-dom-any") {
+        const count = Number(msg?.data?.count || 0);
+        if (!Number.isNaN(count) && count === 0) {
+          setPreviewWarnings((cur) => {
+            const add = [
+              "Iframe DOM check: no elements found with data-fragment-id starting with 'ajo:'. This typically means your render action is not stitching VF HTML before preview.",
+            ];
+            return [...new Set([...(Array.isArray(cur) ? cur : []), ...add])].slice(0, 12);
           });
         }
       }
@@ -765,6 +791,7 @@ export function TemplateStudio() {
         return;
       }
 
+      // Preview is browser-based, so we strip ACR blocks + Liquid noise.
       const sanitized = stripAjoSyntax(best);
 
       // Pre-iframe diagnostics
@@ -779,7 +806,7 @@ export function TemplateStudio() {
         setPreviewWarnings(warnings);
       }
 
-      // Inject iframe bridge script (so we can see runtime errors + VF DOM presence)
+      // Inject iframe bridge script (runtime DOM + error signals)
       const bridged = injectPreviewBridge(sanitized, expectedVfIds);
 
       setPreviewHtml(bridged);
@@ -1020,12 +1047,11 @@ export function TemplateStudio() {
                     </View>
                   ) : null}
 
-                  {/* Optional: show last few iframe messages (super helpful for the VF not showing case) */}
                   {iframeMsgs.length ? (
                     <View marginBottom="size-100">
                       <Heading level={5}>Preview iframe messages</Heading>
                       <Divider size="S" marginY="size-100" />
-                      {iframeMsgs.slice(-6).map((m, i) => (
+                      {iframeMsgs.slice(-8).map((m, i) => (
                         <View key={`im-${i}`} marginBottom="size-50">
                           <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
                             {m.at} — {m.type}: {safeJson(m.data, 0)}
