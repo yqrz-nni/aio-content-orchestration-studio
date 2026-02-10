@@ -1,71 +1,128 @@
-/* 
-* <license header>
-*/
+// File: src/dx-excshell-1/web-src/src/screens/PrbSelect.jsx
 
-import React from 'react'
-import { Provider, defaultTheme, View } from '@adobe/react-spectrum'
-import ErrorBoundary from 'react-error-boundary'
-import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
-import { ImsContext } from "../context/ImsContext";
+import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { Heading, View, Flex, Button, Text, ComboBox, Item, StatusLight, Divider } from "@adobe/react-spectrum";
 
-import { PrbSelect } from "../screens/PrbSelect";
-import { TemplateSelect } from "../screens/TemplateSelect";
-import { TemplateStudio } from "../screens/TemplateStudio";
+import actions from "../config.json";
+import actionWebInvoke from "../utils";
 
-function App (props) {
-  // eslint-disable-next-line no-console
-  console.log('runtime object:', props.runtime)
-  // eslint-disable-next-line no-console
-  console.log('ims object:', props.ims)
+function toPrbOption(it) {
+  const prbNumber = it?.prbNumber || "";
+  const name = it?.name || "";
+  const fallback = it?._path || it?._id || "(unknown)";
 
-  // use exc runtime event handlers
-  // respond to configuration change events (e.g. user switches org)
-  props.runtime.on('configuration', ({ imsOrg, imsToken, locale }) => {
-    // eslint-disable-next-line no-console
-    console.log('configuration change', { imsOrg, imsToken, locale })
-  })
-  // respond to history change events
-  props.runtime.on('history', ({ type, path }) => {
-    // eslint-disable-next-line no-console
-    console.log('history change', { type, path })
-  })
+  const label = prbNumber && name ? `${prbNumber} — ${name}` : name || prbNumber || fallback;
 
-  return (
-    <ErrorBoundary onError={onError} FallbackComponent={fallbackComponent}>
-      <Router>
-        <Provider theme={defaultTheme} colorScheme={'light'}>
-          <ImsContext.Provider value={props.ims}>
-            <View padding="size-200">
-              <Routes>
-                <Route path="/" element={<Navigate to="/prb" replace />} />
-                <Route path="/prb" element={<PrbSelect />} />
-                <Route path="/prb/:prbId/templates" element={<TemplateSelect />} />
-                <Route path="/prb/:prbId/templates/:templateId/studio" element={<TemplateStudio />} />
-                <Route path="*" element={<Navigate to="/prb" replace />} />
-              </Routes>
-            </View>
-          </ImsContext.Provider>
-        </Provider>
-      </Router>
-    </ErrorBoundary>
-  )
-
-  // Methods
-
-  // error handler on UI rendering failure
-  function onError (e, componentStack) { }
-
-  // component to show if UI fails rendering
-  function fallbackComponent ({ componentStack, error }) {
-    return (
-      <React.Fragment>
-        <h1 style={{ textAlign: 'center', marginTop: '20px' }}>
-          Something went wrong :(
-        </h1>
-        <pre>{componentStack + '\n' + error.message}</pre>
-      </React.Fragment>
-    )
-  }
+  return {
+    id: it._id,
+    label,
+    prbNumber: prbNumber || "",
+    name: name || "",
+    raw: it,
+  };
 }
 
-export default App
+export function PrbSelect({ mode = "route", value, onChange }) {
+  const nav = useNavigate();
+
+  const [prbOptions, setPrbOptions] = useState([]);
+  const [selectedPrbId, setSelectedPrbId] = useState(value || null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    // keep internal state in sync when used embedded
+    if (mode === "embedded") setSelectedPrbId(value || null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, mode]);
+
+  const selectedPrb = useMemo(() => prbOptions.find((o) => o.id === selectedPrbId) || null, [prbOptions, selectedPrbId]);
+
+  async function loadPrbList() {
+    try {
+      setErr("");
+      setIsLoading(true);
+      const res = await actionWebInvoke(actions["aem-prb-list"]);
+      const items = res?.data?.prbPropertiesList?.items || [];
+      setPrbOptions(items.map((it) => toPrbOption(it)));
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("Load PRBs failed:", e);
+      setErr(e?.message || "Failed to load PRBs");
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadPrbList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function proceed() {
+    if (!selectedPrbId) return;
+    if (mode === "embedded") {
+      onChange?.(selectedPrbId);
+      return;
+    }
+    nav(`/prb/${encodeURIComponent(selectedPrbId)}/templates`);
+  }
+
+  return (
+    <View>
+      <Heading level={2}>Template Studio</Heading>
+      <Text UNSAFE_style={{ opacity: 0.85 }}>Choose a PRB Properties context to begin.</Text>
+
+      <Divider size="S" marginY="size-200" />
+
+      <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200" maxWidth="size-6000">
+        <Flex direction="column" gap="size-150">
+          <Flex gap="size-200" alignItems="end" wrap>
+            <ComboBox
+              label="PRB Properties"
+              placeholder={isLoading ? "Loading…" : "Search PRB number or name…"}
+              selectedKey={selectedPrbId}
+              onSelectionChange={(key) => {
+                setSelectedPrbId(key);
+                if (mode === "embedded") onChange?.(key);
+              }}
+              width="size-6000"
+              menuTrigger="focus"
+              isDisabled={isLoading}
+            >
+              {prbOptions.map((o) => (
+                <Item key={o.id}>
+                  <Flex direction="column" gap="size-0">
+                    <Text UNSAFE_style={{ fontWeight: 600 }}>{o.prbNumber || o.label}</Text>
+                    {o.name ? <Text UNSAFE_style={{ opacity: 0.7, fontSize: 12 }}>{o.name}</Text> : null}
+                  </Flex>
+                </Item>
+              ))}
+            </ComboBox>
+
+            <Button variant="secondary" onPress={loadPrbList} isDisabled={isLoading}>
+              {isLoading ? "Loading…" : "Refresh"}
+            </Button>
+
+            <Button variant="cta" onPress={proceed} isDisabled={!selectedPrbId}>
+              Continue
+            </Button>
+          </Flex>
+
+          {err ? (
+            <StatusLight variant="negative">{err}</StatusLight>
+          ) : selectedPrbId ? (
+            <StatusLight variant="positive">Selected: {selectedPrb?.label || selectedPrbId}</StatusLight>
+          ) : (
+            <StatusLight variant="negative">No PRB selected</StatusLight>
+          )}
+
+          <Text UNSAFE_style={{ opacity: 0.8 }}>
+            This selection drives template labels (e.g. <code>PRB:&lt;number&gt;</code>) and the global PRB binding in the HTML.
+          </Text>
+        </Flex>
+      </View>
+    </View>
+  );
+}
