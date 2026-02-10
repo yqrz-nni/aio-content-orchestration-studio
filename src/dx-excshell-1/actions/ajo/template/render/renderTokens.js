@@ -685,27 +685,34 @@ function assignGlobalRefNumber(dynState, note) {
 }
 
 /**
- * Phase 1 (name-agnostic):
- * Resolve <sup>{{anything}}</sup> occurrences by POSITION within the segment:
- * - 1st <sup>{{...}}</sup> -> cf.references[0].referenceNote -> global index
- * - 2nd -> cf.references[1] -> ...
+ * Phase 1 (name-agnostic, robust):
+ * Resolve <sup>{{anything}}</sup> occurrences ONLY when the <sup> inner content is exactly
+ * a handlebars token: {{r1}} or {{{r1}}}.
  *
- * This avoids depending on r1/r2/refWrapper/refCount being evaluated in-scope.
+ * Mapping is BY POSITION within the segment:
+ * - 1st such <sup>...</sup> -> cf.references[0].referenceNote -> global index
+ * - 2nd -> cf.references[1] -> ...
  */
 function resolveSupHandlebarsByPosition({ html, notes, dynState, diag, segmentKey }) {
   if (!html || typeof html !== "string") return { out: html, mapping: [] };
   if (!dynState) return { out: html, mapping: [] };
 
-  // Match <sup ...>{{token}}</sup> or <sup ...>{{{token}}}</sup>
-  // Keep conservative: only "simple identifier" inside handlebars (no dots)
-  const re =
-    /<sup([^>]*)>\s*\{\{\{?\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}?\}\}\s*<\/sup>/gi;
+  const supRe = /<sup([^>]*)>([\s\S]*?)<\/sup>/gi;
 
   let localIdx = 0;
   const mapping = [];
 
-  const out = html.replace(re, (m, supAttrs, tokenName) => {
+  const out = html.replace(supRe, (full, attrs, innerRaw) => {
+    const inner = String(innerRaw ?? "").trim();
+
+    // Match EXACT token inner: {{r1}} or {{{r1}}}
+    let m = inner.match(/^\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}$/);
+    if (!m) m = inner.match(/^\{\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}\}$/);
+    if (!m) return full;
+
+    const tokenName = m[1] || "";
     localIdx += 1;
+
     dynState.supHandlebarsSeen += 1;
     dynState.placeholdersSeen += 1;
 
@@ -720,12 +727,11 @@ function resolveSupHandlebarsByPosition({ html, notes, dynState, diag, segmentKe
           referencesLength: notes.length,
         });
       }
-      // leave original
-      return m;
+      return full; // leave unchanged
     }
 
     const assigned = assignGlobalRefNumber(dynState, note);
-    if (!assigned) return m;
+    if (!assigned) return full;
 
     dynState.supHandlebarsReplaced += 1;
     dynState.replacementsMade += 1;
@@ -739,7 +745,8 @@ function resolveSupHandlebarsByPosition({ html, notes, dynState, diag, segmentKe
       wasNew: assigned.wasNew,
     });
 
-    return `<sup${supAttrs}>${assigned.globalNum}</sup>`;
+    // Preserve attributes
+    return `<sup${attrs}>${assigned.globalNum}</sup>`;
   });
 
   return { out, mapping };
@@ -847,7 +854,7 @@ function resolveDynamicReferencesInSegment({ html, cfCtx, dynState, diag, segmen
   const notes = extractReferenceNotesFromCf(cfCtx);
   const combinedMapping = [];
 
-  // Phase 1: <sup>{{token}}</sup> by position
+  // Phase 1: <sup>{{token}}</sup> by position (robust)
   const sup = resolveSupHandlebarsByPosition({ html, notes, dynState, diag, segmentKey });
   let out = sup.out;
   combinedMapping.push(...sup.mapping);
@@ -1303,7 +1310,6 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
       diag.dynamicReferences.totalUniqueReferences = dynState.orderedNotes.length;
       diag.dynamicReferences.orderedReferenceNotes = dynState.orderedNotes.slice(0, 200);
 
-      // add additional counters
       diag.dynamicReferences.supHandlebarsSeen = dynState.supHandlebarsSeen;
       diag.dynamicReferences.supHandlebarsReplaced = dynState.supHandlebarsReplaced;
       diag.dynamicReferences.wrapperPlaceholdersSeen = dynState.wrapperPlaceholdersSeen;
