@@ -3,27 +3,30 @@
 */
 
 import React from 'react'
-import { Provider, defaultTheme, Grid, View } from '@adobe/react-spectrum'
+import { Provider, defaultTheme, View } from '@adobe/react-spectrum'
 import ErrorBoundary from 'react-error-boundary'
-import { HashRouter as Router, Routes, Route } from 'react-router-dom'
+import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { ImsContext } from "../context/ImsContext";
-import { GqlDemo } from "../screens/GqlDemo";
-import { VfDemo } from "../screens/VfDemo";
-import { AjoCreateTemplate } from '../screens/AjoCreateTemplate';
+
+import { PrbSelect } from "../screens/PrbSelect";
+import { TemplateSelect } from "../screens/TemplateSelect";
 import { TemplateStudio } from "../screens/TemplateStudio";
 
-
 function App (props) {
+  // eslint-disable-next-line no-console
   console.log('runtime object:', props.runtime)
+  // eslint-disable-next-line no-console
   console.log('ims object:', props.ims)
 
   // use exc runtime event handlers
   // respond to configuration change events (e.g. user switches org)
   props.runtime.on('configuration', ({ imsOrg, imsToken, locale }) => {
+    // eslint-disable-next-line no-console
     console.log('configuration change', { imsOrg, imsToken, locale })
   })
   // respond to history change events
   props.runtime.on('history', ({ type, path }) => {
+    // eslint-disable-next-line no-console
     console.log('history change', { type, path })
   })
 
@@ -33,7 +36,13 @@ function App (props) {
         <Provider theme={defaultTheme} colorScheme={'light'}>
           <ImsContext.Provider value={props.ims}>
             <View padding="size-200">
-              <TemplateStudio />
+              <Routes>
+                <Route path="/" element={<Navigate to="/prb" replace />} />
+                <Route path="/prb" element={<PrbSelect />} />
+                <Route path="/prb/:prbId/templates" element={<TemplateSelect />} />
+                <Route path="/prb/:prbId/templates/:templateId/studio" element={<TemplateStudio />} />
+                <Route path="*" element={<Navigate to="/prb" replace />} />
+              </Routes>
             </View>
           </ImsContext.Provider>
         </Provider>

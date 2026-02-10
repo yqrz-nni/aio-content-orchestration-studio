@@ -1,6 +1,16 @@
 // File: src/dx-excshell-1/web-src/src/screens/TemplateStudio.jsx
+//
+// NOTE:
+// - Preserves your existing render pipeline, diagnostics, and sequential cf rebinding model.
+// - Adds routing support via prbId/templateId params.
+// - Implements “Add pattern” (VF-first) + inline “Bind content” per module,
+//   without stripping out your existing left/right libraries or diagnostics tabs.
+//
+// IMPORTANT: You will likely want to create a dedicated action to LIST templates by PRB.
+// This file does not require that action.
 
 import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Heading,
   View,
@@ -18,6 +28,10 @@ import {
   ComboBox,
   StatusLight,
   Switch,
+  DialogTrigger,
+  Dialog,
+  Content,
+  ButtonGroup,
 } from "@adobe/react-spectrum";
 
 import actions from "../config.json";
@@ -50,8 +64,6 @@ function applyPrbToTemplateHtml(html, { prbCfId, repoId }) {
   const re = /{{\s*fragment\s+id=(['"])aem:[^'"]+\?repoId=[^'"]+\1\s+result=(['"])prbProperties\2\s*}}/g;
 
   if (!re.test(html)) {
-    // Keep this one warning: it indicates unsafe auto-mutation.
-    // (But don't flood logs beyond this.)
     // eslint-disable-next-line no-console
     console.warn("Baseline HTML did not contain prbProperties binding; refusing to inject automatically.");
     return html;
@@ -61,12 +73,17 @@ function applyPrbToTemplateHtml(html, { prbCfId, repoId }) {
 }
 
 // v1 module insertion: append module block before the closing marker
-function appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars = {} }) {
+function appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars = {}, moduleId = null }) {
   const varAttrs = Object.entries(vars)
     .map(([k, v]) => `${k}='${String(v ?? "")}'`)
     .join(" ");
 
+  // Optional marker comments (do not change your sequential cf namespace model)
+  const openMarker = moduleId ? `<!-- ts:module id="${moduleId}" -->` : "";
+  const closeMarker = moduleId ? `<!-- ts:module-end id="${moduleId}" -->` : "";
+
   const insertion = `
+  ${openMarker}
   <div class="acr-structure" data-structure-id="1-1-column" data-structure-name="richtext.structure_1_1_column">
     <table class="structure__table" align="center" cellpadding="0" cellspacing="0" border="0" width="640">
       <tbody>
@@ -83,6 +100,7 @@ function appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars = {} }) 
       </tbody>
     </table>
   </div>
+  ${closeMarker}
   `;
 
   const marker = "</div></body></html>";
@@ -90,11 +108,94 @@ function appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars = {} }) 
   return html + insertion;
 }
 
+// Append a pattern (VF) even before content is bound.
+// This preserves the “see layout first” workflow.
+function appendPatternOnlyToTemplateHtml(html, { vfId, moduleId = null }) {
+  const openMarker = moduleId ? `<!-- ts:module id="${moduleId}" -->` : "";
+  const closeMarker = moduleId ? `<!-- ts:module-end id="${moduleId}" -->` : "";
+
+  const insertion = `
+  ${openMarker}
+  <div class="acr-structure" data-structure-id="1-1-column" data-structure-name="richtext.structure_1_1_column">
+    <table class="structure__table" align="center" cellpadding="0" cellspacing="0" border="0" width="640">
+      <tbody>
+        <tr role="presentation">
+          <th class="colspan1">
+            {{ fragment id="ajo:${vfId}" mode="inline" }}
+          </th>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  ${closeMarker}
+  `;
+
+  const marker = "</div></body></html>";
+  if (html.includes(marker)) return html.replace(marker, `${insertion}${marker}`);
+  return html + insertion;
+}
+
+// Bind content into an existing module block (identified by marker comments).
+// If markers aren’t found, we fall back to appending a full module (safe but may duplicate layout).
+function bindContentInModuleHtml(html, { moduleId, vfId, aemCfId, repoId, vars = {} }) {
+  if (!html || !moduleId) {
+    return appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars, moduleId: moduleId || null });
+  }
+
+  const open = `<!-- ts:module id="${moduleId}" -->`;
+  const close = `<!-- ts:module-end id="${moduleId}" -->`;
+
+  const start = html.indexOf(open);
+  const end = html.indexOf(close);
+
+  if (start < 0 || end < 0 || end <= start) {
+    // markers missing; safest fallback
+    return appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars, moduleId });
+  }
+
+  const block = html.slice(start, end + close.length);
+
+  // If block already has a cf binding, replace it; else insert before VF include.
+  const varAttrs = Object.entries(vars)
+    .map(([k, v]) => `${k}='${String(v ?? "")}'`)
+    .join(" ");
+
+  const cfTag = `{{fragment id='aem:${aemCfId}?repoId=${repoId}' result='cf' ${varAttrs} r1=r1 r2=r2 r3=r3 r4=r4 r5=r5 r6=r6 r7=r7 r8=r8 r9=r9 r10=r10}}`;
+
+  const cfRe = /{{\s*fragment\b[^}]*\bid=(['"])aem:[^'"]+\?repoId=[^'"]+\1[^}]*\bresult=(['"])cf\2[^}]*}}/gim;
+
+  let nextBlock = block;
+  if (cfRe.test(block)) {
+    nextBlock = block.replace(cfRe, cfTag);
+  } else {
+    // Insert a basic text-container wrapper right before the VF include.
+    const vfIncludeRe = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:[^'"]+\1[^}]*}}/i;
+    if (vfIncludeRe.test(block)) {
+      const insert = `
+            <div class="acr-fragment acr-component" data-component-id="text" data-contenteditable="false">
+              <div class="text-container" data-contenteditable="true">
+                <p>${cfTag}</p>
+              </div>
+            </div>
+      `;
+      nextBlock = block.replace(vfIncludeRe, `${insert}\n            $&`);
+    } else {
+      // worst case fallback: append full module
+      return appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars, moduleId });
+    }
+  }
+
+  return html.slice(0, start) + nextBlock + html.slice(end + close.length);
+}
+
 /**
  * Hydrate state from an existing AJO template HTML.
  * Best-effort parsing:
  *  - PRB: result='prbProperties' binding => selectedPrbId
  *  - Modules: pairs (aem result='cf') with nearest subsequent (ajo fragment) in order
+ *
+ * ADDITIVE: if ts:module markers exist, we also capture VF-only modules (contentId=null).
+ * This does NOT change your sequential cf model; it just prevents “unbound patterns” from disappearing on reload.
  */
 function hydrateFromHtml(html) {
   const out = {
@@ -173,6 +274,39 @@ function hydrateFromHtml(html) {
       contentId: cf.contentId,
       vars: cf.vars || {},
     });
+  }
+
+  // --- ADDITIVE: parse ts:module markers to capture VF-only modules (and prefer stable module ids) ---
+  // If you have markers, they represent the user’s composition intent.
+  const markerRe = /<!--\s*ts:module\s+id="([^"]+)"\s*-->([\s\S]*?)<!--\s*ts:module-end\s+id="\1"\s*-->/gim;
+  const marked = [];
+  let mm;
+  while ((mm = markerRe.exec(html)) !== null) {
+    const moduleId = mm[1];
+    const block = mm[2] || "";
+
+    const vfMatch = block.match(/{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:([^'"]+)\1[^}]*}}/i);
+    const vfId = vfMatch && vfMatch[2] ? vfMatch[2] : null;
+
+    const cfMatch = block.match(/{{\s*fragment\b[^}]*\bid\s*=\s*(['"])aem:([^'"]+)\1[^}]*\bresult\s*=\s*(['"])cf\3[^}]*}}/i);
+    const contentId = cfMatch && cfMatch[2] ? (cfMatch[2].split("?")[0] || "").trim() : null;
+
+    // If we found a VF marker block, record it in order of appearance
+    if (vfId) {
+      marked.push({
+        moduleId,
+        vfId,
+        contentId: contentId || null,
+        vars: {},
+      });
+    }
+  }
+
+  if (marked.length) {
+    // Merge: prefer marked order and IDs; then append any legacy hydrated modules not represented.
+    const seen = new Set(marked.map((m) => m.moduleId));
+    const legacy = out.modules.filter((m) => !seen.has(m.moduleId));
+    out.modules = [...marked, ...legacy];
   }
 
   return out;
@@ -374,7 +508,6 @@ function injectPreviewBridge(html, expectedVfIds = []) {
     }
     post("vf-dom-check", { found: found, total: checks.length });
 
-    // Generic VF presence check (even when you don’t know IDs)
     var any = Array.prototype.slice.call(document.querySelectorAll('[data-fragment-id^="ajo:"]')).map(function(n){ return n.getAttribute("data-fragment-id"); });
     post("vf-dom-any", { count: any.length, ids: any.slice(0, 15) });
   });
@@ -456,20 +589,106 @@ function extractAllAjoVfIdsFromHtml(html) {
   if (!html || typeof html !== "string") return [];
   const ids = new Set();
 
-  // Matches {{ fragment id="ajo:<uuid>" ... }} and {{fragment id='ajo:<uuid>' ...}}
   const re = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:([^'"]+)\1[^}]*}}/gim;
   let m;
   while ((m = re.exec(html)) !== null) {
     if (m[2]) ids.add(m[2]);
   }
 
-  // If already stitched: data-fragment-id="ajo:<id>"
   const re2 = /data-fragment-id\s*=\s*(['"])ajo:([^'"]+)\1/gim;
   while ((m = re2.exec(html)) !== null) {
     if (m[2]) ids.add(m[2]);
   }
 
   return [...ids];
+}
+
+/* =============================================================================
+ * UI helpers (Pattern picker + Module cards)
+ * ============================================================================= */
+
+function vfNameById(vfItems, vfId) {
+  const hit = (vfItems || []).find((v) => v?.id === vfId);
+  return hit?.name || vfId || "(unknown VF)";
+}
+
+function PatternPickerDialog({ vfItems, onSelect }) {
+  const [selected, setSelected] = useState(null);
+
+  return (
+    <Dialog>
+      <Heading>Add pattern</Heading>
+      <Content>
+        <Text UNSAFE_style={{ opacity: 0.85 }}>
+          Choose a Visual Fragment pattern. You can bind content after it’s added.
+        </Text>
+        <Divider size="S" marginY="size-150" />
+        <ListView
+          aria-label="Patterns"
+          selectionMode="single"
+          selectedKeys={selected ? [selected] : []}
+          onSelectionChange={(keys) => setSelected([...keys][0])}
+          height="size-3600"
+        >
+          {(vfItems || []).map((vf) => (
+            <Item key={vf.id}>{vf.name}</Item>
+          ))}
+        </ListView>
+      </Content>
+      <ButtonGroup>
+        <Button variant="secondary">Cancel</Button>
+        <Button variant="cta" isDisabled={!selected} onPress={() => selected && onSelect(selected)}>
+          Add
+        </Button>
+      </ButtonGroup>
+    </Dialog>
+  );
+}
+
+function ModuleCard({ module, index, vfItems, contentOptions, onBindContent, onRemove }) {
+  const name = vfNameById(vfItems, module?.vfId);
+
+  const status =
+    module?.contentId ? <StatusLight variant="positive">Bound</StatusLight> : <StatusLight variant="negative">Unbound</StatusLight>;
+
+  return (
+    <View
+      borderWidth="thin"
+      borderColor="light"
+      borderRadius="small"
+      padding="size-150"
+      marginBottom="size-150"
+      backgroundColor="gray-50"
+    >
+      <Flex justifyContent="space-between" alignItems="center" gap="size-200">
+        <Text UNSAFE_style={{ fontWeight: 600 }}>
+          {index + 1}. {name}
+        </Text>
+        {status}
+      </Flex>
+
+      <Divider size="S" marginY="size-100" />
+
+      <ComboBox
+        label="Bind Content Fragment"
+        placeholder="Select content…"
+        selectedKey={module?.contentId || null}
+        onSelectionChange={(key) => onBindContent(module.moduleId, key)}
+        width="size-4600"
+        menuTrigger="focus"
+      >
+        {(contentOptions || []).map((cf) => (
+          <Item key={cf.id}>{cf.label}</Item>
+        ))}
+      </ComboBox>
+
+      <Flex justifyContent="end" marginTop="size-100">
+        <Button variant="secondary" onPress={() => onRemove(module.moduleId)}>
+          Remove
+        </Button>
+      </Flex>
+    </View>
+  );
 }
 
 /* =============================================================================
@@ -480,6 +699,10 @@ export function TemplateStudio() {
   const ims = useContext(ImsContext);
   const headers = useMemo(() => buildHeaders(ims), [ims]);
 
+  const nav = useNavigate();
+  const { prbId, templateId } = useParams();
+  const [searchParams] = useSearchParams();
+
   // TODO: make repoId dynamic from env/selection
   const repoId = "author-p131724-e1294209.adobeaemcloud.com";
 
@@ -488,20 +711,19 @@ export function TemplateStudio() {
 
   const [lastRenderResult, setLastRenderResult] = useState(null);
 
-  // NEW (diagnostics-only): persist last best + sanitized HTML so Diagnostics tab can recompute
   const [lastBestHtml, setLastBestHtml] = useState("");
   const [lastSanitizedHtml, setLastSanitizedHtml] = useState("");
 
-  const [templateId, setTemplateId] = useState(null);
   const [templateName, setTemplateName] = useState("Baseline Clone");
 
   const [prbOptions, setPrbOptions] = useState([]);
-  const [selectedPrbId, setSelectedPrbId] = useState(null);
+  const [selectedPrbId, setSelectedPrbId] = useState(prbId || null);
   const [selectedPrb, setSelectedPrb] = useState(null);
 
   const [vfItems, setVfItems] = useState([]);
   const [contentOptions, setContentOptions] = useState([]);
 
+  // Legacy selections (kept, but no longer required for “Add pattern”)
   const [selectedVfId, setSelectedVfId] = useState(null);
   const [selectedContentId, setSelectedContentId] = useState(null);
 
@@ -516,15 +738,15 @@ export function TemplateStudio() {
   // iframe runtime messages
   const [iframeMsgs, setIframeMsgs] = useState([]);
 
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(searchParams.get("advanced") === "1");
   const [bindingStreamText, setBindingStreamText] = useState("[]");
   const [cacheText, setCacheText] = useState("{}");
 
   // Diagnostics gating
-  const [enableIframeBridge, setEnableIframeBridge] = useState(false);
+  const [enableIframeBridge, setEnableIframeBridge] = useState(searchParams.get("bridge") === "1");
 
-  // Tabs (needed to gate diagnostics + keep Preview clean)
-  const [activeTab, setActiveTab] = useState("preview");
+  // Tabs
+  const [activeTab, setActiveTab] = useState(searchParams.get("tab") || "preview");
   const enableDiagnostics = activeTab === "diagnostics";
 
   const bindingStream = useMemo(() => {
@@ -537,8 +759,6 @@ export function TemplateStudio() {
     return v && typeof v === "object" ? v : {};
   }, [cacheText]);
 
-  // Track ALL AJO VFs present in canonical HTML (including “standalone” VFs like footer),
-  // not just those inferred from modules[].
   const expectedVfIds = useMemo(() => {
     const fromModules = [];
     for (const m of Array.isArray(modules) ? modules : []) if (m?.vfId) fromModules.push(m.vfId);
@@ -548,7 +768,6 @@ export function TemplateStudio() {
     return [...new Set([...fromModules, ...fromCanonical])];
   }, [modules, canonicalHtml]);
 
-  // VF survival diagnostics (canonical → render result → sanitizer)
   const [vfDiag, setVfDiag] = useState({
     expected: [],
     best: [],
@@ -572,7 +791,6 @@ export function TemplateStudio() {
     };
   }, [vfDiag]);
 
-  // NEW: pluck server preview diagnostics (renderTokens) from the response
   const serverPreviewDiagnostics = useMemo(() => {
     const r = lastRenderResult || {};
     return r.previewDiagnostics || r.diagnostics || r.diagnostic || null;
@@ -621,77 +839,7 @@ export function TemplateStudio() {
     return () => window.removeEventListener("message", onMessage);
   }, []);
 
-  // NEW (diagnostics-only): when user switches to Diagnostics tab, recompute diagnostics from last render output
-  useEffect(() => {
-    if (activeTab !== "diagnostics") return;
-
-    if (!canonicalHtml || !lastBestHtml || !lastSanitizedHtml) return;
-
-    setVfDiag({
-      expected: extractAllAjoVfIdsFromHtml(canonicalHtml),
-      best: extractAllAjoVfIdsFromHtml(lastBestHtml),
-      sanitized: extractAllAjoVfIdsFromHtml(lastSanitizedHtml),
-    });
-
-    const warnings = computePreviewWarnings({
-      canonicalHtml,
-      bestHtml: lastBestHtml,
-      sanitizedHtml: lastSanitizedHtml,
-      expectedVfIds,
-    });
-    setPreviewWarnings(warnings);
-  }, [activeTab, canonicalHtml, lastBestHtml, lastSanitizedHtml, expectedVfIds]);
-
-  // Actions
-
-  async function createTemplateFromBaseline() {
-    try {
-      const res = await actionWebInvoke(actions["ajo-template-create"], headers, {
-        name: templateName,
-        description: "Created from baseline via App Builder",
-        createFromBaseline: true,
-        prbNumber: selectedPrb?.raw?.prbNumber || null,
-        prbName: selectedPrb?.raw?.name || null,
-      });
-
-      const id = res?.templateId;
-      setTemplateId(id);
-
-      if (!id) {
-        // eslint-disable-next-line no-console
-        console.warn("Template created but no templateId returned:", res);
-        return;
-      }
-
-      const getRes = await actionWebInvoke(actions["ajo-template-get"], headers, { templateId: id });
-      const html = getRes?.htmlBody;
-      if (!html) {
-        // eslint-disable-next-line no-console
-        console.warn("Template fetched but no htmlBody found:", getRes);
-        return;
-      }
-
-      const hydrated = hydrateFromHtml(html);
-      setCanonicalHtml(html);
-
-      if (hydrated?.prbCfId) {
-        setSelectedPrbId(hydrated.prbCfId);
-        const prbObj = prbOptions.find((o) => o.id === hydrated.prbCfId) || null;
-        setSelectedPrb(prbObj);
-      }
-
-      setModules(Array.isArray(hydrated?.modules) ? hydrated.modules : []);
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.error("Create-from-baseline failed:", e);
-    }
-  }
-
-  async function loadVfs() {
-    const res = await actionWebInvoke(actions["ajo-vf-demo"], headers);
-    setVfItems(res?.fragments || []);
-  }
-
+  // Load PRB list so we can show labels, and resolve selectedPrb
   async function loadPrbList() {
     const res = await actionWebInvoke(actions["aem-prb-list"]);
     const items = res?.data?.prbPropertiesList?.items || [];
@@ -707,6 +855,56 @@ export function TemplateStudio() {
         };
       })
     );
+  }
+
+  // Load template HTML by templateId on entry (deep-link safe)
+  async function loadTemplateById(tid) {
+    if (!tid) return;
+    const getRes = await actionWebInvoke(actions["ajo-template-get"], headers, { templateId: tid });
+    const html = getRes?.htmlBody;
+    if (!html) {
+      // eslint-disable-next-line no-console
+      console.warn("Template fetched but no htmlBody found:", getRes);
+      return;
+    }
+
+    const hydrated = hydrateFromHtml(html);
+    setCanonicalHtml(html);
+
+    if (hydrated?.prbCfId) {
+      setSelectedPrbId(hydrated.prbCfId);
+      const prbObj = prbOptions.find((o) => o.id === hydrated.prbCfId) || null;
+      setSelectedPrb(prbObj);
+    } else if (prbId) {
+      setSelectedPrbId(prbId);
+    }
+
+    setModules(Array.isArray(hydrated?.modules) ? hydrated.modules : []);
+  }
+
+  useEffect(() => {
+    // Deep-link entry: ensure we have PRB list + template loaded
+    loadPrbList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!templateId) return;
+    loadTemplateById(templateId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateId]);
+
+  // Resolve selectedPrb once options are loaded
+  useEffect(() => {
+    if (!selectedPrbId) return;
+    const prbObj = prbOptions.find((o) => o.id === selectedPrbId) || null;
+    setSelectedPrb(prbObj);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prbOptions, selectedPrbId]);
+
+  async function loadVfs() {
+    const res = await actionWebInvoke(actions["ajo-vf-demo"], headers);
+    setVfItems(res?.fragments || []);
   }
 
   async function loadContentList() {
@@ -727,11 +925,11 @@ export function TemplateStudio() {
     }
   }
 
-  async function setPrb(prbId) {
+  async function setPrb(prbIdNext) {
     if (isUpdatingPrb) return;
 
-    setSelectedPrbId(prbId);
-    const prbObj = prbOptions.find((o) => o.id === prbId) || null;
+    setSelectedPrbId(prbIdNext);
+    const prbObj = prbOptions.find((o) => o.id === prbIdNext) || null;
     setSelectedPrb(prbObj);
 
     if (!templateId || !prbObj || !canonicalHtml) return;
@@ -764,9 +962,10 @@ export function TemplateStudio() {
     });
   }
 
-  function addModule() {
+  // NEW UX: Add pattern first (VF only), then bind content inline.
+  function addPattern(vfId) {
     if (!templateId) return;
-    if (!selectedVfId || !selectedContentId) return;
+    if (!vfId) return;
     if (!canonicalHtml) return;
 
     enqueue(async () => {
@@ -775,22 +974,49 @@ export function TemplateStudio() {
         ...modules,
         {
           moduleId,
-          vfId: selectedVfId,
-          contentId: selectedContentId,
+          vfId,
+          contentId: null,
           vars: { firstName: "" },
         },
       ];
       setModules(nextModules);
 
-      const nextHtml = appendModuleToTemplateHtml(canonicalHtml, {
-        vfId: selectedVfId,
-        aemCfId: selectedContentId,
-        repoId,
-        vars: { firstName: "" },
+      const nextHtml = appendPatternOnlyToTemplateHtml(canonicalHtml, {
+        vfId,
+        moduleId,
       });
 
       setCanonicalHtml(nextHtml);
     });
+  }
+
+  function bindContent(moduleId, contentId) {
+    if (!templateId) return;
+    if (!moduleId || !contentId) return;
+    if (!canonicalHtml) return;
+
+    const m = modules.find((x) => x.moduleId === moduleId);
+    if (!m?.vfId) return;
+
+    enqueue(async () => {
+      const nextModules = modules.map((x) => (x.moduleId === moduleId ? { ...x, contentId } : x));
+      setModules(nextModules);
+
+      const nextHtml = bindContentInModuleHtml(canonicalHtml, {
+        moduleId,
+        vfId: m.vfId,
+        aemCfId: contentId,
+        repoId,
+        vars: m.vars || { firstName: "" },
+      });
+
+      setCanonicalHtml(nextHtml);
+    });
+  }
+
+  function removeModule(moduleId) {
+    // UI-only for now (canonical HTML removal can be added later using markers)
+    setModules((prev) => prev.filter((m) => m.moduleId !== moduleId));
   }
 
   async function renderPreview() {
@@ -830,14 +1056,11 @@ export function TemplateStudio() {
         return;
       }
 
-      // Preview is browser-based, so we strip ACR blocks + Liquid noise.
       const sanitized = stripAjoSyntax(best);
 
-      // NEW (diagnostics-only): persist so Diagnostics tab can recompute without re-rendering
       setLastBestHtml(best);
       setLastSanitizedHtml(sanitized);
 
-      // Diagnostics are computed only when Diagnostics tab is active.
       if (enableDiagnostics) {
         setVfDiag({
           expected: extractAllAjoVfIdsFromHtml(canonicalHtml),
@@ -853,16 +1076,13 @@ export function TemplateStudio() {
         });
         setPreviewWarnings(warnings);
       } else {
-        // Keep Preview clean + avoid extra work
         setVfDiag({ expected: [], best: [], sanitized: [] });
         setPreviewWarnings([]);
       }
 
-      // Inject iframe bridge script only when explicitly enabled
       const bridged = enableIframeBridge ? injectPreviewBridge(sanitized, expectedVfIds) : sanitized;
       setPreviewHtml(bridged);
 
-      // Optional: merge hydrated values into cache editor for reuse
       if (res?.aemCacheKeys && res?.aemPrefetchDataByStreamKey && Array.isArray(res?.aemBindingsEncountered)) {
         const keys = res.aemCacheKeys || [];
         const byStreamKey = res.aemPrefetchDataByStreamKey || {};
@@ -896,7 +1116,6 @@ export function TemplateStudio() {
     }
   }
 
-  // Auto-refresh preview when canonical HTML changes (slight debounce)
   useEffect(() => {
     if (!canonicalHtml) return;
 
@@ -908,13 +1127,25 @@ export function TemplateStudio() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canonicalHtml]);
 
-  // If PRB options load after we already have selectedPrbId, resolve selectedPrb object
+  // Diagnostics recompute on tab switch (unchanged behavior)
   useEffect(() => {
-    if (!selectedPrbId || selectedPrb) return;
-    const prbObj = prbOptions.find((o) => o.id === selectedPrbId) || null;
-    if (prbObj) setSelectedPrb(prbObj);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prbOptions]);
+    if (activeTab !== "diagnostics") return;
+    if (!canonicalHtml || !lastBestHtml || !lastSanitizedHtml) return;
+
+    setVfDiag({
+      expected: extractAllAjoVfIdsFromHtml(canonicalHtml),
+      best: extractAllAjoVfIdsFromHtml(lastBestHtml),
+      sanitized: extractAllAjoVfIdsFromHtml(lastSanitizedHtml),
+    });
+
+    const warnings = computePreviewWarnings({
+      canonicalHtml,
+      bestHtml: lastBestHtml,
+      sanitizedHtml: lastSanitizedHtml,
+      expectedVfIds,
+    });
+    setPreviewWarnings(warnings);
+  }, [activeTab, canonicalHtml, lastBestHtml, lastSanitizedHtml, expectedVfIds]);
 
   const prbStatus = selectedPrbId ? "configured" : "missing";
 
@@ -923,7 +1154,6 @@ export function TemplateStudio() {
   const aemPrefetch = Array.isArray(lastRenderResult?.aemPrefetch) ? lastRenderResult.aemPrefetch : [];
   const perf = lastRenderResult?.perf || null;
 
-  // Stitch/VF diagnostics from server action (if present)
   const serverVfDiag = lastRenderResult?.vfDiag || null;
   const stitchReport = lastRenderResult?.stitchReport || null;
   const fragmentsResolvedAll = Array.isArray(lastRenderResult?.fragmentsResolvedAll)
@@ -934,15 +1164,31 @@ export function TemplateStudio() {
 
   return (
     <View>
-      <Heading level={2}>Template Studio</Heading>
+      <Flex justifyContent="space-between" alignItems="center" wrap>
+        <View>
+          <Heading level={2}>Template Studio</Heading>
+          <Text UNSAFE_style={{ opacity: 0.85 }}>
+            Step 3 of 3 — Compose deterministically: pick patterns, then bind data.
+          </Text>
+          <Text UNSAFE_style={{ opacity: 0.75 }}>
+            PRB: {selectedPrb?.label || selectedPrbId || prbId || "(none)"} • templateId: {templateId || "(none)"}
+          </Text>
+        </View>
+
+        <Flex gap="size-100">
+          <Button variant="secondary" onPress={() => nav(`/prb/${encodeURIComponent(prbId || selectedPrbId || "")}/templates`)}>
+            Back to templates
+          </Button>
+          <Button variant="secondary" onPress={() => nav("/prb")}>Change PRB</Button>
+        </Flex>
+      </Flex>
+
+      <Divider size="S" marginY="size-200" />
 
       {/* Global config bar */}
       <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
         <Flex gap="size-200" alignItems="end" wrap>
           <TextField label="Template name" value={templateName} onChange={setTemplateName} width="size-3600" />
-          <Button variant="cta" onPress={createTemplateFromBaseline}>
-            Create from baseline
-          </Button>
 
           <Divider orientation="vertical" size="S" />
 
@@ -961,9 +1207,6 @@ export function TemplateStudio() {
                   <Item key={o.id}>{o.label}</Item>
                 ))}
               </ComboBox>
-              <Button variant="secondary" onPress={loadPrbList}>
-                Load PRBs
-              </Button>
 
               {prbStatus === "configured" ? (
                 <StatusLight variant="positive">PRB set</StatusLight>
@@ -993,10 +1236,6 @@ export function TemplateStudio() {
             {showAdvanced ? "Hide advanced" : "Show advanced"}
           </Button>
         </Flex>
-
-        <View marginTop="size-150">
-          <Text>templateId: {templateId || "(not created yet)"}</Text>
-        </View>
 
         {aemWarnings.length ? (
           <View marginTop="size-150">
@@ -1046,7 +1285,7 @@ export function TemplateStudio() {
 
       {/* Main grid */}
       <Grid columns={["1fr", "2fr", "1fr"]} gap="size-200" height="78vh">
-        {/* Left: VFs */}
+        {/* Left: VF library (still useful as a reference) */}
         <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
           <Flex justifyContent="space-between" alignItems="center">
             <Heading level={4}>Visual Fragments</Heading>
@@ -1066,19 +1305,42 @@ export function TemplateStudio() {
           </ListView>
         </View>
 
-        {/* Center: Canvas + Preview */}
+        {/* Center: Composition timeline + Preview */}
         <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
           <Flex justifyContent="space-between" alignItems="center">
-            <Heading level={4}>Canvas</Heading>
-            <Button variant="cta" onPress={addModule} isDisabled={!templateId || !selectedVfId || !selectedContentId}>
-              Add module
-            </Button>
+            <Heading level={4}>Composition</Heading>
+
+            <DialogTrigger>
+              <Button variant="cta" isDisabled={!templateId || !canonicalHtml}>
+                Add pattern
+              </Button>
+              <PatternPickerDialog vfItems={vfItems} onSelect={addPattern} />
+            </DialogTrigger>
           </Flex>
 
           <Text marginTop="size-100" UNSAFE_style={{ opacity: 0.8 }}>
-            Tip: PRB is global; Content CF is per-module. Modules are tracked separately from HTML (better for
-            reorder/replace later).
+            Add a pattern first, then bind content inline. This keeps composition deterministic (pattern + data).
           </Text>
+
+          <Divider size="S" marginY="size-200" />
+
+          <View height="size-2000" overflow="auto">
+            {!modules.length ? (
+              <Text UNSAFE_style={{ opacity: 0.85 }}>No modules yet. Add a pattern to start.</Text>
+            ) : (
+              modules.map((m, idx) => (
+                <ModuleCard
+                  key={m.moduleId}
+                  module={m}
+                  index={idx}
+                  vfItems={vfItems}
+                  contentOptions={contentOptions}
+                  onBindContent={bindContent}
+                  onRemove={removeModule}
+                />
+              ))
+            )}
+          </View>
 
           <Divider size="S" marginY="size-200" />
 
@@ -1093,7 +1355,7 @@ export function TemplateStudio() {
 
             <TabPanels>
               <Item key="preview">
-                <View borderWidth="thin" borderColor="light" borderRadius="small" height="62vh" padding="size-100">
+                <View borderWidth="thin" borderColor="light" borderRadius="small" height="42vh" padding="size-100">
                   {renderError ? (
                     <View marginBottom="size-100">
                       <StatusLight variant="negative">{renderError}</StatusLight>
@@ -1110,14 +1372,15 @@ export function TemplateStudio() {
               </Item>
 
               <Item key="modules">
-                <View height="62vh" overflow="auto">
-                  {modules.length === 0 ? (
+                <View height="42vh" overflow="auto">
+                  {!modules.length ? (
                     <Text>No modules yet.</Text>
                   ) : (
                     modules.map((m, idx) => (
                       <View key={m.moduleId} marginBottom="size-150">
                         <Text>
-                          {idx + 1}. VF: {m.vfId || "(not paired)"} | CF: {m.contentId}
+                          {idx + 1}. VF: {m.vfId || "(not paired)"} | CF: {m.contentId || "(unbound)"} | moduleId:{" "}
+                          {m.moduleId}
                         </Text>
                       </View>
                     ))
@@ -1131,7 +1394,7 @@ export function TemplateStudio() {
                   borderColor="light"
                   borderRadius="small"
                   padding="size-200"
-                  height="62vh"
+                  height="42vh"
                   overflow="auto"
                 >
                   <pre style={{ whiteSpace: "pre-wrap" }}>{canonicalHtml || "(empty)"}</pre>
@@ -1139,7 +1402,7 @@ export function TemplateStudio() {
               </Item>
 
               <Item key="aem">
-                <View height="62vh" overflow="auto">
+                <View height="42vh" overflow="auto">
                   <View marginBottom="size-150">
                     <Heading level={5}>Render diagnostics</Heading>
                     {perf ? (
@@ -1201,11 +1464,11 @@ export function TemplateStudio() {
               </Item>
 
               <Item key="diagnostics">
-                <View height="62vh" overflow="auto">
+                <View height="42vh" overflow="auto">
                   <View marginBottom="size-150">
                     <Heading level={5}>Runtime diagnostics</Heading>
                     <Text UNSAFE_style={{ opacity: 0.85 }}>
-                      Use this tab to inspect iframe messages, DOM checks, and server diagnostics without spamming console logs.
+                      Inspect iframe messages, DOM checks, and server diagnostics without spamming console logs.
                     </Text>
                   </View>
 
@@ -1237,12 +1500,11 @@ export function TemplateStudio() {
                     </Flex>
                   </View>
 
-                  {/* Iframe messages */}
                   <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
                     <Heading level={5}>Iframe messages</Heading>
                     <Divider size="S" marginY="size-100" />
                     {!iframeMsgs.length ? (
-                      <Text UNSAFE_style={{ opacity: 0.85 }}>No iframe messages yet. Enable the bridge and render preview.</Text>
+                      <Text UNSAFE_style={{ opacity: 0.85 }}>No iframe messages yet. Enable bridge and render preview.</Text>
                     ) : (
                       iframeMsgs.slice(-80).map((m, i) => (
                         <View key={`im-${i}`} marginBottom="size-50">
@@ -1254,7 +1516,6 @@ export function TemplateStudio() {
                     )}
                   </View>
 
-                  {/* VF survival diagnostics */}
                   <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
                     <Heading level={5}>VF survival diagnostics</Heading>
 
@@ -1288,7 +1549,6 @@ export function TemplateStudio() {
                     </Text>
                   </View>
 
-                  {/* Server renderTokens diagnostics (NEW: previewDiagnostics) */}
                   <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
                     <Heading level={5}>Server render diagnostics</Heading>
                     <Divider size="S" marginY="size-100" />
@@ -1325,7 +1585,6 @@ export function TemplateStudio() {
                     )}
                   </View>
 
-                  {/* Server stitching diagnostics */}
                   <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
                     <Heading level={5}>Server stitching diagnostics</Heading>
                     <Divider size="S" marginY="size-100" />
@@ -1365,7 +1624,6 @@ export function TemplateStudio() {
                     )}
                   </View>
 
-                  {/* Preview warning list */}
                   <View borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
                     <Heading level={5}>Computed preview warnings</Heading>
                     <Divider size="S" marginY="size-100" />
@@ -1385,7 +1643,7 @@ export function TemplateStudio() {
           </Tabs>
         </View>
 
-        {/* Right: Content CFs */}
+        {/* Right: Content CF library */}
         <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
           <Flex justifyContent="space-between" alignItems="center">
             <Heading level={4}>Content Fragments</Heading>
