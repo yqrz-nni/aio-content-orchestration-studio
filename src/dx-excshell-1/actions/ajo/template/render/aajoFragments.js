@@ -7,6 +7,8 @@ function extractAjoFragmentIds(html) {
   if (!html || typeof html !== "string") return [];
 
   const ids = new Set();
+
+  // Matches: {{ fragment id="ajo:<id>" ... }} (quote required)
   const re = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])(ajo:[^'"]+)\1/gi;
 
   let m;
@@ -15,6 +17,44 @@ function extractAjoFragmentIds(html) {
   }
 
   return [...ids];
+}
+
+/**
+ * Best-effort picker for fragment HTML/content across variant response shapes.
+ * We keep it conservative: only return strings.
+ */
+function pickFragmentContent(data) {
+  const candidates = [
+    // What you already had
+    data?.fragment?.content,
+    data?.fragment?.processedContent,
+    data?.fragment?.expression,
+    data?.fragment?.content?.expression,
+
+    // Common alternates seen in content APIs
+    data?.fragment?.content?.html,
+    data?.fragment?.content?.markup,
+    data?.fragment?.content?.value,
+    data?.fragment?.content?.body,
+
+    // Sometimes channelized content is nested
+    data?.fragment?.channels?.email?.content,
+    data?.fragment?.channels?.email?.processedContent,
+    data?.fragment?.channels?.email?.expression,
+    data?.channels?.email?.content,
+    data?.channels?.email?.processedContent,
+    data?.channels?.email?.expression,
+
+    // Sometimes it's tucked under "content" at root
+    data?.content,
+    data?.processedContent,
+    data?.expression,
+  ];
+
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return c;
+  }
+  return null;
 }
 
 async function fetchFragmentById({ baseUrl, fragmentIdRaw, headers }) {
@@ -40,17 +80,15 @@ async function fetchFragmentById({ baseUrl, fragmentIdRaw, headers }) {
     },
   });
 
+  const data = resp?.data || {};
+  const content = pickFragmentContent(data);
+
   return {
-    id: resp?.data?.id || cleanId,
-    name: resp?.data?.name || null,
-    type: resp?.data?.type || null,
-    channels: resp?.data?.channels || null,
-    content:
-      resp?.data?.fragment?.content ??
-      resp?.data?.fragment?.processedContent ??
-      resp?.data?.fragment?.expression ??
-      resp?.data?.fragment?.content?.expression ??
-      null,
+    id: data?.id || cleanId,
+    name: data?.name || null,
+    type: data?.type || null,
+    channels: data?.channels || null,
+    content, // <- may be null if not found
   };
 }
 
@@ -65,6 +103,7 @@ async function resolveFragmentsFromHtml({ html, params, commonHeaders }) {
     return {
       fragmentsResolved,
       resolutionWarnings: ["AJO_GET_FRAGMENT_URL is missing (cannot resolve fragments)."],
+      fragmentIds: [],
     };
   }
 
@@ -77,11 +116,19 @@ async function resolveFragmentsFromHtml({ html, params, commonHeaders }) {
 
   const results = await mapLimit(toResolve, concurrency, async (fid) => {
     try {
-      return await fetchFragmentById({
+      const frag = await fetchFragmentById({
         baseUrl: params.AJO_GET_FRAGMENT_URL,
         fragmentIdRaw: fid,
         headers: commonHeaders,
       });
+
+      if (!frag?.content) {
+        resolutionWarnings.push(
+          `Resolved fragment ${fid} (${frag?.name || "unnamed"}) but found no usable HTML/content field; leaving tag unstitched.`
+        );
+      }
+
+      return frag;
     } catch (e) {
       resolutionWarnings.push(`Failed to resolve fragment ${fid}: ${e.message}`);
       return null;
@@ -96,33 +143,53 @@ async function resolveFragmentsFromHtml({ html, params, commonHeaders }) {
     );
   }
 
-  return { fragmentsResolved, resolutionWarnings };
+  return { fragmentsResolved, resolutionWarnings, fragmentIds };
 }
 
 /**
  * Replace {{ fragment id="ajo:..." ... }} occurrences with resolved HTML.
- * We replace the entire handlebars tag, not the surrounding comments.
+ * IMPORTANT:
+ * - If a fragment resolves but content is missing, DO NOT replace (avoid deleting the tag).
  */
 function stitchFragmentsIntoHtml(html, fragmentsResolved) {
+  const stitchReport = {
+    stitched: [],
+    skippedMissingContent: [],
+    attempted: [],
+  };
+
   if (!html || !Array.isArray(fragmentsResolved) || fragmentsResolved.length === 0) {
-    return html;
+    return { stitchedHtml: html, stitchReport };
   }
 
   let out = html;
 
   for (const frag of fragmentsResolved) {
     const rawId = `ajo:${frag.id}`;
-    const replacement = frag.content || "";
+    stitchReport.attempted.push(rawId);
+
+    const replacement = typeof frag.content === "string" ? frag.content : null;
+
+    // SAFETY: Never delete the original tag if we don't have replacement content.
+    if (!replacement || !replacement.trim()) {
+      stitchReport.skippedMissingContent.push(rawId);
+      continue;
+    }
 
     const re = new RegExp(
       `{{\\s*fragment\\b[^}]*\\bid\\s*=\\s*(['"])${escapeRegExp(rawId)}\\1[^}]*}}`,
       "gi"
     );
 
+    const before = out;
     out = out.replace(re, replacement);
+
+    if (out !== before) {
+      stitchReport.stitched.push(rawId);
+    }
   }
 
-  return out;
+  return { stitchedHtml: out, stitchReport };
 }
 
 /**
@@ -134,6 +201,12 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
   let currentHtml = html;
   let allWarnings = [];
   const byId = new Map();
+
+  const stitchReportAll = {
+    depth: [],
+    stitchedUnique: [],
+    skippedMissingContentUnique: [],
+  };
 
   for (let depth = 0; depth < maxDepth; depth++) {
     const { fragmentsResolved, resolutionWarnings } = await resolveFragmentsFromHtml({
@@ -150,16 +223,35 @@ async function resolveAndStitchRecursively({ html, params, commonHeaders }) {
       if (f && f.id && !byId.has(f.id)) byId.set(f.id, f);
     }
 
-    const nextHtml = stitchFragmentsIntoHtml(currentHtml, fragmentsResolved);
-    if (nextHtml === currentHtml) break;
+    const stitched = stitchFragmentsIntoHtml(currentHtml, fragmentsResolved);
+    const nextHtml = stitched.stitchedHtml;
 
+    stitchReportAll.depth.push({
+      depth,
+      attempted: stitched.stitchReport.attempted,
+      stitched: stitched.stitchReport.stitched,
+      skippedMissingContent: stitched.stitchReport.skippedMissingContent,
+    });
+
+    if (stitched.stitchReport.stitched.length) {
+      stitchReportAll.stitchedUnique.push(...stitched.stitchReport.stitched);
+    }
+    if (stitched.stitchReport.skippedMissingContent.length) {
+      stitchReportAll.skippedMissingContentUnique.push(...stitched.stitchReport.skippedMissingContent);
+    }
+
+    if (nextHtml === currentHtml) break;
     currentHtml = nextHtml;
   }
+
+  stitchReportAll.stitchedUnique = [...new Set(stitchReportAll.stitchedUnique)];
+  stitchReportAll.skippedMissingContentUnique = [...new Set(stitchReportAll.skippedMissingContentUnique)];
 
   return {
     stitchedHtml: currentHtml,
     fragmentsResolvedAll: [...byId.values()],
     resolutionWarnings: allWarnings,
+    stitchReport: stitchReportAll,
   };
 }
 
