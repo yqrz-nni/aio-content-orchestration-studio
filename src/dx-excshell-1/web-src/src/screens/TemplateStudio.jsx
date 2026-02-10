@@ -355,6 +355,69 @@ function stripAjoSyntax(html) {
 }
 
 /* =============================================================================
+ * Helpers: detect unresolved tokens in preview HTML
+ * ============================================================================= */
+
+function findPreviewTokenIssues(html) {
+  if (!html || typeof html !== "string") return [];
+
+  const issues = [];
+
+  // Liquid tags (AJO evaluates these; our preview does not)
+  const liquidRe = /{%\s*[\s\S]*?\s*%}/g;
+  const liquidMatches = html.match(liquidRe) || [];
+  if (liquidMatches.length) {
+    issues.push({
+      kind: "liquid",
+      count: liquidMatches.length,
+      samples: liquidMatches.slice(0, 3),
+    });
+  }
+
+  // Handlebars tokens (double or triple)
+  const hbRe = /{{{?\s*([a-zA-Z_][a-zA-Z0-9_$.]*)\s*}?}}/g;
+  const suspicious = [];
+
+  let m;
+  while ((m = hbRe.exec(html)) !== null) {
+    const token = m[1] || "";
+
+    // ignore expected namespaces
+    if (token.startsWith("cf.") || token.startsWith("prbProperties.") || token.startsWith("styles.")) continue;
+
+    // ignore structural/known tokens that can legitimately remain in canonical HTML
+    if (token === "fragment" || token.startsWith("fragment ")) continue;
+
+    suspicious.push(token);
+    if (suspicious.length >= 50) break;
+  }
+
+  const uniq = [...new Set(suspicious)];
+  if (uniq.length) {
+    issues.push({
+      kind: "handlebars",
+      count: uniq.length,
+      samples: uniq.slice(0, 12),
+    });
+  }
+
+  return issues;
+}
+
+function formatPreviewTokenIssues(issues) {
+  if (!issues?.length) return "";
+
+  return issues
+    .map((it) => {
+      if (it.kind === "liquid") return `Liquid tags present: ${it.count}`;
+      if (it.kind === "handlebars")
+        return `Unresolved tokens: ${it.samples.join(", ")}${it.count > it.samples.length ? "…" : ""}`;
+      return `${it.kind}: ${it.count}`;
+    })
+    .join(" | ");
+}
+
+/* =============================================================================
  * Component
  * ============================================================================= */
 
@@ -580,10 +643,11 @@ export function TemplateStudio() {
 
   async function renderPreview() {
     try {
-      setRenderError("");
+      // don't clear renderError here; we may set warnings below
       setIsRendering(true);
 
       if (!canonicalHtml) {
+        setRenderError("");
         setPreviewHtml("<html><body><p>No HTML loaded yet.</p></body></html>");
         return;
       }
@@ -610,8 +674,22 @@ export function TemplateStudio() {
       const best = resolvePreviewHtmlFromRenderResult(res, canonicalHtml);
 
       if (!best || typeof best !== "string") {
+        setRenderError("Render succeeded but returned no HTML.");
         setPreviewHtml("<html><body><p>Render succeeded but returned no HTML.</p></body></html>");
         return;
+      }
+
+      // Detect token issues BEFORE stripping, so Liquid is visible in detection.
+      const issues = findPreviewTokenIssues(best);
+      if (issues.length) {
+        const msg =
+          "Preview warning: HTML contains tokens AJO resolves (Liquid/locals), but the preview renderer does not. " +
+          formatPreviewTokenIssues(issues);
+
+        setRenderError(msg);
+        console.warn(msg, { issues, templateId, selectedPrbId });
+      } else {
+        setRenderError("");
       }
 
       setPreviewHtml(stripAjoSyntax(best));
