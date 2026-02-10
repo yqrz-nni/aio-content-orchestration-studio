@@ -416,9 +416,13 @@ function computePreviewWarnings({ canonicalHtml, bestHtml, sanitizedHtml, expect
       canon.includes(`data-fragment-id="ajo:${id}"`) ||
       canon.includes(`data-fragment-id='ajo:${id}'`);
     const hasInBest =
-      best.includes(`ajo:${id}`) || best.includes(`data-fragment-id="ajo:${id}"`) || best.includes(`data-fragment-id='ajo:${id}'`);
+      best.includes(`ajo:${id}`) ||
+      best.includes(`data-fragment-id="ajo:${id}"`) ||
+      best.includes(`data-fragment-id='ajo:${id}'`);
     const hasInAfter =
-      after.includes(`ajo:${id}`) || after.includes(`data-fragment-id="ajo:${id}"`) || after.includes(`data-fragment-id='ajo:${id}'`);
+      after.includes(`ajo:${id}`) ||
+      after.includes(`data-fragment-id="ajo:${id}"`) ||
+      after.includes(`data-fragment-id='ajo:${id}'`);
 
     if (hasInCanonical && !hasInBest) {
       warnings.push(
@@ -526,6 +530,10 @@ export function TemplateStudio() {
 
   // Diagnostics gating
   const [enableIframeBridge, setEnableIframeBridge] = useState(false);
+
+  // Tabs (needed to gate diagnostics + keep Preview clean)
+  const [activeTab, setActiveTab] = useState("preview");
+  const enableDiagnostics = activeTab === "diagnostics";
 
   const bindingStream = useMemo(() => {
     const v = safeParseJson(bindingStreamText, []);
@@ -799,21 +807,26 @@ export function TemplateStudio() {
       // Preview is browser-based, so we strip ACR blocks + Liquid noise.
       const sanitized = stripAjoSyntax(best);
 
-      // VF survival diagnostics
-      setVfDiag({
-        expected: extractAllAjoVfIdsFromHtml(canonicalHtml),
-        best: extractAllAjoVfIdsFromHtml(best),
-        sanitized: extractAllAjoVfIdsFromHtml(sanitized),
-      });
+      // Diagnostics are computed only when Diagnostics tab is active.
+      if (enableDiagnostics) {
+        setVfDiag({
+          expected: extractAllAjoVfIdsFromHtml(canonicalHtml),
+          best: extractAllAjoVfIdsFromHtml(best),
+          sanitized: extractAllAjoVfIdsFromHtml(sanitized),
+        });
 
-      // Pre-iframe diagnostics (store; do not console spam)
-      const warnings = computePreviewWarnings({
-        canonicalHtml,
-        bestHtml: best,
-        sanitizedHtml: sanitized,
-        expectedVfIds,
-      });
-      setPreviewWarnings(warnings);
+        const warnings = computePreviewWarnings({
+          canonicalHtml,
+          bestHtml: best,
+          sanitizedHtml: sanitized,
+          expectedVfIds,
+        });
+        setPreviewWarnings(warnings);
+      } else {
+        // Keep Preview clean + avoid extra work
+        setVfDiag({ expected: [], best: [], sanitized: [] });
+        setPreviewWarnings([]);
+      }
 
       // Inject iframe bridge script only when explicitly enabled
       const bridged = enableIframeBridge ? injectPreviewBridge(sanitized, expectedVfIds) : sanitized;
@@ -1039,7 +1052,7 @@ export function TemplateStudio() {
 
           <Divider size="S" marginY="size-200" />
 
-          <Tabs aria-label="Canvas Tabs">
+          <Tabs aria-label="Canvas Tabs" selectedKey={activeTab} onSelectionChange={setActiveTab}>
             <TabList>
               <Item key="preview">Preview</Item>
               <Item key="modules">Modules</Item>
@@ -1054,16 +1067,6 @@ export function TemplateStudio() {
                   {renderError ? (
                     <View marginBottom="size-100">
                       <StatusLight variant="negative">{renderError}</StatusLight>
-                    </View>
-                  ) : null}
-
-                  {!renderError && previewWarnings.length ? (
-                    <View marginBottom="size-100">
-                      {previewWarnings.map((w, i) => (
-                        <View key={`pw-${i}`} marginBottom="size-50">
-                          <StatusLight variant="negative">{w}</StatusLight>
-                        </View>
-                      ))}
                     </View>
                   ) : null}
 
@@ -1093,7 +1096,14 @@ export function TemplateStudio() {
               </Item>
 
               <Item key="html">
-                <View borderWidth="thin" borderColor="light" borderRadius="small" padding="size-200" height="62vh" overflow="auto">
+                <View
+                  borderWidth="thin"
+                  borderColor="light"
+                  borderRadius="small"
+                  padding="size-200"
+                  height="62vh"
+                  overflow="auto"
+                >
                   <pre style={{ whiteSpace: "pre-wrap" }}>{canonicalHtml || "(empty)"}</pre>
                 </View>
               </Item>
@@ -1145,7 +1155,14 @@ export function TemplateStudio() {
                     <View marginTop="size-200">
                       <Heading level={5}>Raw render result</Heading>
                       <Divider size="S" marginY="size-100" />
-                      <View borderWidth="thin" borderColor="light" borderRadius="small" padding="size-200" overflow="auto" height="size-2400">
+                      <View
+                        borderWidth="thin"
+                        borderColor="light"
+                        borderRadius="small"
+                        padding="size-200"
+                        overflow="auto"
+                        height="size-2400"
+                      >
                         <pre style={{ whiteSpace: "pre-wrap" }}>{safeJson(lastRenderResult, 2)}</pre>
                       </View>
                     </View>
