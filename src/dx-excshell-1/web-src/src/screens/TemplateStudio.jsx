@@ -546,20 +546,20 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       {/* Template name (full-width) */}
       <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
         <Flex gap="size-200" alignItems="end" wrap>
-          <TextField label="Template name" value={templateName} onChange={setTemplateName} width="size-6000" />
+          <TextField label="Template name" value={templateName} onChange={setTemplateName} width="size-4600" />
 
           <Divider orientation="vertical" size="S" />
 
           <ComboBox
-            label="PRB Properties (global)"
+            label="PRB Properties"
             placeholder="Paste/type PRB number…"
             selectedKey={selectedPrbId}
             onSelectionChange={(key) => setPrb(key)}
-            width="size-4600"
+            width="size-3600"
             menuTrigger="focus"
           >
             {prbOptions.map((o) => (
-              <Item key={o.id}>
+              <Item key={o.id} textValue={o.label || o.prbNumber || o.id}>
                 <Flex direction="column" gap="size-0">
                   <Text UNSAFE_style={{ fontWeight: 600 }}>{o.prbNumber || o.label}</Text>
                   {o.name ? <Text UNSAFE_style={{ opacity: 0.7, fontSize: 12 }}>{o.name}</Text> : null}
@@ -568,11 +568,6 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
             ))}
           </ComboBox>
 
-          {prbStatus === "configured" ? (
-            <StatusLight variant="positive">PRB set</StatusLight>
-          ) : (
-            <StatusLight variant="negative">PRB missing</StatusLight>
-          )}
         </Flex>
 
         {aemWarnings.length ? (

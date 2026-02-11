@@ -23,6 +23,7 @@ export function TemplateFlow() {
   const hasTemplate = !!templateId;
 
   const studioKey = useMemo(() => `${prbId || ""}:${templateId || ""}`, [prbId, templateId]);
+  const showToolbar = hasPrb || hasTemplate;
 
   function open(step) {
     setOpenStep(step);
@@ -30,6 +31,27 @@ export function TemplateFlow() {
 
   return (
     <View>
+      {showToolbar ? (
+        <Flex UNSAFE_className="FlowToolbar" alignItems="center" justifyContent="space-between" wrap>
+          <Flex gap="size-100" alignItems="center" wrap>
+            <Text UNSAFE_className="FlowToolbarLabel">Configured</Text>
+            {hasPrb ? <Text UNSAFE_className="FlowToolbarPill">PRB</Text> : null}
+            {hasTemplate ? <Text UNSAFE_className="FlowToolbarPill">Template</Text> : null}
+          </Flex>
+          <Flex gap="size-100" alignItems="center">
+            <Button variant="secondary" onPress={() => open("prb")}>
+              Edit PRB
+            </Button>
+            <Button variant="secondary" onPress={() => open("template")} isDisabled={!hasPrb}>
+              Edit Template
+            </Button>
+            <Button variant="secondary" onPress={() => open("studio")} isDisabled={!hasTemplate}>
+              Open Studio
+            </Button>
+          </Flex>
+        </Flex>
+      ) : null}
+
       <View UNSAFE_className="FlowAccordion">
         {/* Step 1: PRB */}
         <View UNSAFE_className={`FlowSection ${openStep === "prb" ? "is-open" : ""}`}>
@@ -56,7 +78,7 @@ export function TemplateFlow() {
             </View>
           ) : (
             <View UNSAFE_className="FlowSummary">
-              <Text>{hasPrb ? prbId : "No PRB selected yet."}</Text>
+              <Text>{hasPrb ? "PRB configured." : "No PRB selected yet."}</Text>
             </View>
           )}
         </View>
@@ -95,7 +117,7 @@ export function TemplateFlow() {
             </View>
           ) : (
             <View UNSAFE_className="FlowSummary">
-              <Text>{hasTemplate ? templateId : "No template selected yet."}</Text>
+              <Text>{hasTemplate ? "Template configured." : "No template selected yet."}</Text>
             </View>
           )}
         </View>

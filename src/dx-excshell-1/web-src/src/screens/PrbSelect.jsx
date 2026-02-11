@@ -95,7 +95,7 @@ export function PrbSelect({ mode = "route", value, onChange }) {
               isDisabled={isLoading}
             >
               {prbOptions.map((o) => (
-                <Item key={o.id}>
+                <Item key={o.id} textValue={o.label || o.prbNumber || o.id}>
                   <Flex direction="column" gap="size-0">
                     <Text UNSAFE_style={{ fontWeight: 600 }}>{o.prbNumber || o.label}</Text>
                     {o.name ? <Text UNSAFE_style={{ opacity: 0.7, fontSize: 12 }}>{o.name}</Text> : null}
