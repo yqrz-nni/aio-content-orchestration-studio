@@ -68,6 +68,29 @@ function diagAddInfo(rt, msg, meta) {
   rt.info.push(meta ? { message: msg, ...meta } : { message: msg });
 }
 
+function collectUnsupportedControlFlowTags(html) {
+  const out = {
+    total: 0,
+    byTag: {},
+    samples: [],
+  };
+  if (!html || typeof html !== "string") return out;
+
+  const re = /{%\s*(#if|if|else|\/if|elseif|elsif)\b([\s\S]*?)%}/g;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    const tag = String(m[1] || "").toLowerCase();
+    out.total += 1;
+    out.byTag[tag] = (out.byTag[tag] || 0) + 1;
+
+    if (out.samples.length < 40) {
+      out.samples.push(String(m[0]).trim().slice(0, 240));
+    }
+  }
+
+  return out;
+}
+
 /* =============================================================================
  * Preview sanitizer:
  * Remove *wrapper syntax* from rendered preview HTML only.
@@ -235,7 +258,7 @@ function safeDate(input) {
 
 function pad2(n) {
   const s = String(n ?? "");
-  return s.length === "1" ? `0${s}` : s;
+  return s.length === 1 ? `0${s}` : s;
 }
 
 /**
@@ -328,6 +351,27 @@ function parseFnCall(expr) {
   return { name: m[1], argsRaw: m[2] };
 }
 
+function stripOuterParens(raw) {
+  let s = String(raw ?? "").trim();
+  if (!s.startsWith("(") || !s.endsWith(")")) return s;
+
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth -= 1;
+
+    if (depth === 0 && i < s.length - 1) {
+      return s; // outer parens don't wrap whole expr
+    }
+  }
+
+  if (depth === 0) {
+    s = s.slice(1, -1).trim();
+  }
+  return s;
+}
+
 /**
  * Extract possible let-var references from an expression (best-effort).
  * Used to compute a dependency closure for “evaluate only what’s needed”.
@@ -367,8 +411,81 @@ function extractLetRefs(expr) {
  * Evaluate a Liquid-ish expression.
  */
 function evalLiquidExpr(expr, { ctx, vars, locale = "en-US", diag }) {
-  const raw = String(expr ?? "").trim();
+  let raw = String(expr ?? "").trim();
   if (!raw) return "";
+
+  const stripped = stripOuterParens(raw);
+  if (stripped !== raw) {
+    return evalLiquidExpr(stripped, { ctx, vars, locale, diag });
+  }
+
+  // Boolean operators at top-level: not, and, or
+  {
+    const neg = raw.match(/^not\s+([\s\S]+)$/i);
+    if (neg) {
+      const v = evalLiquidExpr(neg[1], { ctx, vars, locale, diag });
+      return !isTruthy(v);
+    }
+
+    const boolParts = splitBoolOps(raw);
+    if (boolParts.length >= 3) {
+      let acc = null;
+      let op = null;
+
+      for (const p of boolParts) {
+        if (p.type === "op") {
+          op = p.value;
+          continue;
+        }
+        const v = evalLiquidExpr(p.value, { ctx, vars, locale, diag });
+        if (acc == null) {
+          acc = isTruthy(v);
+        } else if (op === "and") {
+          acc = acc && isTruthy(v);
+        } else if (op === "or") {
+          acc = acc || isTruthy(v);
+        } else {
+          acc = isTruthy(v);
+        }
+      }
+
+      return acc === null ? "" : acc;
+    }
+  }
+
+  // Simple comparisons at top-level (no precedence, left-to-right).
+  // Supports: ==, !=, >=, <=, >, <
+  {
+    const cmp = raw.match(/^(.+?)\s*(==|!=|>=|<=|>|<)\s*(.+)$/);
+    if (cmp && !parseFnCall(raw)) {
+      const left = evalLiquidExpr(cmp[1], { ctx, vars, locale, diag });
+      const right = evalLiquidExpr(cmp[3], { ctx, vars, locale, diag });
+
+      const ln = Number(left);
+      const rn = Number(right);
+      const bothNumeric = !Number.isNaN(ln) && !Number.isNaN(rn);
+
+      const a = bothNumeric ? ln : String(left ?? "");
+      const b = bothNumeric ? rn : String(right ?? "");
+
+      switch (cmp[2]) {
+        case "==":
+          return a === b;
+        case "!=":
+          return a !== b;
+        case ">":
+          return a > b;
+        case "<":
+          return a < b;
+        case ">=":
+          return a >= b;
+        case "<=":
+          return a <= b;
+        default:
+          break;
+      }
+    }
+  }
 
   // Very small arithmetic: a + b, a - b (no precedence, left-to-right)
   // Only at top-level (not inside fn calls)
@@ -490,6 +607,217 @@ function evalLiquidFn(name, argsRaw, { ctx, vars, locale, diag }) {
   }
 }
 
+function isTruthy(val) {
+  if (val == null) return false;
+  if (typeof val === "boolean") return val;
+  if (typeof val === "number") return val !== 0;
+  if (Array.isArray(val)) return val.length > 0;
+  if (typeof val === "string") {
+    const s = val.trim().toLowerCase();
+    if (!s) return false;
+    if (s === "false" || s === "0" || s === "null" || s === "undefined") return false;
+    return true;
+  }
+  return true;
+}
+
+function splitBoolOps(raw) {
+  const s = String(raw ?? "");
+  const parts = [];
+  let cur = "";
+  let depth = 0;
+  let quote = null;
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+
+    if (quote) {
+      cur += ch;
+      if (ch === quote && s[i - 1] !== "\\") quote = null;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      cur += ch;
+      continue;
+    }
+
+    if (ch === "(") {
+      depth++;
+      cur += ch;
+      continue;
+    }
+    if (ch === ")") {
+      depth = Math.max(0, depth - 1);
+      cur += ch;
+      continue;
+    }
+
+    if (depth === 0) {
+      const rest = s.slice(i);
+      const m = rest.match(/^\s+(and|or)\s+/i);
+      if (m) {
+        parts.push({ type: "expr", value: cur.trim() });
+        parts.push({ type: "op", value: m[1].toLowerCase() });
+        cur = "";
+        i += m[0].length - 1;
+        continue;
+      }
+    }
+
+    cur += ch;
+  }
+
+  if (cur.trim()) parts.push({ type: "expr", value: cur.trim() });
+  return parts;
+}
+
+function findMatchingIfClose(html, openEnd) {
+  const tagRe = /{%\s*(#if|if|unless|else|elseif|elsif|\/if|\/unless)\b[\s\S]*?%}/g;
+  tagRe.lastIndex = openEnd;
+
+  let depth = 1;
+  while (true) {
+    const m = tagRe.exec(html);
+    if (!m) return null;
+
+    const raw = (m[1] || "").toLowerCase();
+    if (raw === "#if" || raw === "if" || raw === "unless") depth += 1;
+    else if (raw === "/if" || raw === "/unless") depth -= 1;
+
+    if (depth === 0) {
+      return { closeStart: m.index, closeEnd: tagRe.lastIndex };
+    }
+  }
+}
+
+function evaluateLiquidIfElseBlocks(html, { ctx, vars, locale = "en-US", diag } = {}) {
+  if (!html || typeof html !== "string") return html;
+
+  const ifOpenRe = /{%\s*(#if|if|unless)\s+([\s\S]*?)%}/g;
+  let out = "";
+  let cursor = 0;
+
+  while (true) {
+    const m = ifOpenRe.exec(html);
+    if (!m) break;
+
+    const openStart = m.index;
+    const openEnd = ifOpenRe.lastIndex;
+    const opener = String(m[1] || "").toLowerCase();
+    const expr = String(m[2] || "").trim();
+
+    const close = findMatchingIfClose(html, openEnd);
+    if (!close) {
+      out += html.slice(cursor);
+      return out;
+    }
+
+    const { closeStart, closeEnd } = close;
+    const inner = html.slice(openEnd, closeStart);
+
+    // Split inner by top-level else/elseif
+    const parts = [];
+    const markers = [];
+    let depth = 0;
+    const tagRe = /{%\s*(#if|if|unless|else|elseif|elsif|\/if|\/unless)\b([\s\S]*?)%}/g;
+    tagRe.lastIndex = 0;
+
+    while (true) {
+      const tm = tagRe.exec(inner);
+      if (!tm) break;
+
+      const tag = (tm[1] || "").toLowerCase();
+      if (tag === "#if" || tag === "if" || tag === "unless") {
+        depth += 1;
+        continue;
+      }
+      if (tag === "/if" || tag === "/unless") {
+        depth = Math.max(0, depth - 1);
+        continue;
+      }
+
+      if (depth === 0 && (tag === "else" || tag === "elseif" || tag === "elsif")) {
+        const elseExpr = tag === "else" ? null : String(tm[2] || "").trim();
+        markers.push({
+          tag,
+          expr: elseExpr,
+          index: tm.index,
+          end: tagRe.lastIndex,
+        });
+      }
+    }
+
+    if (markers.length === 0) {
+      parts.push({ tag: opener === "unless" ? "unless" : "if", expr, body: inner });
+    } else {
+      // Initial if/unless block
+      parts.push({
+        tag: opener === "unless" ? "unless" : "if",
+        expr,
+        body: inner.slice(0, markers[0].index),
+      });
+
+      // Else/elseif blocks
+      for (let i = 0; i < markers.length; i++) {
+        const m = markers[i];
+        const nextIdx = markers[i + 1]?.index ?? inner.length;
+        parts.push({
+          tag: m.tag,
+          expr: m.expr,
+          body: inner.slice(m.end, nextIdx),
+        });
+      }
+    }
+
+    let selected = "";
+    let matched = false;
+    for (const p of parts) {
+      if (p.tag === "if") {
+        const v = evalLiquidExpr(p.expr, { ctx, vars, locale, diag });
+        if (isTruthy(v)) {
+          selected = p.body || "";
+          matched = true;
+          break;
+        }
+      } else if (p.tag === "unless") {
+        const v = evalLiquidExpr(p.expr, { ctx, vars, locale, diag });
+        if (!isTruthy(v)) {
+          selected = p.body || "";
+          matched = true;
+          break;
+        }
+      } else if (p.tag === "elseif" || p.tag === "elsif") {
+        const v = evalLiquidExpr(p.expr, { ctx, vars, locale, diag });
+        if (isTruthy(v)) {
+          selected = p.body || "";
+          matched = true;
+          break;
+        }
+      } else if (p.tag === "else") {
+        selected = p.body || "";
+        matched = true;
+        break;
+      }
+    }
+
+    if (diag) {
+      diag.counts.liquidIfBlocksTotal = (diag.counts.liquidIfBlocksTotal || 0) + 1;
+      if (matched) diag.counts.liquidIfBlocksRendered = (diag.counts.liquidIfBlocksRendered || 0) + 1;
+    }
+
+    out += html.slice(cursor, openStart);
+    out += evaluateLiquidIfElseBlocks(selected, { ctx, vars, locale, diag });
+
+    cursor = closeEnd;
+    ifOpenRe.lastIndex = cursor;
+  }
+
+  out += html.slice(cursor);
+  return out;
+}
+
 /**
  * Parse all `{% let name = expr %}` blocks in-order.
  * Also supports `{% assign name = expr %}`.
@@ -599,9 +927,13 @@ function replaceLiquidVarTokens(html, vars) {
 function evaluateLiquidLetsAndReplace(html, { ctx, locale = "en-US", neededVars, diag } = {}) {
   if (!html || typeof html !== "string") return html;
 
-  const vars = computeLiquidLets(html, { ctx, locale, neededVars, diag });
+  const varsForConditions = computeLiquidLets(html, { ctx, locale, neededVars, diag });
 
-  let out = replaceLiquidVarTokens(html, vars);
+  let out = evaluateLiquidIfElseBlocks(html, { ctx, vars: varsForConditions, locale, diag });
+
+  // Recompute lets on the selected branches only (reduces cross-branch bleed)
+  const varsForReplace = computeLiquidLets(out, { ctx, locale, neededVars, diag });
+  out = replaceLiquidVarTokens(out, varsForReplace);
 
   // Remove let/assign tags now (also stripped later)
   out = out.replace(/{%\s*(?:let|assign)\s+[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*[\s\S]*?\s*%}/g, "");
@@ -1440,6 +1772,19 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
       diagAddInfo(diag, "Dynamic references: wrapper-based replacements performed.", {
         count: drInfo.length,
         examples: drInfo.slice(0, 25).map((x) => x.message),
+      });
+    }
+  }
+
+  if (diag) {
+    const unsupported = collectUnsupportedControlFlowTags(out);
+    diag.liquid.unsupportedControlFlow = unsupported;
+
+    if (unsupported.total > 0) {
+      diagAddWarning(diag, "Unsupported Liquid control-flow tags detected; preview does not execute if/else blocks.", {
+        total: unsupported.total,
+        byTag: unsupported.byTag,
+        samples: unsupported.samples.slice(0, 20),
       });
     }
   }
