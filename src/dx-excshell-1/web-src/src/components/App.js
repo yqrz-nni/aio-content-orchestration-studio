@@ -3,7 +3,7 @@
 */
 
 import React from 'react'
-import { Provider, defaultTheme, View } from '@adobe/react-spectrum'
+import { Provider, defaultTheme, View, Flex, Text } from '@adobe/react-spectrum'
 import ErrorBoundary from 'react-error-boundary'
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { ImsContext } from "../context/ImsContext";
@@ -34,7 +34,18 @@ function App (props) {
       <Router>
         <Provider theme={defaultTheme} colorScheme={'light'}>
           <ImsContext.Provider value={props.ims}>
-            <View padding="size-200">
+            <View UNSAFE_className="AppShell">
+              <Flex UNSAFE_className="AppHeader" alignItems="center" justifyContent="space-between" wrap>
+                <View>
+                  <Text UNSAFE_className="AppTitle">Content Orchestration Studio</Text>
+                  <Text UNSAFE_className="AppSubtle">AJO + AEM preview sandbox</Text>
+                </View>
+                <View>
+                  <Text UNSAFE_className="AppMeta">Org: {props?.ims?.org || 'unknown'}</Text>
+                </View>
+              </Flex>
+
+              <View UNSAFE_className="AppMain">
               <Routes>
                 {/* Choose your default. If you want the unified flow as default, change "/" to "/flow". */}
                 <Route path="/" element={<Navigate to="/prb" replace />} />
@@ -49,6 +60,7 @@ function App (props) {
 
                 <Route path="*" element={<Navigate to="/prb" replace />} />
               </Routes>
+              </View>
             </View>
           </ImsContext.Provider>
         </Provider>

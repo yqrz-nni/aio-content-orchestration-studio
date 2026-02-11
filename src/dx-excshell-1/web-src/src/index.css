@@ -8,6 +8,53 @@ body {
   margin: 0;
 }
 
+body {
+  background: radial-gradient(1200px 600px at 10% -10%, #f0f4ff 0%, #f8f9fb 45%, #ffffff 100%);
+  color: #1b1e26;
+  font-family: "IBM Plex Sans", "Segoe UI", Arial, sans-serif;
+}
+
+.AppShell {
+  min-height: 100vh;
+  padding: 20px 24px 28px;
+  box-sizing: border-box;
+}
+
+.AppHeader {
+  background: #ffffff;
+  border: 1px solid #e6e8ef;
+  border-radius: 12px;
+  padding: 14px 18px;
+  box-shadow: 0 8px 24px rgba(19, 27, 46, 0.06);
+  margin-bottom: 16px;
+}
+
+.AppTitle {
+  display: block;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.AppSubtle {
+  display: block;
+  font-size: 12px;
+  color: #5a6072;
+}
+
+.AppMeta {
+  font-size: 12px;
+  color: #6b7285;
+}
+
+.AppMain {
+  background: #ffffff;
+  border: 1px solid #e6e8ef;
+  border-radius: 12px;
+  padding: 18px;
+  box-shadow: 0 6px 20px rgba(19, 27, 46, 0.05);
+}
+
 /** Custom Sidebar Styling **/
 .SideNav {
   list-style-type: none;
