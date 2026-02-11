@@ -70,17 +70,20 @@ export function PrbSelect({ mode = "route", value, onChange }) {
   }
 
   return (
-    <View>
-      <Heading level={2}>Template Studio</Heading>
-      <Text UNSAFE_style={{ opacity: 0.85 }}>Choose a PRB Properties context to begin.</Text>
+    <View UNSAFE_className={mode === "embedded" ? "FlowCompact" : ""}>
+      {mode !== "embedded" ? (
+        <View>
+          <Heading level={2}>PRB Selection</Heading>
+          <Text UNSAFE_style={{ opacity: 0.85 }}>Choose a PRB Properties context to begin.</Text>
+          <Divider size="S" marginY="size-200" />
+        </View>
+      ) : null}
 
-      <Divider size="S" marginY="size-200" />
-
-      <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200" maxWidth="size-6000">
-        <Flex direction="column" gap="size-150">
-          <Flex gap="size-200" alignItems="end" wrap>
+      <View UNSAFE_className="FlowCompactCard" maxWidth="size-6000">
+        <Flex direction="column" gap="size-100">
+          <Flex gap="size-150" alignItems="end" wrap justifyContent="center">
             <ComboBox
-              label="PRB Properties"
+              label={mode === "embedded" ? "PRB" : "PRB Properties"}
               placeholder={isLoading ? "Loading…" : "Search PRB number or name…"}
               selectedKey={selectedPrbId}
               onSelectionChange={(key) => {
@@ -114,13 +117,7 @@ export function PrbSelect({ mode = "route", value, onChange }) {
             <StatusLight variant="negative">{err}</StatusLight>
           ) : selectedPrbId ? (
             <StatusLight variant="positive">Selected: {selectedPrb?.label || selectedPrbId}</StatusLight>
-          ) : (
-            <StatusLight variant="negative">No PRB selected</StatusLight>
-          )}
-
-          <Text UNSAFE_style={{ opacity: 0.8 }}>
-            This selection drives template labels (e.g. <code>PRB:&lt;number&gt;</code>) and the global PRB binding in the HTML.
-          </Text>
+          ) : null}
         </Flex>
       </View>
     </View>

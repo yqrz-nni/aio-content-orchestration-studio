@@ -519,25 +519,29 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
   return (
     <View>
-      <Flex justifyContent="space-between" alignItems="center" wrap>
+      {mode === "route" ? (
         <View>
-          <Heading level={2}>Template Studio</Heading>
-          <Text UNSAFE_style={{ opacity: 0.75 }}>
-            PRB: {selectedPrb?.label || selectedPrbId || prbId || "(none)"} • templateId: {templateId || "(none)"}
-          </Text>
+          <Flex justifyContent="space-between" alignItems="center" wrap>
+            <View>
+              <Heading level={2}>Template Studio</Heading>
+              <Text UNSAFE_style={{ opacity: 0.75 }}>
+                PRB: {selectedPrb?.label || selectedPrbId || prbId || "(none)"} • templateId: {templateId || "(none)"}
+              </Text>
+            </View>
+
+            <Flex gap="size-100">
+              <Button variant="secondary" onPress={() => nav(`/prb/${encodeURIComponent(prbId || selectedPrbId || "")}/templates`)}>
+                Back to templates
+              </Button>
+              <Button variant="secondary" onPress={() => nav("/prb")}>
+                Change PRB
+              </Button>
+            </Flex>
+          </Flex>
+
+          <Divider size="S" marginY="size-200" />
         </View>
-
-        <Flex gap="size-100">
-          <Button variant="secondary" onPress={() => nav(`/prb/${encodeURIComponent(prbId || selectedPrbId || "")}/templates`)}>
-            Back to templates
-          </Button>
-          <Button variant="secondary" onPress={() => nav("/prb")}>
-            Change PRB
-          </Button>
-        </Flex>
-      </Flex>
-
-      <Divider size="S" marginY="size-200" />
+      ) : null}
 
       {/* Template name (full-width) */}
       <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">

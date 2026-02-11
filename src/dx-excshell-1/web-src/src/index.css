@@ -63,7 +63,7 @@ body {
 .FlowSection {
   border: 1px solid #e6e8ef;
   border-radius: 12px;
-  padding: 14px 16px;
+  padding: 10px 12px;
   background: #ffffff;
   box-shadow: 0 4px 16px rgba(19, 27, 46, 0.04);
 }
@@ -90,7 +90,7 @@ body {
 }
 
 .FlowBody {
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .FlowSummary {
@@ -100,6 +100,21 @@ body {
   border-radius: 8px;
   font-size: 12px;
   color: #444b5a;
+}
+
+.FlowCompact {
+  display: flex;
+  justify-content: center;
+}
+
+.FlowCompactCard {
+  width: 100%;
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 10px 12px;
+  border: 1px solid #e6e8ef;
+  border-radius: 10px;
+  background: #ffffff;
 }
 
 /** Custom Sidebar Styling **/

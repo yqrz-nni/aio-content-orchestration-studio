@@ -65,14 +65,21 @@ export function TemplateFlow() {
 
         {/* Step 2: Template list / create */}
         <View UNSAFE_className={`FlowSection ${openStep === "template" ? "is-open" : ""} ${!hasPrb ? "is-disabled" : ""}`}>
-          <Flex justifyContent="space-between" alignItems="center" UNSAFE_className="FlowHeader">
+          <Flex justifyContent="space-between" alignItems="center" UNSAFE_className="FlowHeader" wrap>
             <View>
               <Text UNSAFE_className="FlowTitle">2. Template</Text>
               <Text UNSAFE_className="FlowHint">Open or create a template for this PRB.</Text>
             </View>
-            <Button variant="secondary" onPress={() => open("template")} isDisabled={!hasPrb}>
+            <Flex gap="size-100" alignItems="center">
+              {hasPrb ? (
+                <Button variant="secondary" onPress={() => open("prb")}>
+                  Edit PRB
+                </Button>
+              ) : null}
+              <Button variant="secondary" onPress={() => open("template")} isDisabled={!hasPrb}>
               {openStep === "template" ? "Open" : "Edit"}
-            </Button>
+              </Button>
+            </Flex>
           </Flex>
           {openStep === "template" ? (
             <View UNSAFE_className="FlowBody">

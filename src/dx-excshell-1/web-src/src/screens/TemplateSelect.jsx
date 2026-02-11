@@ -64,6 +64,7 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
   const [templateName, setTemplateName] = useState("Baseline Clone");
   const [templates, setTemplates] = useState([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState(null);
+  const [templateFilter, setTemplateFilter] = useState("");
 
   const [manualTemplateId, setManualTemplateId] = useState("");
   const [status, setStatus] = useState("");
@@ -227,27 +228,29 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
     openTemplateId(tid);
   }
 
+  const filteredTemplates = useMemo(() => {
+    const q = String(templateFilter || "").trim().toLowerCase();
+    if (!q) return templates;
+    return templates.filter((t) => {
+      const name = String(t?.name || "").toLowerCase();
+      const id = String(t?.id || "").toLowerCase();
+      return name.includes(q) || id.includes(q);
+    });
+  }, [templates, templateFilter]);
+
   return (
-    <View UNSAFE_style={{ opacity: isDisabled ? 0.5 : 1, pointerEvents: isDisabled ? "none" : "auto" }}>
-      <Heading level={2}>Templates</Heading>
-      <Text UNSAFE_style={{ opacity: 0.85 }}>Open an existing template for this PRB, or create a new one from baseline.</Text>
+    <View UNSAFE_style={{ opacity: isDisabled ? 0.5 : 1, pointerEvents: isDisabled ? "none" : "auto" }} UNSAFE_className={mode === "embedded" ? "FlowCompact" : ""}>
+      {mode !== "embedded" ? (
+        <View>
+          <Heading level={2}>Templates</Heading>
+          <Text UNSAFE_style={{ opacity: 0.85 }}>Open an existing template for this PRB, or create a new one from baseline.</Text>
+          <Divider size="S" marginY="size-200" />
+        </View>
+      ) : null}
 
-      <Divider size="S" marginY="size-200" />
-
-      <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
-        <Flex direction="column" gap="size-200">
-          <Flex justifyContent="space-between" alignItems="center" wrap>
-            <View>
-              <Text UNSAFE_style={{ fontWeight: 600 }}>Selected PRB</Text>
-              <Text UNSAFE_style={{ opacity: 0.85 }}>
-                {selectedPrb?.label || prbId || "(none)"} {repoId ? `• repoId=${repoId}` : ""}
-              </Text>
-            </View>
-          </Flex>
-
-          <Divider size="S" />
-
-          <Flex gap="size-200" alignItems="end" wrap>
+      <View UNSAFE_className="FlowCompactCard">
+        <Flex direction="column" gap="size-150">
+          <Flex gap="size-200" alignItems="end" wrap justifyContent="center">
             <TextField label="New template name" value={templateName} onChange={setTemplateName} width="size-3600" />
             <Button variant="cta" onPress={createFromBaselineAndOpen} isDisabled={!selectedPrb || isCreating || isDisabled}>
               {isCreating ? "Creating…" : "Create from baseline"}
@@ -259,12 +262,12 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
         </Flex>
       </View>
 
-      <Divider size="S" marginY="size-200" />
+      <Divider size="S" marginY="size-150" />
 
-      <Grid columns={["2fr", "1fr"]} gap="size-200" height="60vh">
-        <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
-          <Flex justifyContent="space-between" alignItems="center">
-            <Heading level={4}>Templates for PRB</Heading>
+      <View UNSAFE_className="FlowCompactCard">
+        <Flex direction="column" gap="size-150">
+          <Flex justifyContent="space-between" alignItems="center" wrap>
+            <Text UNSAFE_style={{ fontWeight: 600 }}>Templates for PRB</Text>
             <Flex gap="size-100" alignItems="center">
               <Button
                 variant="secondary"
@@ -279,11 +282,17 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
             </Flex>
           </Flex>
 
-          <Divider size="S" marginY="size-150" />
+          <TextField
+            label="Search templates"
+            placeholder="Filter by name or id…"
+            value={templateFilter}
+            onChange={setTemplateFilter}
+            width="100%"
+          />
 
-          {!templates.length ? (
+          {!filteredTemplates.length ? (
             <Text UNSAFE_style={{ opacity: 0.85 }}>
-              {isLoadingTemplates ? "Loading templates…" : "No templates listed (or listing action not configured)."}
+              {isLoadingTemplates ? "Loading templates…" : "No templates match this filter."}
             </Text>
           ) : (
             <ListView
@@ -291,21 +300,21 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
               selectionMode="single"
               selectedKeys={selectedTemplateId ? [selectedTemplateId] : []}
               onSelectionChange={(keys) => setSelectedTemplateId([...keys][0])}
-              height="48vh"
+              height="22vh"
             >
-              {templates.map((t) => (
+              {filteredTemplates.map((t) => (
                 <Item key={t.id}>{t.name}</Item>
               ))}
             </ListView>
           )}
-        </View>
+        </Flex>
+      </View>
 
-        <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
-          <Heading level={4}>Open by Template ID</Heading>
-          <Text UNSAFE_style={{ opacity: 0.85 }}>Useful as a fallback if template listing isn’t available yet.</Text>
+      <Divider size="S" marginY="size-150" />
 
-          <Divider size="S" marginY="size-150" />
-
+      <View UNSAFE_className="FlowCompactCard">
+        <Flex direction="column" gap="size-100">
+          <Text UNSAFE_style={{ fontWeight: 600 }}>Open by Template ID</Text>
           <TextField
             label="Template ID"
             placeholder="Paste templateId…"
@@ -313,11 +322,11 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
             onChange={setManualTemplateId}
             width="100%"
           />
-          <Button marginTop="size-150" variant="primary" onPress={openManualTemplate} isDisabled={!manualTemplateId.trim() || isDisabled}>
+          <Button variant="primary" onPress={openManualTemplate} isDisabled={!manualTemplateId.trim() || isDisabled}>
             Open
           </Button>
-        </View>
-      </Grid>
+        </Flex>
+      </View>
     </View>
   );
 }
