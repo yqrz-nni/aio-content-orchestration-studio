@@ -47,8 +47,8 @@ function App (props) {
 
               <View UNSAFE_className="AppMain">
               <Routes>
-                {/* Choose your default. If you want the unified flow as default, change "/" to "/flow". */}
-                <Route path="/" element={<Navigate to="/prb" replace />} />
+                {/* Unified flow as default */}
+                <Route path="/" element={<Navigate to="/flow" replace />} />
 
                 {/* Unified single-screen flow */}
                 <Route path="/flow" element={<TemplateFlow />} />
