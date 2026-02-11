@@ -10,7 +10,7 @@ import React, { useMemo, useState } from "react";
 import { View, Divider, Flex, Text, ActionButton, Tooltip, TooltipTrigger } from "@adobe/react-spectrum";
 import Edit from "@spectrum-icons/workflow/Edit";
 import EditIn from "@spectrum-icons/workflow/EditIn";
-import ViewPage from "@spectrum-icons/workflow/ViewPage";
+import ViewDetail from "@spectrum-icons/workflow/ViewDetail";
 
 import { PrbSelect } from "./PrbSelect";
 import { TemplateSelect } from "./TemplateSelect";
@@ -57,7 +57,7 @@ export function TemplateFlow() {
             </TooltipTrigger>
             <TooltipTrigger>
               <ActionButton onPress={() => open("studio")} isDisabled={!hasTemplate}>
-                <ViewPage />
+                <ViewDetail />
               </ActionButton>
               <Tooltip>Open Studio</Tooltip>
             </TooltipTrigger>
