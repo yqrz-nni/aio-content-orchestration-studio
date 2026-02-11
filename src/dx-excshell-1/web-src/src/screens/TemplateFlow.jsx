@@ -165,7 +165,13 @@ export function TemplateFlow() {
           </View>
         </View>
       ) : (
-        <View />
+        <View>
+          {hasPrb && hasTemplate ? (
+            <TemplateStudio mode="embedded" prbIdOverride={prbId} templateIdOverride={templateId} key={studioKey} />
+          ) : (
+            <View />
+          )}
+        </View>
       )}
     </View>
   );
