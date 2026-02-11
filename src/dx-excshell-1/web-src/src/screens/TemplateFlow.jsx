@@ -7,7 +7,7 @@
 // Keeps deep links intact elsewhere; this is just a UX wrapper.
 
 import React, { useMemo, useState } from "react";
-import { View, Divider, Flex, Text, ActionButton, Tooltip, TooltipTrigger } from "@adobe/react-spectrum";
+import { View, Divider, Flex, Text, Button, ActionButton, Tooltip, TooltipTrigger } from "@adobe/react-spectrum";
 import Edit from "@spectrum-icons/workflow/Edit";
 import EditIn from "@spectrum-icons/workflow/EditIn";
 import ViewDetail from "@spectrum-icons/workflow/ViewDetail";
