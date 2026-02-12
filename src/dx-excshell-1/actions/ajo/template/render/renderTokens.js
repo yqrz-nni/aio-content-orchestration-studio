@@ -853,6 +853,15 @@ function replaceBodyCopyVarBestEffort(segment, cfCtx) {
 
   let out = segment.replace(/\{\{\{\s*bodyCopy\s*\}\}\}/g, raw);
   out = out.replace(/\{\{\s*bodyCopy\s*\}\}/g, safe);
+
+  // Fallback for observed preview collapse where bodyCopy block degrades to a literal "false".
+  // Keep this conservative: only when refArrayCheck marker exists in the same segment.
+  if (out.includes("refArrayCheck")) {
+    out = out.replace(
+      /(<span[^>]*display\s*:\s*none[^>]*>\s*(?:{{#each\s+refArrayCheck[\s\S]*?{{\/each}})?\s*<\/span>\s*)false(\s*<span[^>]*display\s*:\s*none[^>]*>)/i,
+      `$1${raw}$2`
+    );
+  }
   return out;
 }
 
