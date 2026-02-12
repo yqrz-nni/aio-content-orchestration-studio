@@ -92,7 +92,14 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const prbId = mode === "embedded" ? prbIdOverride : params.prbId;
   const templateId = mode === "embedded" ? templateIdOverride : params.templateId;
   const [searchParams] = useSearchParams();
-  const focusDebug = searchParams.get("focusdebug") === "1";
+  const [focusDebug, setFocusDebug] = useState(() => {
+    try {
+      return window.localStorage.getItem("ts_focus_debug") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const focusDebugFromUrl = searchParams.get("focusdebug") === "1";
 
   // TODO: make repoId dynamic from env/selection
   const repoId = "author-p131724-e1294209.adobeaemcloud.com";
@@ -872,6 +879,15 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                     </Text>
                   </View>
 
+                  <View marginBottom="size-150">
+                    <Switch isSelected={focusDebug} onChange={setFocusDebug}>
+                      Enable focus debug (logs focus messages)
+                    </Switch>
+                    <Text UNSAFE_style={{ opacity: 0.8, marginTop: 6 }}>
+                      Persists in localStorage. Useful when shell strips query params.
+                    </Text>
+                  </View>
+
                   <View marginBottom="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
                     <Heading level={5}>VF survival diagnostics</Heading>
 
@@ -968,3 +984,14 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     </View>
   );
 }
+  useEffect(() => {
+    if (focusDebugFromUrl) setFocusDebug(true);
+  }, [focusDebugFromUrl]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("ts_focus_debug", focusDebug ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [focusDebug]);
