@@ -467,12 +467,60 @@ export function injectPreviewFocusBridge(html) {
     box-shadow: 0 0 0 4px rgba(47, 111, 237, 0.18);
     transition: outline-color 120ms ease, box-shadow 120ms ease;
   }
+  .ts-vf-loading {
+    position: relative;
+    outline: 2px solid #4b84ff;
+    box-shadow: 0 0 0 6px rgba(75, 132, 255, 0.16);
+  }
+  .ts-vf-loading::after {
+    content: "";
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    top: 8px;
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #2f6fed, #86adff, #2f6fed);
+    background-size: 220% 100%;
+    animation: ts-vf-loading-bar 1.05s linear infinite;
+    pointer-events: none;
+  }
+  .ts-preview-insert-placeholder {
+    margin: 14px auto;
+    width: min(640px, calc(100% - 24px));
+    border: 1px dashed #7ea5f7;
+    border-radius: 10px;
+    background: rgba(116, 164, 255, 0.08);
+    height: 76px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #1f4fb6;
+    font-family: sans-serif;
+    font-size: 12px;
+    animation: ts-vf-loading-fade 0.95s ease-in-out infinite;
+  }
+  @keyframes ts-vf-loading-bar {
+    0% { background-position: 200% 0; }
+    100% { background-position: -20% 0; }
+  }
+  @keyframes ts-vf-loading-fade {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+  }
 </style>
 <script>
 (function(){
   function clearFocus(){
     var nodes = document.querySelectorAll('[data-fragment-id^="ajo:"]');
     for (var i=0;i<nodes.length;i++) nodes[i].classList.remove('ts-vf-focus');
+  }
+
+  function clearLoading(){
+    var nodes = document.querySelectorAll('.ts-vf-loading');
+    for (var i=0;i<nodes.length;i++) nodes[i].classList.remove('ts-vf-loading');
+    var ph = document.querySelector('.ts-preview-insert-placeholder');
+    if (ph && ph.parentNode) ph.parentNode.removeChild(ph);
   }
 
   function focusById(vfId){
@@ -516,7 +564,47 @@ export function injectPreviewFocusBridge(html) {
       }
       focusById(msg.vfId);
     }
-    if (msg.type === 'clear-vf') clearFocus();
+    if (msg.type === 'preview-op-start') {
+      clearLoading();
+      var data = msg.data || {};
+      var op = data.kind || "";
+      var vfId = data.vfId;
+      var moduleId = data.moduleId;
+      var ord = typeof data.vfOrdinal === 'number' ? data.vfOrdinal : null;
+      var target = null;
+
+      if (moduleId) {
+        var marker = document.querySelector('[data-ts-module-id="' + moduleId + '"]');
+        if (marker) target = marker.nextElementSibling || marker.parentElement || marker;
+      }
+      if (!target && vfId) {
+        var hits = document.querySelectorAll('[data-fragment-id="ajo:' + vfId + '"]');
+        if (hits && hits.length) {
+          var idx = ord != null ? Math.min(Math.max(ord, 0), hits.length - 1) : 0;
+          target = hits[idx] || hits[0];
+        }
+      }
+
+      if (target) {
+        target.classList.add('ts-vf-loading');
+        try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(e) {}
+        return;
+      }
+
+      if (op === 'pattern-add') {
+        var ph = document.createElement('div');
+        ph.className = 'ts-preview-insert-placeholder';
+        ph.textContent = 'Adding module…';
+        var anchor = document.querySelector('.acr-container') || document.body;
+        anchor.appendChild(ph);
+        try { ph.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(e) {}
+      }
+    }
+    if (msg.type === 'preview-op-clear') clearLoading();
+    if (msg.type === 'clear-vf') {
+      clearFocus();
+      clearLoading();
+    }
   });
 })();
 </script>

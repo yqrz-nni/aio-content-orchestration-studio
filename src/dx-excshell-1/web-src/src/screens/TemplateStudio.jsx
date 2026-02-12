@@ -483,6 +483,24 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     win.postMessage({ __TS_PREVIEW__: true, type: "clear-vf" }, "*");
   }
 
+  function emitPreviewOpStart(intent) {
+    const win = iframeRef.current?.contentWindow;
+    if (!win || !intent) return;
+    const payload = { kind: intent.kind, moduleId: intent.moduleId || null, vfId: intent.vfId || null, vfOrdinal: null };
+    if (intent.moduleId) {
+      const idx = modules.findIndex((m) => m?.moduleId === intent.moduleId);
+      if (idx >= 0) {
+        const vfId = intent.vfId || modules[idx]?.vfId || null;
+        payload.vfId = vfId;
+        if (vfId) {
+          const same = modules.slice(0, idx + 1).filter((m) => m?.vfId === vfId);
+          payload.vfOrdinal = Math.max(0, same.length - 1);
+        }
+      }
+    }
+    win.postMessage({ __TS_PREVIEW__: true, type: "preview-op-start", data: payload }, "*");
+  }
+
   function isInteractiveTarget(target) {
     if (!target || typeof target.closest !== "function") return false;
     return Boolean(
@@ -644,6 +662,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       const intent = pendingRenderIntentRef.current || { kind: "rerender" };
       pendingRenderIntentRef.current = null;
       setActiveRenderIntent(intent);
+      if (intent.kind === "vf-hydration" || intent.kind === "pattern-add") emitPreviewOpStart(intent);
 
       try {
         previewScrollRef.current = iframeRef.current?.contentWindow?.scrollY || 0;
@@ -812,10 +831,10 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const loadingUi = useMemo(() => {
     const kind = activeRenderIntent?.kind || "rerender";
     if (kind === "pattern-add") {
-      return { title: "Adding pattern", detail: "Updating preview with the new module.", mode: "skeleton" };
+      return { title: "Adding pattern", detail: "Updating preview with the new module.", mode: "targeted" };
     }
     if (kind === "vf-hydration") {
-      return { title: "Hydrating content", detail: "Applying content fragment data.", mode: "skeleton" };
+      return { title: "Hydrating content", detail: "Applying content fragment data.", mode: "targeted" };
     }
     if (kind === "module-reorder") {
       return { title: "Reordering modules", detail: "Refreshing preview order.", mode: "soft" };
@@ -976,7 +995,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                     </View>
                   ) : null}
 
-                  <div className={`PreviewCanvas ${isRendering ? "is-rendering" : ""}`}>
+                  <div className={`PreviewCanvas ${isRendering && loadingUi.mode !== "targeted" ? "is-rendering" : ""}`}>
                     <iframe
                       title="Email Preview"
                       style={{ width: "100%", height: "100%", border: "none" }}
@@ -999,7 +1018,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                         }
                       }}
                     />
-                    {isRendering ? (
+                    {isRendering && loadingUi.mode !== "targeted" ? (
                       <div className={`PreviewLoadingOverlay mode-${loadingUi.mode}`} aria-live="polite">
                         <div className="PreviewLoadingHeader">
                           <div className="PreviewLoadingDot" />
