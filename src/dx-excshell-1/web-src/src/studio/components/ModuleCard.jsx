@@ -44,6 +44,8 @@ export function ModuleCard({ module, index, vfItems, contentOptions, onBindConte
       onPointerLeave={() => onBlurVf && onBlurVf()}
       onFocus={() => onFocusVf && onFocusVf(module?.vfId)}
       onBlur={() => onBlurVf && onBlurVf()}
+      onMouseDown={(ev) => ev.stopPropagation()}
+      onPointerDown={(ev) => ev.stopPropagation()}
       onClick={(ev) => {
         ev.stopPropagation();
         if (onPinVf) onPinVf(module?.vfId);

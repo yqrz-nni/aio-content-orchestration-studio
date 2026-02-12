@@ -264,10 +264,17 @@ export function extractAllAjoVfIdsFromHtml(html) {
 
 export function injectPreviewMarkers(html) {
   if (!html || typeof html !== "string") return html;
+  // Prefer module markers so we can disambiguate duplicate VFs.
+  const moduleCommentRe = /<!--\s*ts:module\s+id="([^"]+)"\s*-->/gim;
+  let out = html.replace(moduleCommentRe, (_m, moduleId) => {
+    if (!moduleId) return _m;
+    return `<span data-ts-module-id="${moduleId}" data-ts-marker="true"></span>`;
+  });
+
   const moduleRe =
     /<!--\s*ts:module\s+id="([^"]+)"\s*-->([\s\S]*?)({{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:([^'"]+)\4[^}]*}})/gim;
 
-  let out = html.replace(moduleRe, (_m, moduleId, before, frag, _q, vfId) => {
+  out = out.replace(moduleRe, (_m, moduleId, before, frag, _q, vfId) => {
     if (!moduleId || !vfId) return _m;
     const marker = `<span data-ts-module-id="${moduleId}" data-fragment-id="ajo:${vfId}" data-ts-marker="true"></span>`;
     return `<!-- ts:module id="${moduleId}" -->${before}${marker}${frag}`;
