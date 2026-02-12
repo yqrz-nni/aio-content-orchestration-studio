@@ -28,8 +28,6 @@ export function ModuleCard({
   canMoveDown,
   isFocused,
   isPinned,
-  isBusy = false,
-  busyLabel = "Updating module...",
 }) {
   const [isEditingContent, setIsEditingContent] = useState(false);
   const name = vfNameById(vfItems, module?.vfId);
@@ -215,45 +213,6 @@ export function ModuleCard({
         </Button>
       </Flex>
 
-      {isBusy ? (
-        <div
-          aria-live="polite"
-          style={{
-            position: "absolute",
-            inset: 0,
-            background: "rgba(15, 23, 42, 0.62)",
-            backdropFilter: "blur(1px)",
-            borderRadius: 6,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            pointerEvents: "all",
-            zIndex: 9,
-          }}
-        >
-          <div
-            style={{
-              background: "rgba(255, 255, 255, 0.96)",
-              border: "1px solid #cdd8ec",
-              borderRadius: 10,
-              padding: "10px 12px",
-              minWidth: 220,
-              boxShadow: "0 10px 26px rgba(2, 6, 23, 0.24)",
-            }}
-          >
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#1f2a44", marginBottom: 8 }}>{busyLabel}</div>
-            <div
-              style={{
-                height: 5,
-                borderRadius: 999,
-                background: "linear-gradient(90deg, #2f6fed 0%, #74a4ff 50%, #2f6fed 100%)",
-                backgroundSize: "220% 100%",
-                animation: "preview-shimmer 1s linear infinite",
-              }}
-            />
-          </div>
-        </div>
-      ) : null}
     </View>
   );
 }

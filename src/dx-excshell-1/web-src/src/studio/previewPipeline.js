@@ -469,44 +469,44 @@ export function injectPreviewFocusBridge(html) {
   }
   .ts-vf-loading {
     position: relative;
-    outline: 3px solid #2f6fed;
-    box-shadow: 0 0 0 8px rgba(47, 111, 237, 0.2), inset 0 0 0 9999px rgba(79, 141, 255, 0.06);
+    overflow: hidden;
+    outline: 2px solid #2f6fed;
+    box-shadow: 0 0 0 6px rgba(47, 111, 237, 0.18);
     transition: outline-color 120ms ease, box-shadow 120ms ease;
   }
-  .ts-vf-loading::after {
+  .ts-vf-loading::before {
     content: "";
     position: absolute;
-    left: 12px;
-    right: 12px;
-    top: 10px;
-    height: 5px;
-    border-radius: 999px;
-    background: linear-gradient(90deg, #1f55d8, #72a2ff 45%, #1f55d8);
-    background-size: 240% 100%;
-    animation: ts-vf-loading-bar 1.05s linear infinite;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.62);
     pointer-events: none;
+    z-index: 6;
+  }
+  .ts-vf-loading::after {
+    content: none;
   }
   .ts-vf-loading-badge {
     position: absolute;
-    top: 20px;
+    top: 50%;
     left: 50%;
-    transform: translateX(-50%);
+    transform: translate(-50%, -50%);
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 3px 8px;
-    border-radius: 999px;
-    border: 1px solid rgba(47, 111, 237, 0.32);
-    background: rgba(255, 255, 255, 0.96);
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: 1px solid #c9d8f7;
+    background: rgba(255, 255, 255, 0.98);
     color: #1b4fca;
     font-family: sans-serif;
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 700;
     letter-spacing: 0.1px;
-    z-index: 9;
-    box-shadow: 0 2px 8px rgba(30, 71, 156, 0.15);
+    z-index: 8;
+    box-shadow: 0 8px 24px rgba(15, 23, 42, 0.28);
     animation: ts-vf-loading-fade 0.95s ease-in-out infinite;
     pointer-events: none;
+    white-space: nowrap;
   }
   .ts-vf-loading-badge .ts-vf-loading-dot {
     width: 6px;
@@ -529,10 +529,6 @@ export function injectPreviewFocusBridge(html) {
     font-family: sans-serif;
     font-size: 12px;
     animation: ts-vf-loading-fade 0.95s ease-in-out infinite;
-  }
-  @keyframes ts-vf-loading-bar {
-    0% { background-position: 200% 0; }
-    100% { background-position: -20% 0; }
   }
   @keyframes ts-vf-loading-fade {
     0%, 100% { opacity: 0.5; }
@@ -563,7 +559,7 @@ export function injectPreviewFocusBridge(html) {
     if (!target) return;
     var existing = target.querySelector('.ts-vf-loading-badge');
     if (existing) {
-      existing.textContent = text || 'Binding content…';
+      existing.textContent = text || 'Applying update...';
       return;
     }
     try {
@@ -575,7 +571,7 @@ export function injectPreviewFocusBridge(html) {
     var dot = document.createElement('span');
     dot.className = 'ts-vf-loading-dot';
     var label = document.createElement('span');
-    label.textContent = text || 'Content binding…';
+    label.textContent = text || 'Applying update...';
     badge.appendChild(dot);
     badge.appendChild(label);
     target.appendChild(badge);
@@ -646,7 +642,10 @@ export function injectPreviewFocusBridge(html) {
 
       if (target) {
         target.classList.add('ts-vf-loading');
-        addLoadingBadge(target, op === 'vf-hydration' ? 'Content binding…' : 'Updating…');
+        var opLabel = 'Applying update...';
+        if (op === 'vf-hydration') opLabel = 'Applying content binding...';
+        if (op === 'pattern-change') opLabel = 'Applying pattern change...';
+        addLoadingBadge(target, opLabel);
         try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(e) {}
         return;
       }
@@ -654,7 +653,7 @@ export function injectPreviewFocusBridge(html) {
       if (op === 'pattern-add') {
         var ph = document.createElement('div');
         ph.className = 'ts-preview-insert-placeholder';
-        ph.textContent = 'Adding module…';
+        ph.textContent = 'Adding module...';
         var anchor = document.querySelector('.acr-container') || document.body;
         anchor.appendChild(ph);
         try { ph.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(e) {}
@@ -675,3 +674,4 @@ export function injectPreviewFocusBridge(html) {
   }
   return `${html}\n${script}`;
 }
+
