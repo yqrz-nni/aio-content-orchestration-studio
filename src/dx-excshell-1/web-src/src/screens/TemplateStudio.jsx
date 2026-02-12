@@ -30,6 +30,7 @@ import {
   appendPatternOnlyToTemplateHtml,
   bindContentInModuleHtml,
   hydrateFromHtml,
+  moveModuleInTemplateHtml,
   removeModuleFromTemplateHtml,
   stripTsModuleMarkers,
 } from "../studio/templateEngine";
@@ -581,6 +582,27 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     });
   }
 
+  function moveModule(moduleId, direction) {
+    if (!moduleId) return;
+    if (direction !== "up" && direction !== "down") return;
+
+    enqueue(async () => {
+      setModules((prev) => {
+        const idx = prev.findIndex((m) => m?.moduleId === moduleId);
+        if (idx < 0) return prev;
+        const targetIdx = direction === "up" ? idx - 1 : idx + 1;
+        if (targetIdx < 0 || targetIdx >= prev.length) return prev;
+        const next = prev.slice();
+        const tmp = next[idx];
+        next[idx] = next[targetIdx];
+        next[targetIdx] = tmp;
+        return next;
+      });
+
+      setCanonicalHtml((prevHtml) => moveModuleInTemplateHtml(prevHtml, moduleId, direction));
+    });
+  }
+
   async function renderPreview() {
     let canonicalForRender = "";
     try {
@@ -832,9 +854,13 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                     index={idx}
                     vfItems={vfItems}
                     contentOptions={contentOptions}
+                    canMoveUp={idx > 0}
+                    canMoveDown={idx < modules.length - 1}
                     isFocused={activeModuleId === m.moduleId}
                     isPinned={pinnedModule?.moduleId === m.moduleId}
                     onBindContent={bindContent}
+                    onMoveUp={(id) => moveModule(id, "up")}
+                    onMoveDown={(id) => moveModule(id, "down")}
                     onRemove={removeModule}
                   />
                 </div>

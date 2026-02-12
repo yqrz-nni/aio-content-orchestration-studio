@@ -8,7 +8,20 @@ function vfNameById(vfItems, vfId) {
   return hit?.name || vfId || "(unknown VF)";
 }
 
-export function ModuleCard({ module, index, vfItems, contentOptions, onBindContent, onRemove, isFocused, isPinned }) {
+export function ModuleCard({
+  module,
+  index,
+  vfItems,
+  contentOptions,
+  onBindContent,
+  onRemove,
+  onMoveUp,
+  onMoveDown,
+  canMoveUp,
+  canMoveDown,
+  isFocused,
+  isPinned,
+}) {
   const name = vfNameById(vfItems, module?.vfId);
 
   const status = module?.contentId ? (
@@ -70,7 +83,15 @@ export function ModuleCard({ module, index, vfItems, contentOptions, onBindConte
         ))}
       </ComboBox>
 
-      <Flex justifyContent="end" marginTop="size-100">
+      <Flex justifyContent="space-between" marginTop="size-100" gap="size-100" alignItems="center">
+        <Flex gap="size-100">
+          <Button variant="secondary" onPress={() => onMoveUp(module.moduleId)} isDisabled={!canMoveUp}>
+            Move up
+          </Button>
+          <Button variant="secondary" onPress={() => onMoveDown(module.moduleId)} isDisabled={!canMoveDown}>
+            Move down
+          </Button>
+        </Flex>
         <Button variant="secondary" onPress={() => onRemove(module.moduleId)}>
           Remove
         </Button>

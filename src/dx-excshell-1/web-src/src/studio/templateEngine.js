@@ -195,6 +195,47 @@ export function removeModuleFromTemplateHtml(html, moduleId) {
 }
 
 /**
+ * Reorder one module block by one step using ts:module markers.
+ * Direction is "up" or "down". If move is invalid/no-op, returns original html.
+ */
+export function moveModuleInTemplateHtml(html, moduleId, direction) {
+  if (!html || !moduleId) return html;
+  if (direction !== "up" && direction !== "down") return html;
+
+  const markerRe = /<!--\s*ts:module\s+id="([^"]+)"\s*-->([\s\S]*?)<!--\s*ts:module-end\s+id="\1"\s*-->\s*/gim;
+  const blocks = [];
+  let m;
+  while ((m = markerRe.exec(html)) !== null) {
+    blocks.push({
+      id: m[1],
+      start: m.index,
+      end: markerRe.lastIndex,
+      raw: m[0],
+    });
+  }
+
+  if (!blocks.length) return html;
+
+  const idx = blocks.findIndex((b) => b.id === moduleId);
+  if (idx < 0) return html;
+
+  const targetIdx = direction === "up" ? idx - 1 : idx + 1;
+  if (targetIdx < 0 || targetIdx >= blocks.length) return html;
+
+  const sorted = blocks.slice();
+  const tmp = sorted[idx];
+  sorted[idx] = sorted[targetIdx];
+  sorted[targetIdx] = tmp;
+
+  const firstStart = blocks[0].start;
+  const lastEnd = blocks[blocks.length - 1].end;
+  const prefix = html.slice(0, firstStart);
+  const suffix = html.slice(lastEnd);
+  const middle = sorted.map((b) => b.raw).join("");
+  return `${prefix}${middle}${suffix}`;
+}
+
+/**
  * Hydrate state from an existing AJO template HTML.
  * Best-effort parsing:
  *  - PRB: result='prbProperties' binding => selectedPrbId
