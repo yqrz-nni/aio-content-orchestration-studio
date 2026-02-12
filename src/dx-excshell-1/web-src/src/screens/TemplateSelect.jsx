@@ -261,6 +261,11 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
     }
   }
 
+  const selectedTemplate = useMemo(
+    () => templates.find((t) => t.id === selectedTemplateId) || null,
+    [templates, selectedTemplateId]
+  );
+
   return (
     <View UNSAFE_style={{ opacity: isDisabled ? 0.5 : 1, pointerEvents: isDisabled ? "none" : "auto" }} UNSAFE_className={mode === "embedded" ? "FlowCompact" : ""}>
       {mode !== "embedded" ? (
@@ -389,7 +394,3 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
     </View>
   );
 }
-  const selectedTemplate = useMemo(
-    () => templates.find((t) => t.id === selectedTemplateId) || null,
-    [templates, selectedTemplateId]
-  );
