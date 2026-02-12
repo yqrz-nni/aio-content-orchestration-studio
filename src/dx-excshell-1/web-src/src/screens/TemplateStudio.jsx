@@ -565,6 +565,20 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     }
   }
 
+  function exportRenderedHtml() {
+    const html = typeof lastRenderResult?.renderedHtml === "string" ? lastRenderResult.renderedHtml : "";
+    if (!html) return;
+    const win = window.open("", "_blank", "noopener,noreferrer");
+    if (!win) return;
+    try {
+      win.document.open();
+      win.document.write(html);
+      win.document.close();
+    } catch {
+      // ignore
+    }
+  }
+
   function tryDirectIframeFocus({ vfId, vfOrdinal }) {
     const doc = iframeRef.current?.contentDocument;
     if (!doc || !vfId) {
@@ -1336,38 +1350,48 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
         {/* Right: Preview + Diagnostics tabs */}
         <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200" UNSAFE_className="StudioPreviewPanel">
-          <Flex justifyContent="space-between" alignItems="center">
-            <Heading level={4}>Preview</Heading>
-            <Flex gap="size-100" alignItems="center">
+          <Flex justifyContent="space-between" alignItems="start">
+            <Heading level={4} UNSAFE_style={{ margin: 0, fontSize: 16 }}>Preview</Heading>
+            <Flex direction="column" gap="size-50" alignItems="end">
               {saveStatus ? <StatusLight variant={saveStatus === "Saved" ? "positive" : "negative"}>{saveStatus}</StatusLight> : null}
-              <Button variant="secondary" onPress={saveTemplate} isDisabled={!templateId || !canonicalHtml || isSavingTemplate}>
-                {isSavingTemplate ? "Saving..." : "Save"}
-              </Button>
-              <TooltipTrigger>
-                <ActionButton
-                  isQuiet
-                  aria-label="Open template in AJO"
-                  isDisabled={!templateHref}
-                  onPress={() => safeOpenNewTab(templateHref)}
+              <Flex gap="size-75" alignItems="center" wrap>
+                <Button variant="secondary" onPress={saveTemplate} isDisabled={!templateId || !canonicalHtml || isSavingTemplate}>
+                  {isSavingTemplate ? "Saving..." : "Save"}
+                </Button>
+                <TooltipTrigger>
+                  <ActionButton
+                    isQuiet
+                    aria-label="Open template in AJO"
+                    isDisabled={!templateHref}
+                    onPress={() => safeOpenNewTab(templateHref)}
+                  >
+                    <ExternalOpenIcon />
+                  </ActionButton>
+                  <Tooltip>{templateHref ? "Open template in AJO (new tab)" : "Template link unavailable"}</Tooltip>
+                </TooltipTrigger>
+                <Button
+                  variant="primary"
+                  onPress={() => {
+                    queueRenderIntent("manual");
+                    renderPreview();
+                  }}
+                  isDisabled={!canonicalHtml || isRendering}
                 >
-                  <ExternalOpenIcon />
-                </ActionButton>
-                <Tooltip>{templateHref ? "Open template in AJO (new tab)" : "Template link unavailable"}</Tooltip>
-              </TooltipTrigger>
+                  {isRendering ? "Refreshing..." : "Refresh"}
+                </Button>
+              </Flex>
               <Button
-                variant="primary"
-                onPress={() => {
-                  queueRenderIntent("manual");
-                  renderPreview();
-                }}
-                isDisabled={!canonicalHtml || isRendering}
+                variant="secondary"
+                isQuiet
+                onPress={exportRenderedHtml}
+                isDisabled={!lastRenderResult?.renderedHtml}
               >
-                {isRendering ? "Refreshing..." : "Refresh"}
+                Export HTML
               </Button>
             </Flex>
           </Flex>
 
-          <Divider size="S" marginY="size-150" />
+          <Divider size="S" marginY="size-100" />
 
           <Tabs aria-label="Preview Tabs" selectedKey={activeTab} onSelectionChange={setActiveTab}>
             <TabList>
