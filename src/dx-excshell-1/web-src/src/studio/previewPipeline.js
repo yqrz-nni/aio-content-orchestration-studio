@@ -141,9 +141,39 @@ export function resolveCfByStructure({ stitchedHtml, aemBindingsEncountered, aem
   return stitchedHtml.trimStart().toLowerCase().startsWith("<!doctype") ? `<!DOCTYPE html>\n${docHtml}` : docHtml;
 }
 
+function hasUnboundVfModules(html) {
+  if (!html || typeof html !== "string") return false;
+  if (typeof DOMParser === "undefined") return /ajo:[^'"]+/.test(html) && !/result=(['"])cf\1/.test(html);
+
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, "text/html");
+    const structures = doc.querySelectorAll(".acr-structure");
+    if (!structures.length) return false;
+
+    for (const structure of structures) {
+      const hasVf = structure.querySelector('[data-fragment-id^="ajo:"]') || /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:/i.test(structure.innerHTML);
+      if (!hasVf) continue;
+
+      const hasCf = /{{\s*fragment\b[^}]*\bresult\s*=\s*(['"])cf\1/i.test(structure.innerHTML);
+      if (!hasCf) return true;
+    }
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
 export function resolvePreviewHtmlFromRenderResult(renderResult, fallbackHtml) {
   if (typeof renderResult?.renderedHtml === "string" && renderResult.renderedHtml.trim()) {
-    return renderResult.renderedHtml;
+    const stitched = renderResult?.stitchedHtml ?? renderResult?.html ?? fallbackHtml ?? "";
+    const cfBindings = (Array.isArray(renderResult?.aemBindingsEncountered) ? renderResult.aemBindingsEncountered : []).filter(
+      (b) => b?.result === "cf"
+    ).length;
+    const vfIds = extractAllAjoVfIdsFromHtml(stitched);
+    const likelyUnbound = cfBindings > 0 && vfIds.length > 0 && cfBindings < vfIds.length;
+    if (!likelyUnbound && !hasUnboundVfModules(stitched)) return renderResult.renderedHtml;
   }
 
   const stitchedHtml = renderResult?.stitchedHtml ?? renderResult?.html ?? fallbackHtml ?? "";
