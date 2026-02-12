@@ -243,8 +243,9 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   }
 
   async function loadVfs() {
-    const res = await actionWebInvoke(actions["ajo-vf-demo"], headers);
-    setVfItems(res?.fragments || []);
+    const res = await actionWebInvoke(actions["ajo-vf-list"], headers);
+    const items = res?.items || res?.fragments || [];
+    setVfItems(items);
   }
 
   async function loadContentList() {
