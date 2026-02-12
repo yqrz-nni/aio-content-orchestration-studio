@@ -151,6 +151,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const [previewHtml, setPreviewHtml] = useState("");
   const iframeRef = useRef(null);
   const previewScrollRef = useRef(0);
+  const pendingPatternOverlayReplayRef = useRef(null);
 
   const [lastRenderResult, setLastRenderResult] = useState(null);
   const [lastBestHtml, setLastBestHtml] = useState("");
@@ -573,6 +574,11 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
           payload.vfOrdinal = Math.max(0, same.length - 1);
         }
       }
+    }
+    if (payload.kind === "pattern-change") {
+      pendingPatternOverlayReplayRef.current = payload;
+    } else {
+      pendingPatternOverlayReplayRef.current = null;
     }
     if (!win) return;
     win.postMessage({ __TS_PREVIEW__: true, type: "preview-op-start", data: payload }, "*");
@@ -1294,6 +1300,20 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                           if (focus?.vfId || focus?.moduleId) {
                             focusPreviewVf(focus);
                             if (pendingFocusModule) setPendingFocusModule(null);
+                          }
+                          const replay = pendingPatternOverlayReplayRef.current;
+                          if (replay?.kind === "pattern-change") {
+                            win.postMessage({ __TS_PREVIEW__: true, type: "preview-op-start", data: replay }, "*");
+                            window.setTimeout(() => {
+                              try {
+                                const w = iframeRef.current?.contentWindow;
+                                if (!w) return;
+                                w.postMessage({ __TS_PREVIEW__: true, type: "preview-op-clear" }, "*");
+                              } catch {
+                                // ignore
+                              }
+                            }, 900);
+                            pendingPatternOverlayReplayRef.current = null;
                           }
                         } catch {
                           // ignore
