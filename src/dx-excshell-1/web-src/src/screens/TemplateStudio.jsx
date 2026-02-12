@@ -1098,6 +1098,15 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     return { title: "Updating preview", detail: "Applying latest changes.", mode: "soft" };
   }, [activeRenderIntent]);
 
+  const moduleBusy = useMemo(() => {
+    const kind = activeRenderIntent?.kind || "";
+    const moduleId = activeRenderIntent?.moduleId || null;
+    if (!moduleId) return null;
+    if (kind === "vf-hydration") return { moduleId, label: "Applying content binding..." };
+    if (kind === "pattern-change") return { moduleId, label: "Applying pattern change..." };
+    return null;
+  }, [activeRenderIntent]);
+
   useEffect(() => {
     modulesRef.current = Array.isArray(modules) ? modules : [];
   }, [modules]);
@@ -1226,6 +1235,8 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                     canMoveDown={idx < modules.length - 1}
                     isFocused={activeModuleId === m.moduleId}
                     isPinned={pinnedModule?.moduleId === m.moduleId}
+                    isBusy={moduleBusy?.moduleId === m.moduleId}
+                    busyLabel={moduleBusy?.label || "Updating module..."}
                     onBindContent={bindContent}
                     onChangePattern={changePattern}
                     onMoveUp={(id) => moveModule(id, "up")}
