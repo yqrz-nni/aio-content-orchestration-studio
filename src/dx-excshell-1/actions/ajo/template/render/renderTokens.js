@@ -840,6 +840,22 @@ function evaluateLiquidIfElseBlocks(html, { ctx, vars, locale = "en-US", diag } 
   return out;
 }
 
+function replaceBodyCopyVarBestEffort(segment, cfCtx) {
+  if (!segment || typeof segment !== "string") return segment;
+  if (!cfCtx || typeof cfCtx !== "object") return segment;
+
+  const list = Array.isArray(cfCtx.bodyCopy) ? cfCtx.bodyCopy : [];
+  if (!list.length) return segment;
+
+  const first = list[0];
+  const raw = coerceValue(first);
+  const safe = escapeHtml(raw);
+
+  let out = segment.replace(/\{\{\{\s*bodyCopy\s*\}\}\}/g, raw);
+  out = out.replace(/\{\{\s*bodyCopy\s*\}\}/g, safe);
+  return out;
+}
+
 /**
  * Parse all `{% let name = expr %}` blocks in-order.
  * Also supports `{% assign name = expr %}`.
@@ -1421,6 +1437,10 @@ function renderNamespaceByBindingOrder({
       });
     }
 
+    if (namespace === "cf") {
+      maybeExpanded = replaceBodyCopyVarBestEffort(maybeExpanded, defaultCtx);
+    }
+
     // Resolve brandProps tokens anywhere in this pass (header links, logo src, etc.)
     maybeExpanded = replaceNamespaceVars(maybeExpanded, "brandProps", brandPropsCtx);
 
@@ -1483,6 +1503,10 @@ function renderNamespaceByBindingOrder({
         diag,
         segmentKey: segKey,
       });
+    }
+
+    if (namespace === "cf") {
+      before = replaceBodyCopyVarBestEffort(before, effectiveCtx);
     }
 
     // Resolve style + brandProps vars that can appear outside fragments
@@ -1554,6 +1578,7 @@ function renderNamespaceByBindingOrder({
           diag,
           segmentKey: "cf:tail",
         });
+        boundBlock = replaceBodyCopyVarBestEffort(boundBlock, effectiveCtx);
         boundBlock = replaceNamespaceVars(boundBlock, "brandProps", brandPropsCtx);
         boundBlock = replaceNamespaceVars(boundBlock, namespace, effectiveCtx);
 
@@ -1581,6 +1606,10 @@ function renderNamespaceByBindingOrder({
       diag,
       segmentKey: "cf:tail",
     });
+  }
+
+  if (namespace === "cf") {
+    tail = replaceBodyCopyVarBestEffort(tail, effectiveCtx);
   }
 
   tail = replaceNamespaceVars(tail, "brandProps", brandPropsCtx);
