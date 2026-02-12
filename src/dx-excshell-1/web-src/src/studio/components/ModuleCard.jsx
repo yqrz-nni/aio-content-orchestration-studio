@@ -8,7 +8,7 @@ function vfNameById(vfItems, vfId) {
   return hit?.name || vfId || "(unknown VF)";
 }
 
-export function ModuleCard({ module, index, vfItems, contentOptions, onBindContent, onRemove, onFocusVf, onBlurVf, onPinVf, isFocused, isPinned }) {
+export function ModuleCard({ module, index, vfItems, contentOptions, onBindContent, onRemove, isFocused, isPinned }) {
   const name = vfNameById(vfItems, module?.vfId);
 
   const status = module?.contentId ? (
@@ -38,18 +38,6 @@ export function ModuleCard({ module, index, vfItems, contentOptions, onBindConte
       padding="size-150"
       marginBottom="size-150"
       backgroundColor={isFocused ? "blue-50" : "gray-50"}
-      onMouseEnter={() => onFocusVf && onFocusVf(module?.vfId)}
-      onMouseLeave={() => onBlurVf && onBlurVf()}
-      onPointerEnter={() => onFocusVf && onFocusVf(module?.vfId)}
-      onPointerLeave={() => onBlurVf && onBlurVf()}
-      onFocus={() => onFocusVf && onFocusVf(module?.vfId)}
-      onBlur={() => onBlurVf && onBlurVf()}
-      onMouseDown={(ev) => ev.stopPropagation()}
-      onPointerDown={(ev) => ev.stopPropagation()}
-      onClick={(ev) => {
-        ev.stopPropagation();
-        if (onPinVf) onPinVf(module?.vfId);
-      }}
       tabIndex={0}
       UNSAFE_style={
         isFocused

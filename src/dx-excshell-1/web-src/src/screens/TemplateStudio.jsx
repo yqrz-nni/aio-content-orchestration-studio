@@ -31,6 +31,7 @@ import {
   bindContentInModuleHtml,
   hydrateFromHtml,
   removeModuleFromTemplateHtml,
+  stripTsModuleMarkers,
 } from "../studio/templateEngine";
 
 import {
@@ -367,37 +368,98 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
           vars: { firstName: "" },
         },
       ];
+      const vfOrdinal = nextModules.filter((m) => m?.vfId === vfId).length - 1;
       setModules(nextModules);
       setPendingScrollModuleId(moduleId);
       setPinnedModule({ moduleId, vfId });
       setHoveredModule(null);
-      setPendingFocusModule({ moduleId, vfId });
+      setPendingFocusModule({ moduleId, vfId, vfOrdinal });
 
       const nextHtml = appendPatternOnlyToTemplateHtml(canonicalHtml, { vfId, moduleId });
       setCanonicalHtml(nextHtml);
     });
   }
 
-  function focusPreviewVf({ moduleId, vfId }) {
+  function tryDirectIframeFocus({ vfId, vfOrdinal }) {
+    const doc = iframeRef.current?.contentDocument;
+    if (!doc || !vfId) {
+      if (focusDebug) {
+        // eslint-disable-next-line no-console
+        console.log("focus-direct: no iframe document or vfId", { hasDoc: Boolean(doc), vfId });
+      }
+      return false;
+    }
+
+    const styleId = "ts-focus-style";
+    if (!doc.getElementById(styleId)) {
+      const style = doc.createElement("style");
+      style.id = styleId;
+      style.textContent =
+        ".ts-vf-focus{outline:2px solid #2f6fed;box-shadow:0 0 0 4px rgba(47,111,237,.18);transition:outline-color 120ms ease,box-shadow 120ms ease;}";
+      doc.head?.appendChild(style);
+    }
+
+    doc.querySelectorAll(".ts-vf-focus").forEach((el) => el.classList.remove("ts-vf-focus"));
+    const hits = doc.querySelectorAll(`[data-fragment-id="ajo:${vfId}"]`);
+    if (!hits.length) {
+      if (focusDebug) {
+        // eslint-disable-next-line no-console
+        console.log("focus-direct: no matches", { vfId });
+      }
+      return false;
+    }
+    const idx = typeof vfOrdinal === "number" ? Math.min(Math.max(vfOrdinal, 0), hits.length - 1) : 0;
+    const target = hits[idx];
+    if (!target) return false;
+    target.classList.add("ts-vf-focus");
+    try {
+      target.scrollIntoView({ block: "center", behavior: "smooth" });
+    } catch {
+      // ignore
+    }
+    return true;
+  }
+
+  function clearDirectIframeFocus() {
+    const doc = iframeRef.current?.contentDocument;
+    if (!doc) return false;
+    doc.querySelectorAll(".ts-vf-focus").forEach((el) => el.classList.remove("ts-vf-focus"));
+    return true;
+  }
+
+  function focusPreviewVf({ moduleId, vfId, vfOrdinal: vfOrdinalInput }) {
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
-    const moduleIndex = modules.findIndex((m) => m.moduleId === moduleId);
-    let vfOrdinal = 0;
-    if (moduleIndex >= 0) {
-      const same = modules.slice(0, moduleIndex + 1).filter((m) => m?.vfId === vfId);
-      vfOrdinal = Math.max(0, same.length - 1);
+    let vfOrdinal = Number.isFinite(vfOrdinalInput) ? vfOrdinalInput : 0;
+    if (!Number.isFinite(vfOrdinalInput)) {
+      const moduleIndex = modules.findIndex((m) => m.moduleId === moduleId);
+      if (moduleIndex >= 0) {
+        const same = modules.slice(0, moduleIndex + 1).filter((m) => m?.vfId === vfId);
+        vfOrdinal = Math.max(0, same.length - 1);
+      }
     }
     if (focusDebug) {
       // eslint-disable-next-line no-console
       console.log("focus->iframe", { moduleId, vfId, vfOrdinal });
     }
+    if (tryDirectIframeFocus({ vfId, vfOrdinal })) return;
     win.postMessage({ __TS_PREVIEW__: true, type: "focus-vf", vfId, moduleId, vfOrdinal }, "*");
   }
 
   function clearPreviewFocus() {
+    if (clearDirectIframeFocus()) return;
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
     win.postMessage({ __TS_PREVIEW__: true, type: "clear-vf" }, "*");
+  }
+
+  function isInteractiveTarget(target) {
+    if (!target || typeof target.closest !== "function") return false;
+    return Boolean(
+      target.closest(
+        "button,[role='button'],[role='combobox'],[role='listbox'],input,select,textarea,a,.spectrum-Button,.spectrum-Textfield,.spectrum-ComboBox"
+      )
+    );
   }
 
   function safeInjectMarkers(html) {
@@ -517,6 +579,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   }
 
   async function renderPreview() {
+    let canonicalForRender = "";
     try {
       setRenderError("");
       setPreviewWarnings([]);
@@ -534,6 +597,8 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         return;
       }
 
+      canonicalForRender = stripTsModuleMarkers(canonicalHtml);
+
       const renderContext = {
         prb: {
           id: selectedPrb?.id,
@@ -547,13 +612,13 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       };
 
       const res = await actionWebInvoke(actions["ajo-template-render"], headers, {
-        html: canonicalHtml,
+        html: canonicalForRender,
         renderContext,
       });
 
       setLastRenderResult(res || null);
 
-      const best = resolvePreviewHtmlFromRenderResult(res, canonicalHtml);
+      const best = resolvePreviewHtmlFromRenderResult(res, canonicalForRender);
       if (!best || typeof best !== "string") {
         setPreviewHtml("<html><body><p>Render succeeded but returned no HTML.</p></body></html>");
         return;
@@ -592,7 +657,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       console.error("Render preview failed:", e);
       setRenderError(e?.message || "Render failed");
       setPreviewWarnings([]);
-      const fallback = stripAjoSyntax(canonicalHtml || "<html><body><p>Render failed.</p></body></html>");
+      const fallback = stripAjoSyntax(canonicalForRender || "<html><body><p>Render failed.</p></body></html>");
       const marked = safeInjectMarkers(fallback);
       setPreviewHtml(safeInjectFocusBridge(marked));
     } finally {
@@ -735,35 +800,40 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
               <Text UNSAFE_style={{ opacity: 0.85 }}>No modules yet. Add a pattern to start.</Text>
             ) : (
               modules.map((m, idx) => (
-                <div key={`wrap-${m.moduleId}`} data-module-id={m.moduleId}>
-                <ModuleCard
-                  key={m.moduleId}
-                  module={m}
-                  index={idx}
-                  vfItems={vfItems}
-                  contentOptions={contentOptions}
-                  onFocusVf={(id) => {
+                <div
+                  key={`wrap-${m.moduleId}`}
+                  data-module-id={m.moduleId}
+                  onPointerEnter={() => {
                     if (pinnedModule) return;
-                    const next = { moduleId: m.moduleId, vfId: id };
+                    const next = { moduleId: m.moduleId, vfId: m.vfId };
                     setHoveredModule(next);
                     focusPreviewVf(next);
                   }}
-                  onBlurVf={() => {
+                  onPointerLeave={() => {
                     if (pinnedModule) return;
                     setHoveredModule(null);
                   }}
-                  onPinVf={(id) => {
+                  onClick={(ev) => {
+                    if (isInteractiveTarget(ev.target)) return;
                     setPinnedModule((cur) => {
-                      const next = cur?.moduleId === m.moduleId ? null : { moduleId: m.moduleId, vfId: id };
+                      const next = cur?.moduleId === m.moduleId ? null : { moduleId: m.moduleId, vfId: m.vfId };
                       if (next) focusPreviewVf(next);
                       return next;
                     });
+                    setHoveredModule(null);
                   }}
-                  isFocused={activeModuleId === m.moduleId}
-                  isPinned={pinnedModule?.moduleId === m.moduleId}
-                  onBindContent={bindContent}
-                  onRemove={removeModule}
-                />
+                >
+                  <ModuleCard
+                    key={m.moduleId}
+                    module={m}
+                    index={idx}
+                    vfItems={vfItems}
+                    contentOptions={contentOptions}
+                    isFocused={activeModuleId === m.moduleId}
+                    isPinned={pinnedModule?.moduleId === m.moduleId}
+                    onBindContent={bindContent}
+                    onRemove={removeModule}
+                  />
                 </div>
               ))
             )}
@@ -813,7 +883,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                         if (y > 0) win.scrollTo(0, y);
                         const focus = pendingFocusModule || (activeModuleId || activeVfId ? { moduleId: activeModuleId, vfId: activeVfId } : null);
                         if (focus?.vfId || focus?.moduleId) {
-                          win.postMessage({ __TS_PREVIEW__: true, type: "focus-vf", vfId: focus.vfId, moduleId: focus.moduleId }, "*");
+                          focusPreviewVf(focus);
                           if (pendingFocusModule) setPendingFocusModule(null);
                         }
                       } catch {
@@ -826,7 +896,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
               <Item key="html">
                 <View borderWidth="thin" borderColor="light" borderRadius="small" padding="size-200" height="64vh" overflow="auto">
-                  <pre style={{ whiteSpace: "pre-wrap" }}>{canonicalHtml || "(empty)"}</pre>
+                  <pre style={{ whiteSpace: "pre-wrap" }}>{stripTsModuleMarkers(canonicalHtml) || "(empty)"}</pre>
                 </View>
               </Item>
 

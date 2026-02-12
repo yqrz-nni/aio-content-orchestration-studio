@@ -133,6 +133,14 @@ export function bindContentInModuleHtml(html, { moduleId, vfId, aemCfId, repoId,
   return html.slice(0, start) + nextBlock + html.slice(end + close.length);
 }
 
+// Remove internal module marker comments for clean AJO output.
+export function stripTsModuleMarkers(html) {
+  if (!html) return html;
+  return html
+    .replace(/<!--\s*ts:module\s+id="[^"]+"\s*-->/gim, "")
+    .replace(/<!--\s*ts:module-end\s+id="[^"]+"\s*-->/gim, "");
+}
+
 /**
  * Remove a module block from canonical HTML using ts:module markers.
  * If markers are missing, returns original HTML (safe).
