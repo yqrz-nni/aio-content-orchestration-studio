@@ -94,6 +94,53 @@ export function resolveNamespaceByBindings({ stitchedHtml, namespace, aemBinding
   return out;
 }
 
+export function resolveCfByStructure({ stitchedHtml, aemBindingsEncountered, aemPrefetchDataByStreamKey }) {
+  if (!stitchedHtml) return stitchedHtml;
+
+  const binds = (Array.isArray(aemBindingsEncountered) ? aemBindingsEncountered : []).filter((b) => b?.result === "cf");
+  if (!binds.length) return stitchedHtml;
+
+  if (typeof DOMParser === "undefined") {
+    return resolveNamespaceByBindings({
+      stitchedHtml,
+      namespace: "cf",
+      aemBindingsEncountered: binds,
+      aemPrefetchDataByStreamKey,
+    });
+  }
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(stitchedHtml, "text/html");
+  const structures = doc.querySelectorAll(".acr-structure");
+  if (!structures.length) {
+    return resolveNamespaceByBindings({
+      stitchedHtml,
+      namespace: "cf",
+      aemBindingsEncountered: binds,
+      aemPrefetchDataByStreamKey,
+    });
+  }
+
+  structures.forEach((structure) => {
+    const html = structure.innerHTML;
+    if (!html) return;
+
+    const structBinds = binds.filter((b) => b?.rawTag && html.includes(b.rawTag));
+    if (!structBinds.length) return;
+
+    const replaced = resolveNamespaceByBindings({
+      stitchedHtml: html,
+      namespace: "cf",
+      aemBindingsEncountered: structBinds,
+      aemPrefetchDataByStreamKey,
+    });
+    structure.innerHTML = replaced;
+  });
+
+  const docHtml = doc.documentElement?.outerHTML || stitchedHtml;
+  return stitchedHtml.trimStart().toLowerCase().startsWith("<!doctype") ? `<!DOCTYPE html>\n${docHtml}` : docHtml;
+}
+
 export function resolvePreviewHtmlFromRenderResult(renderResult, fallbackHtml) {
   if (typeof renderResult?.renderedHtml === "string" && renderResult.renderedHtml.trim()) {
     return renderResult.renderedHtml;
@@ -108,9 +155,8 @@ export function resolvePreviewHtmlFromRenderResult(renderResult, fallbackHtml) {
     aemPrefetchDataByStreamKey: renderResult?.aemPrefetchDataByStreamKey,
   });
 
-  const resolvedCf = resolveNamespaceByBindings({
+  const resolvedCf = resolveCfByStructure({
     stitchedHtml: resolvedPrb,
-    namespace: "cf",
     aemBindingsEncountered: renderResult?.aemBindingsEncountered,
     aemPrefetchDataByStreamKey: renderResult?.aemPrefetchDataByStreamKey,
   });
