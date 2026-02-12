@@ -555,7 +555,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
   function emitPreviewOpStart(intent) {
     const win = iframeRef.current?.contentWindow;
-    if (!win || !intent) return;
+    if (!intent) return;
     const payload = {
       kind: intent.kind,
       moduleId: intent.moduleId || null,
@@ -574,6 +574,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         }
       }
     }
+    if (!win) return;
     win.postMessage({ __TS_PREVIEW__: true, type: "preview-op-start", data: payload }, "*");
   }
 

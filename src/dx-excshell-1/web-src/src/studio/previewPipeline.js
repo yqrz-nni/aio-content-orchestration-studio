@@ -644,7 +644,7 @@ export function injectPreviewFocusBridge(html) {
         target.classList.add('ts-vf-loading');
         var opLabel = 'Applying update...';
         if (op === 'vf-hydration') opLabel = 'Applying content binding...';
-        if (op === 'pattern-change') opLabel = 'Applying pattern change...';
+        if (op === 'pattern-change') opLabel = 'Updating pattern';
         addLoadingBadge(target, opLabel);
         try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(e) {}
         return;
