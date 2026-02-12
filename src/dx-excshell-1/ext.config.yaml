@@ -65,6 +65,7 @@ runtimeManifest:
           runtime: nodejs:18
           inputs:
             AJO_GET_TEMPLATE_URL: $AJO_GET_TEMPLATE_URL
+            AJO_TEMPLATE_DETAIL_URL_PREFIX: $AJO_TEMPLATE_DETAIL_URL_PREFIX
             AJO_FRAGMENTS_URL: $AJO_FRAGMENTS_URL
             AJO_API_KEY: $AJO_API_KEY
             SANDBOX_NAME: $SANDBOX_NAME
@@ -115,6 +116,7 @@ runtimeManifest:
             AEM_GQL_PATH_PROXY: $AEM_GQL_PATH_PROXY
             USE_AEM_PROXY: $USE_AEM_PROXY
             AEM_CF_DETAIL_URL_PREFIX: $AEM_CF_DETAIL_URL_PREFIX
+            WF_MISSING_PRB_INTAKE_URL: $WF_MISSING_PRB_INTAKE_URL
         aem-prb-get:
           function: actions/aem/prb-get/index.js
           web: 'yes'

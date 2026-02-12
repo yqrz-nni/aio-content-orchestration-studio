@@ -18,6 +18,9 @@ import {
   StatusLight,
   Switch,
   DialogTrigger,
+  ActionButton,
+  TooltipTrigger,
+  Tooltip,
   Item,
 } from "@adobe/react-spectrum";
 
@@ -126,6 +129,26 @@ function hasDynamicReferenceTokens(content) {
   });
 }
 
+function safeOpenNewTab(url) {
+  if (!url) return;
+  try {
+    window.open(url, "_blank", "noopener,noreferrer");
+  } catch {
+    // ignore
+  }
+}
+
+function ExternalOpenIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path
+        d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3zM5 5h6v2H7v10h10v-4h2v6H5V5z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
 export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverride }) {
   const ims = useContext(ImsContext);
   const headers = useMemo(() => buildHeaders(ims), [ims]);
@@ -173,6 +196,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     cfDetailUrlPrefix: null,
     cfTemplate: null,
     aemAuthor: null,
+    templateDetailUrlPrefix: null,
   });
   const [vfAutoInsertConfig, setVfAutoInsertConfig] = useState({
     compiledReferencesTagId: null,
@@ -191,6 +215,8 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
   const [isUpdatingPrb, setIsUpdatingPrb] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
+  const [isSavingTemplate, setIsSavingTemplate] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("");
 
   const [renderError, setRenderError] = useState("");
   const [previewWarnings, setPreviewWarnings] = useState([]);
@@ -247,6 +273,12 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       missingAfterSanitize,
     };
   }, [vfDiag]);
+
+  const templateHref = useMemo(() => {
+    const prefix = String(deepLinkConfig?.templateDetailUrlPrefix || "").trim();
+    if (!prefix || !templateId) return null;
+    return `${prefix}${encodeURIComponent(String(templateId))}`;
+  }, [deepLinkConfig?.templateDetailUrlPrefix, templateId]);
 
   // Operation queue
   const opQueueRef = useRef(Promise.resolve());
@@ -338,6 +370,11 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   async function loadTemplateById(tid) {
     if (!tid) return;
     const getRes = await actionWebInvoke(actions["ajo-template-get"], headers, { templateId: tid });
+    if (getRes?.name) setTemplateName(getRes.name);
+    setDeepLinkConfig((prev) => ({
+      ...prev,
+      templateDetailUrlPrefix: getRes?.deepLinkConfig?.templateDetailUrlPrefix || prev.templateDetailUrlPrefix || null,
+    }));
     const html = getRes?.htmlBody;
     if (!html) {
       // eslint-disable-next-line no-console
@@ -504,6 +541,28 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       queueRenderIntent("pattern-add", { moduleId, vfId });
       setCanonicalHtml(nextHtml);
     });
+  }
+
+  async function saveTemplate() {
+    if (!templateId || !canonicalHtml || isSavingTemplate) return;
+    try {
+      setSaveStatus("");
+      setIsSavingTemplate(true);
+      const prbNumber = selectedPrb?.raw?.prbNumber || null;
+      await actionWebInvoke(actions["ajo-template-update"], headers, {
+        templateId,
+        name: prbNumber ? `${prbNumber} — ${templateName}` : templateName,
+        labels: buildLabelsForPrb(prbNumber),
+        html: canonicalHtml,
+      });
+      setSaveStatus("Saved");
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("Save template failed:", e);
+      setSaveStatus("Save failed");
+    } finally {
+      setIsSavingTemplate(false);
+    }
   }
 
   function tryDirectIframeFocus({ vfId, vfOrdinal }) {
@@ -1279,16 +1338,33 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200" UNSAFE_className="StudioPreviewPanel">
           <Flex justifyContent="space-between" alignItems="center">
             <Heading level={4}>Preview</Heading>
-            <Button
-              variant="primary"
-              onPress={() => {
-                queueRenderIntent("manual");
-                renderPreview();
-              }}
-              isDisabled={!canonicalHtml || isRendering}
-            >
-              {isRendering ? "Rendering…" : "Render preview"}
-            </Button>
+            <Flex gap="size-100" alignItems="center">
+              {saveStatus ? <StatusLight variant={saveStatus === "Saved" ? "positive" : "negative"}>{saveStatus}</StatusLight> : null}
+              <Button variant="secondary" onPress={saveTemplate} isDisabled={!templateId || !canonicalHtml || isSavingTemplate}>
+                {isSavingTemplate ? "Saving..." : "Save"}
+              </Button>
+              <TooltipTrigger>
+                <ActionButton
+                  isQuiet
+                  aria-label="Open template in AJO"
+                  isDisabled={!templateHref}
+                  onPress={() => safeOpenNewTab(templateHref)}
+                >
+                  <ExternalOpenIcon />
+                </ActionButton>
+                <Tooltip>{templateHref ? "Open template in AJO (new tab)" : "Template link unavailable"}</Tooltip>
+              </TooltipTrigger>
+              <Button
+                variant="primary"
+                onPress={() => {
+                  queueRenderIntent("manual");
+                  renderPreview();
+                }}
+                isDisabled={!canonicalHtml || isRendering}
+              >
+                {isRendering ? "Refreshing..." : "Refresh"}
+              </Button>
+            </Flex>
           </Flex>
 
           <Divider size="S" marginY="size-150" />
@@ -1562,3 +1638,4 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     </View>
   );
 }
+

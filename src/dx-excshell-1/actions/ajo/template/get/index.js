@@ -47,13 +47,24 @@ async function main(params) {
       payload?.template?.html ??
       null;
 
+    const resolvedTemplateId = payload?.id || templateId;
+    const templateDetailUrlPrefix = String(params.AJO_TEMPLATE_DETAIL_URL_PREFIX || "").trim();
+    const templateDeepLinkUrl =
+      templateDetailUrlPrefix && resolvedTemplateId
+        ? `${templateDetailUrlPrefix}${encodeURIComponent(String(resolvedTemplateId))}`
+        : null;
+
     return ok({
-      templateId: payload?.id || templateId,
+      templateId: resolvedTemplateId,
       name: payload?.name || null,
       description: payload?.description || null,
       templateType: payload?.templateType || null,
       channels: payload?.channels || null,
       htmlBody,
+      deepLinkConfig: {
+        templateDetailUrlPrefix: templateDetailUrlPrefix || null,
+      },
+      templateDeepLinkUrl,
       // Keep the full payload in case you want editorContext etc
       payload,
     });

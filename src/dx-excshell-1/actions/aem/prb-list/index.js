@@ -48,6 +48,7 @@ async function main(params) {
       },
       deepLinkConfig: {
         cfDetailUrlPrefix: params.AEM_CF_DETAIL_URL_PREFIX || null,
+        wfMissingPrbIntakeUrl: params.WF_MISSING_PRB_INTAKE_URL || null,
       },
     });
   } catch (e) {

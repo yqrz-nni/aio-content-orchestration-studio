@@ -61,7 +61,7 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
   const [selectedPrbId, setSelectedPrbId] = useState(value || null);
   const [isLoading, setIsLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [deepLinkConfig, setDeepLinkConfig] = useState({ cfDetailUrlPrefix: null });
+  const [deepLinkConfig, setDeepLinkConfig] = useState({ cfDetailUrlPrefix: null, wfMissingPrbIntakeUrl: null });
 
   useEffect(() => {
     // keep internal state in sync when used embedded
@@ -85,7 +85,10 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
       const res = await actionWebInvoke(actions["aem-prb-list"], headers);
       const items = res?.data?.prbPropertiesList?.items || [];
       setPrbOptions(items.map((it) => toPrbOption(it)));
-      setDeepLinkConfig({ cfDetailUrlPrefix: res?.deepLinkConfig?.cfDetailUrlPrefix || null });
+      setDeepLinkConfig({
+        cfDetailUrlPrefix: res?.deepLinkConfig?.cfDetailUrlPrefix || null,
+        wfMissingPrbIntakeUrl: res?.deepLinkConfig?.wfMissingPrbIntakeUrl || null,
+      });
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Load PRBs failed:", e);
@@ -161,6 +164,24 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
               <Tooltip>{selectedPrbHref ? "Open PRB in AEM (new tab)" : "PRB link unavailable"}</Tooltip>
             </TooltipTrigger>
           </Flex>
+
+          {deepLinkConfig?.wfMissingPrbIntakeUrl ? (
+            <Flex gap="size-75" alignItems="center" wrap>
+              <Button variant="secondary" isQuiet onPress={() => safeOpenNewTab(deepLinkConfig.wfMissingPrbIntakeUrl)}>
+                PRB Submission Not Configured?
+              </Button>
+              <TooltipTrigger>
+                <ActionButton
+                  isQuiet
+                  aria-label="Create Workfront request"
+                  onPress={() => safeOpenNewTab(deepLinkConfig.wfMissingPrbIntakeUrl)}
+                >
+                  <ExternalOpenIcon />
+                </ActionButton>
+                <Tooltip>Create Workfront Request</Tooltip>
+              </TooltipTrigger>
+            </Flex>
+          ) : null}
 
           {err ? (
             <StatusLight variant="negative">{err}</StatusLight>
