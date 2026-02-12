@@ -1094,7 +1094,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
           style={{
             position: "fixed",
             left: "50%",
-            bottom: "20vh",
+            bottom: "10vh",
             transform: "translateX(-50%)",
             zIndex: 9999,
             width: "min(760px, calc(100vw - 40px))",

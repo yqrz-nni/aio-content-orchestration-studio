@@ -13,7 +13,7 @@ function toPrbOption(it) {
   const name = it?.name || "";
   const fallback = it?._path || it?._id || "(unknown)";
 
-  const label = prbNumber && name ? `${prbNumber} — ${name}` : name || prbNumber || fallback;
+  const label = prbNumber && name ? `${prbNumber} - ${name}` : name || prbNumber || fallback;
 
   return {
     id: it._id,
@@ -93,7 +93,7 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
           <Flex gap="size-150" alignItems="end" wrap justifyContent="center">
             <ComboBox
               label={mode === "embedded" ? "PRB" : "PRB Properties"}
-              placeholder={isLoading ? "Loading…" : "Search PRB number or name…"}
+              placeholder={isLoading ? "Loading..." : "Search PRB number or name..."}
               selectedKey={selectedPrbId}
               onSelectionChange={(key) => {
                 setSelectedPrbId(key);
@@ -109,16 +109,13 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
             >
               {prbOptions.map((o) => (
                 <Item key={o.id} textValue={o.label || o.prbNumber || o.id}>
-                  <Flex direction="column" gap="size-0">
-                    <Text UNSAFE_style={{ fontWeight: 600 }}>{o.prbNumber || o.label}</Text>
-                    {o.name ? <Text UNSAFE_style={{ opacity: 0.7, fontSize: 12 }}>{o.name}</Text> : null}
-                  </Flex>
+                  {o.label || o.prbNumber || o.id}
                 </Item>
               ))}
             </ComboBox>
 
             <Button variant="secondary" onPress={loadPrbList} isDisabled={isLoading}>
-              {isLoading ? "Loading…" : "Refresh"}
+              {isLoading ? "Loading..." : "Refresh"}
             </Button>
 
             <Button variant="cta" onPress={proceed} isDisabled={!selectedPrbId}>
