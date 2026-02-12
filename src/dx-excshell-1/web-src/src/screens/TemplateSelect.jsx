@@ -53,7 +53,14 @@ function buildLabelsForPrb(prbNumber) {
   return labels;
 }
 
-export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = false, onOpenTemplate, studioActive = false }) {
+export function TemplateSelect({
+  mode = "route",
+  prbIdOverride,
+  isDisabled = false,
+  onOpenTemplate,
+  onSelectTemplate,
+  studioActive = false,
+}) {
   const ims = useContext(ImsContext);
   const headers = useMemo(() => buildHeaders(ims), [ims]);
 
@@ -316,7 +323,11 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
                   label="Template"
                   placeholder={isLoadingTemplates ? "Loading…" : "Search template name…"}
                   selectedKey={selectedTemplateId}
-                  onSelectionChange={(key) => setSelectedTemplateId(key)}
+                onSelectionChange={(key) => {
+                  setSelectedTemplateId(key);
+                  const t = templates.find((x) => x.id === key) || null;
+                  onSelectTemplate?.(t);
+                }}
                   width="100%"
                   menuTrigger="focus"
                   isDisabled={isLoadingTemplates || isDisabled}

@@ -19,6 +19,8 @@ export function TemplateFlow() {
   const [templateId, setTemplateId] = useState(null);
   const [openStep, setOpenStep] = useState("prb");
   const [confirmStartOver, setConfirmStartOver] = useState(false);
+  const [prbLabel, setPrbLabel] = useState("");
+  const [templateLabel, setTemplateLabel] = useState("");
 
   const hasPrb = !!prbId;
   const hasTemplate = !!templateId;
@@ -38,13 +40,26 @@ export function TemplateFlow() {
   return (
     <View>
       {showToolbar ? (
-        <Flex UNSAFE_className="FlowToolbar" alignItems="center" justifyContent="space-between" wrap>
+        <Flex
+          UNSAFE_className="FlowToolbar"
+          alignItems="center"
+          justifyContent="space-between"
+          wrap
+        >
           <Flex gap="size-100" alignItems="center" wrap>
             <Text UNSAFE_className="FlowToolbarLabel">Configured</Text>
             {hasPrb ? <Text UNSAFE_className="FlowToolbarPill">PRB</Text> : null}
             {hasTemplate ? <Text UNSAFE_className="FlowToolbarPill">Template</Text> : null}
+            {hasPrb ? <Text UNSAFE_className="FlowToolbarDetail">{prbLabel || prbId}</Text> : null}
+            {hasTemplate ? <Text UNSAFE_className="FlowToolbarDetail">{templateLabel || templateId}</Text> : null}
           </Flex>
           <Flex gap="size-100" alignItems="center">
+            <Button
+              variant="secondary"
+              onPress={() => open(hasTemplate ? "template" : "prb")}
+            >
+              Expand
+            </Button>
             <Button variant="secondary" onPress={startOver}>
               Start Over
             </Button>
@@ -76,8 +91,10 @@ export function TemplateFlow() {
                 onChange={(next) => {
                   setPrbId(next || null);
                   setTemplateId(null); // reset downstream
+                  setTemplateLabel("");
                   if (next) open("template");
                 }}
+                onSelect={(prbObj) => setPrbLabel(prbObj?.label || prbObj?.prbNumber || prbObj?.id || "")}
               />
             </View>
           ) : (
@@ -114,6 +131,7 @@ export function TemplateFlow() {
                   setTemplateId(tid || null);
                   if (tid) open("studio");
                 }}
+                onSelectTemplate={(t) => setTemplateLabel(t?.name || t?.id || "")}
               />
             </View>
           ) : (

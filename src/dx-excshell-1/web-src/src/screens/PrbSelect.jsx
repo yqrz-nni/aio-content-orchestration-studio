@@ -23,7 +23,7 @@ function toPrbOption(it) {
   };
 }
 
-export function PrbSelect({ mode = "route", value, onChange }) {
+export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
   const nav = useNavigate();
 
   const [prbOptions, setPrbOptions] = useState([]);
@@ -88,7 +88,11 @@ export function PrbSelect({ mode = "route", value, onChange }) {
               selectedKey={selectedPrbId}
               onSelectionChange={(key) => {
                 setSelectedPrbId(key);
-                if (mode === "embedded") onChange?.(key);
+                if (mode === "embedded") {
+                  onChange?.(key);
+                  const prbObj = prbOptions.find((o) => o.id === key) || null;
+                  onSelect?.(prbObj);
+                }
               }}
               width="size-6000"
               menuTrigger="focus"

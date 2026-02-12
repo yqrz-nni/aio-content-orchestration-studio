@@ -543,41 +543,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         </View>
       ) : null}
 
-      {/* Template name (full-width) */}
-      <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
-        <Flex gap="size-200" alignItems="end" wrap>
-          <TextField label="Template name" value={templateName} onChange={setTemplateName} width="size-4600" />
-
-          <Divider orientation="vertical" size="S" />
-
-          <ComboBox
-            label="PRB Properties"
-            placeholder="Paste/type PRB number…"
-            selectedKey={selectedPrbId}
-            onSelectionChange={(key) => setPrb(key)}
-            width="size-3600"
-            menuTrigger="focus"
-          >
-            {prbOptions.map((o) => (
-              <Item key={o.id} textValue={o.label || o.prbNumber || o.id}>
-                <Flex direction="column" gap="size-0">
-                  <Text UNSAFE_style={{ fontWeight: 600 }}>{o.prbNumber || o.label}</Text>
-                  {o.name ? <Text UNSAFE_style={{ opacity: 0.7, fontSize: 12 }}>{o.name}</Text> : null}
-                </Flex>
-              </Item>
-            ))}
-          </ComboBox>
-
-        </Flex>
-
-        {aemWarnings.length ? (
-          <View marginTop="size-150">
-            <StatusLight variant="negative">{aemWarnings[0]}</StatusLight>
-          </View>
-        ) : null}
-      </View>
-
-      <Divider size="S" marginY="size-200" />
+      {/* Studio content starts here */}
 
       {/* 2-column Studio */}
       <Grid columns={["1fr", "1fr"]} gap="size-200" height="78vh">
