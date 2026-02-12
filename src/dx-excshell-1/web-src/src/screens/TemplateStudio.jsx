@@ -121,6 +121,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const compositionRef = useRef(null);
   const compositionListRef = useRef(null);
   const [pendingScrollModuleId, setPendingScrollModuleId] = useState(null);
+  const [pendingFocusVfId, setPendingFocusVfId] = useState(null);
 
   const [isUpdatingPrb, setIsUpdatingPrb] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
@@ -355,6 +356,9 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       ];
       setModules(nextModules);
       setPendingScrollModuleId(moduleId);
+      setPinnedVfId(vfId);
+      setHoveredVfId(null);
+      setPendingFocusVfId(vfId);
 
       const nextHtml = appendPatternOnlyToTemplateHtml(canonicalHtml, { vfId, moduleId });
       setCanonicalHtml(nextHtml);
@@ -418,12 +422,14 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     const el = list.querySelector(`[data-module-id="${pendingScrollModuleId}"]`);
     if (!el) return;
     const top = el.offsetTop || 0;
-    try {
-      list.scrollTo({ top: Math.max(top - 8, 0), behavior: "smooth" });
-    } catch {
-      list.scrollTop = Math.max(top - 8, 0);
-    }
-    setPendingScrollModuleId(null);
+    requestAnimationFrame(() => {
+      try {
+        list.scrollTo({ top: Math.max(top - 8, 0), behavior: "smooth" });
+      } catch {
+        list.scrollTop = Math.max(top - 8, 0);
+      }
+      setPendingScrollModuleId(null);
+    });
   }, [modules, pendingScrollModuleId]);
 
   function bindContent(moduleId, contentId) {
@@ -661,7 +667,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
           <Divider size="S" marginY="size-200" />
 
-          <View height="72vh" overflow="auto" ref={compositionListRef}>
+          <div style={{ height: "72vh", overflow: "auto" }} ref={compositionListRef}>
             {!modules.length ? (
               <Text UNSAFE_style={{ opacity: 0.85 }}>No modules yet. Add a pattern to start.</Text>
             ) : (
@@ -692,7 +698,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                 </div>
               ))
             )}
-          </View>
+          </div>
         </View>
         </div>
 
@@ -736,8 +742,10 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                         if (!win) return;
                         const y = previewScrollRef.current || 0;
                         if (y > 0) win.scrollTo(0, y);
-                        if (activeVfId) {
-                          win.postMessage({ __TS_PREVIEW__: true, type: "focus-vf", vfId: activeVfId }, "*");
+                        const vfId = pendingFocusVfId || activeVfId;
+                        if (vfId) {
+                          win.postMessage({ __TS_PREVIEW__: true, type: "focus-vf", vfId }, "*");
+                          if (pendingFocusVfId) setPendingFocusVfId(null);
                         }
                       } catch {
                         // ignore
