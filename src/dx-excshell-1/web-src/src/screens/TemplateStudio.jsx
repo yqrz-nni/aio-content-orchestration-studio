@@ -166,6 +166,12 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const [vfItems, setVfItems] = useState([]);
   const [vfDebugSample, setVfDebugSample] = useState(null);
   const [contentOptions, setContentOptions] = useState([]);
+  const [deepLinkConfig, setDeepLinkConfig] = useState({
+    vfTemplate: null,
+    vfBaseUrl: null,
+    cfTemplate: null,
+    aemAuthor: null,
+  });
   const [vfAutoInsertConfig, setVfAutoInsertConfig] = useState({
     compiledReferencesTagId: null,
     footerTagId: null,
@@ -352,6 +358,11 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     const res = await actionWebInvoke(actions["ajo-vf-list"], headers, { debug: true });
     const items = res?.items || res?.fragments || [];
     setVfItems(items);
+    setDeepLinkConfig((prev) => ({
+      ...prev,
+      vfTemplate: res?.deepLinkConfig?.vfTemplate || prev.vfTemplate || null,
+      vfBaseUrl: res?.deepLinkConfig?.vfBaseUrl || prev.vfBaseUrl || null,
+    }));
     setVfAutoInsertConfig({
       compiledReferencesTagId: res?.autoInsertConfig?.compiledReferencesTagId || null,
       footerTagId: res?.autoInsertConfig?.footerTagId || null,
@@ -370,11 +381,17 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
           id: it._id,
           label: it.headlineText || it._path || it._id,
           path: it._path,
+          deepLinkUrl: it.deepLinkUrl || null,
           bodyCopy: Array.isArray(it?.bodyCopy) ? it.bodyCopy : [],
           references: Array.isArray(it?.references) ? it.references : [],
           hasDynamicReferences: hasDynamicReferenceTokens(it),
         }))
       );
+      setDeepLinkConfig((prev) => ({
+        ...prev,
+        cfTemplate: res?.deepLinkConfig?.cfTemplate || prev.cfTemplate || null,
+        aemAuthor: res?.deepLinkConfig?.aemAuthor || prev.aemAuthor || null,
+      }));
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Load Content CFs failed:", e);
@@ -1235,6 +1252,8 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                     canMoveDown={idx < modules.length - 1}
                     isFocused={activeModuleId === m.moduleId}
                     isPinned={pinnedModule?.moduleId === m.moduleId}
+                    deepLinkConfig={deepLinkConfig}
+                    repoId={repoId}
                     onBindContent={bindContent}
                     onChangePattern={changePattern}
                     onMoveUp={(id) => moveModule(id, "up")}

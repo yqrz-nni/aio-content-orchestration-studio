@@ -8,6 +8,33 @@ const {
 } = require("../../_lib/http");
 const { fetchJson } = require("../../_lib/fetchJson");
 
+function applyUrlTemplate(template, vars = {}) {
+  if (!template) return null;
+  const raw = String(template || "").trim();
+  if (!raw) return null;
+  return raw.replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, key) => {
+    const val = vars[key];
+    return val == null ? "" : String(val);
+  });
+}
+
+function buildAemCfDeepLink({ template, authorBase, id, path }) {
+  if (template) {
+    return applyUrlTemplate(template, {
+      id: String(id || ""),
+      path: String(path || ""),
+      idEncoded: encodeURIComponent(String(id || "")),
+      pathEncoded: encodeURIComponent(String(path || "")),
+    });
+  }
+  if (authorBase && path) {
+    const u = new URL(String(authorBase));
+    u.pathname = `/assets.html${String(path)}`;
+    return u.toString();
+  }
+  return null;
+}
+
 async function main(params) {
   // ✅ Handle browser preflight
   if ((params.__ow_method || "").toUpperCase() === "OPTIONS") {
@@ -87,7 +114,32 @@ async function main(params) {
       return badGateway("GraphQL returned errors", { errors: data.errors });
     }
 
-    return ok(data);
+    const list = data?.data?.unifiedPromotionalContentList;
+    const rawItems = Array.isArray(list?.items) ? list.items : [];
+    const linkedItems = rawItems.map((it) => ({
+      ...it,
+      deepLinkUrl: buildAemCfDeepLink({
+        template: params.AEM_CF_DEEPLINK_TEMPLATE,
+        authorBase: params.AEM_AUTHOR,
+        id: it?._id,
+        path: it?._path,
+      }),
+    }));
+
+    return ok({
+      ...data,
+      data: {
+        ...(data?.data || {}),
+        unifiedPromotionalContentList: {
+          ...(list || {}),
+          items: linkedItems,
+        },
+      },
+      deepLinkConfig: {
+        cfTemplate: params.AEM_CF_DEEPLINK_TEMPLATE || null,
+        aemAuthor: params.AEM_AUTHOR || null,
+      },
+    });
   } catch (e) {
     // If the upstream call failed, treat as 502; otherwise 500.
     const status = e.status || 500;

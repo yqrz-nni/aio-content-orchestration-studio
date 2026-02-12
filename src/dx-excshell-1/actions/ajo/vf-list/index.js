@@ -35,6 +35,36 @@ function buildFragmentGetUrl(baseUrl, fragmentId) {
   return u.toString();
 }
 
+function applyUrlTemplate(template, vars = {}) {
+  if (!template) return null;
+  const raw = String(template || "").trim();
+  if (!raw) return null;
+  return raw.replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, key) => {
+    const val = vars[key];
+    return val == null ? "" : String(val);
+  });
+}
+
+function buildVfDeepLink({ template, baseUrl, id, rawId, name }) {
+  const cleanId = normalizeFragmentId(id || rawId);
+  if (!cleanId) return null;
+  if (template) {
+    return applyUrlTemplate(template, {
+      id: cleanId,
+      rawId: String(rawId || ""),
+      name: String(name || ""),
+      idEncoded: encodeURIComponent(cleanId),
+    });
+  }
+  if (baseUrl) {
+    const u = new URL(String(baseUrl));
+    const p = String(u.pathname || "").replace(/\/+$/, "");
+    u.pathname = `${p}/${encodeURIComponent(cleanId)}`;
+    return u.toString();
+  }
+  return null;
+}
+
 function pickFragmentContent(data) {
   const candidates = [
     data?.fragment?.content,
@@ -179,6 +209,16 @@ async function main(params) {
       authHeader,
       imsOrg,
     });
+    const linked = enriched.map((it) => ({
+      ...it,
+      deepLinkUrl: buildVfDeepLink({
+        template: params.AJO_VF_DEEPLINK_TEMPLATE,
+        baseUrl: params.AJO_VF_DEEPLINK_BASE_URL,
+        id: it?.id,
+        rawId: it?.id,
+        name: it?.name,
+      }),
+    }));
     const bindingDetectionEnabled = Boolean(params.AJO_GET_FRAGMENT_URL);
     const debug = params.debug === true || params.debug === "true";
     const debugFull = params.debug === "full";
@@ -201,7 +241,11 @@ async function main(params) {
         footerTagId: params.AJO_VF_FOOTER_TAG_ID || null,
         compiledReferencesDefaultVfId: params.AJO_COMPILED_REFERENCES_DEFAULT_VF || null,
       },
-      items: enriched,
+      deepLinkConfig: {
+        vfTemplate: params.AJO_VF_DEEPLINK_TEMPLATE || null,
+        vfBaseUrl: params.AJO_VF_DEEPLINK_BASE_URL || null,
+      },
+      items: linked,
       page: payload?._page,
       debug: debug || debugFull
         ? {

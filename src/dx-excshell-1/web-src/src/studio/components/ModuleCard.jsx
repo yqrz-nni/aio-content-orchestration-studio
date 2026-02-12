@@ -14,6 +14,42 @@ function vfMetaById(vfItems, vfId) {
   return (vfItems || []).find((v) => v?.id === vfId) || null;
 }
 
+function applyLinkTemplate(template, vars = {}) {
+  if (!template) return null;
+  const raw = String(template || "").trim();
+  if (!raw) return null;
+  return raw.replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, key) => {
+    const val = vars[key];
+    return val == null ? "" : String(val);
+  });
+}
+
+function normalizeVfId(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  return s.toLowerCase().startsWith("ajo:") ? s.slice(4) : s;
+}
+
+function safeOpenNewTab(url) {
+  if (!url) return;
+  try {
+    window.open(url, "_blank", "noopener,noreferrer");
+  } catch {
+    // ignore
+  }
+}
+
+function ExternalOpenIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path
+        d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3zM5 5h6v2H7v10h10v-4h2v6H5V5z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
 export function ModuleCard({
   module,
   index,
@@ -28,6 +64,8 @@ export function ModuleCard({
   canMoveDown,
   isFocused,
   isPinned,
+  deepLinkConfig,
+  repoId,
 }) {
   const [isEditingContent, setIsEditingContent] = useState(false);
   const name = vfNameById(vfItems, module?.vfId);
@@ -54,6 +92,53 @@ export function ModuleCard({
     if (!cid) return null;
     return options.find((o) => o?.id === cid) || null;
   }, [module?.contentId, options]);
+
+  const patternHref = useMemo(() => {
+    if (vfMeta?.deepLinkUrl) return vfMeta.deepLinkUrl;
+    const cleanVfId = normalizeVfId(module?.vfId);
+    if (!cleanVfId) return null;
+    const fromTemplate = applyLinkTemplate(deepLinkConfig?.vfTemplate, {
+      id: cleanVfId,
+      rawId: String(module?.vfId || ""),
+      idEncoded: encodeURIComponent(cleanVfId),
+      name: String(vfMeta?.name || ""),
+    });
+    if (fromTemplate) return fromTemplate;
+    const base = String(deepLinkConfig?.vfBaseUrl || "").trim();
+    if (!base) return null;
+    try {
+      const u = new URL(base);
+      const p = String(u.pathname || "").replace(/\/+$/, "");
+      u.pathname = `${p}/${encodeURIComponent(cleanVfId)}`;
+      return u.toString();
+    } catch {
+      return null;
+    }
+  }, [deepLinkConfig?.vfBaseUrl, deepLinkConfig?.vfTemplate, module?.vfId, vfMeta?.deepLinkUrl, vfMeta?.name]);
+
+  const contentHref = useMemo(() => {
+    if (selectedContent?.deepLinkUrl) return selectedContent.deepLinkUrl;
+    if (!selectedContent?.id) return null;
+    const fromTemplate = applyLinkTemplate(deepLinkConfig?.cfTemplate, {
+      id: String(selectedContent.id),
+      path: String(selectedContent.path || ""),
+      repoId: String(repoId || ""),
+      idEncoded: encodeURIComponent(String(selectedContent.id || "")),
+      pathEncoded: encodeURIComponent(String(selectedContent.path || "")),
+      repoIdEncoded: encodeURIComponent(String(repoId || "")),
+    });
+    if (fromTemplate) return fromTemplate;
+    const base = String(deepLinkConfig?.aemAuthor || "").trim();
+    const path = String(selectedContent?.path || "").trim();
+    if (!base || !path) return null;
+    try {
+      const u = new URL(base);
+      u.pathname = `/assets.html${path}`;
+      return u.toString();
+    } catch {
+      return null;
+    }
+  }, [deepLinkConfig?.aemAuthor, deepLinkConfig?.cfTemplate, repoId, selectedContent]);
 
   return (
     <View
@@ -124,6 +209,18 @@ export function ModuleCard({
               confirmLabel="Apply Pattern"
             />
           </DialogTrigger>
+          <TooltipTrigger>
+            <ActionButton
+              isQuiet
+              aria-label="Open pattern in AJO"
+              isDisabled={!patternHref}
+              onPress={() => safeOpenNewTab(patternHref)}
+              data-keep-module-focus="true"
+            >
+              <ExternalOpenIcon />
+            </ActionButton>
+            <Tooltip>{patternHref ? "Open pattern in AJO (new tab)" : "Pattern link unavailable"}</Tooltip>
+          </TooltipTrigger>
         </Flex>
       </View>
 
@@ -133,17 +230,31 @@ export function ModuleCard({
             <strong>Content:</strong> {selectedContent ? selectedContent.label : ""}
           </Text>
           {showBindUi ? (
-            <TooltipTrigger>
-              <ActionButton
-                isQuiet
-                aria-label="Edit content"
-                onPress={() => setIsEditingContent((v) => !v)}
-                data-keep-module-focus="true"
-              >
-                <Edit />
-              </ActionButton>
-              <Tooltip>Edit content</Tooltip>
-            </TooltipTrigger>
+            <>
+              <TooltipTrigger>
+                <ActionButton
+                  isQuiet
+                  aria-label="Edit content"
+                  onPress={() => setIsEditingContent((v) => !v)}
+                  data-keep-module-focus="true"
+                >
+                  <Edit />
+                </ActionButton>
+                <Tooltip>Edit content</Tooltip>
+              </TooltipTrigger>
+              <TooltipTrigger>
+                <ActionButton
+                  isQuiet
+                  aria-label="Open content in AEM"
+                  isDisabled={!contentHref}
+                  onPress={() => safeOpenNewTab(contentHref)}
+                  data-keep-module-focus="true"
+                >
+                  <ExternalOpenIcon />
+                </ActionButton>
+                <Tooltip>{contentHref ? "Open content in AEM (new tab)" : "Content link unavailable"}</Tooltip>
+              </TooltipTrigger>
+            </>
           ) : null}
           {!showBindUi && bindingHint ? (
             <View
