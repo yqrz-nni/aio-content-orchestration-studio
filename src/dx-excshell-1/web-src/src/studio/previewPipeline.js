@@ -469,21 +469,50 @@ export function injectPreviewFocusBridge(html) {
   }
   .ts-vf-loading {
     position: relative;
-    outline: 2px solid #4b84ff;
-    box-shadow: 0 0 0 6px rgba(75, 132, 255, 0.16);
+    outline: 3px solid #2f6fed;
+    box-shadow: 0 0 0 8px rgba(47, 111, 237, 0.2), inset 0 0 0 9999px rgba(79, 141, 255, 0.06);
+    transition: outline-color 120ms ease, box-shadow 120ms ease;
   }
   .ts-vf-loading::after {
     content: "";
     position: absolute;
-    left: 10px;
-    right: 10px;
-    top: 8px;
-    height: 4px;
+    left: 12px;
+    right: 12px;
+    top: 10px;
+    height: 5px;
     border-radius: 999px;
-    background: linear-gradient(90deg, #2f6fed, #86adff, #2f6fed);
-    background-size: 220% 100%;
+    background: linear-gradient(90deg, #1f55d8, #72a2ff 45%, #1f55d8);
+    background-size: 240% 100%;
     animation: ts-vf-loading-bar 1.05s linear infinite;
     pointer-events: none;
+  }
+  .ts-vf-loading-badge {
+    position: absolute;
+    top: -11px;
+    right: 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(47, 111, 237, 0.32);
+    background: rgba(255, 255, 255, 0.96);
+    color: #1b4fca;
+    font-family: sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1px;
+    z-index: 9;
+    box-shadow: 0 2px 8px rgba(30, 71, 156, 0.15);
+    animation: ts-vf-loading-fade 0.95s ease-in-out infinite;
+    pointer-events: none;
+  }
+  .ts-vf-loading-badge .ts-vf-loading-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #2f6fed;
+    animation: ts-vf-loading-dot 900ms ease-in-out infinite;
   }
   .ts-preview-insert-placeholder {
     margin: 14px auto;
@@ -508,6 +537,10 @@ export function injectPreviewFocusBridge(html) {
     0%, 100% { opacity: 0.5; }
     50% { opacity: 1; }
   }
+  @keyframes ts-vf-loading-dot {
+    0%, 100% { transform: scale(0.82); opacity: 0.6; }
+    50% { transform: scale(1.16); opacity: 1; }
+  }
 </style>
 <script>
 (function(){
@@ -517,10 +550,34 @@ export function injectPreviewFocusBridge(html) {
   }
 
   function clearLoading(){
+    var badges = document.querySelectorAll('.ts-vf-loading-badge');
+    for (var b=0;b<badges.length;b++) if (badges[b].parentNode) badges[b].parentNode.removeChild(badges[b]);
     var nodes = document.querySelectorAll('.ts-vf-loading');
     for (var i=0;i<nodes.length;i++) nodes[i].classList.remove('ts-vf-loading');
     var ph = document.querySelector('.ts-preview-insert-placeholder');
     if (ph && ph.parentNode) ph.parentNode.removeChild(ph);
+  }
+
+  function addLoadingBadge(target, text){
+    if (!target) return;
+    var existing = target.querySelector('.ts-vf-loading-badge');
+    if (existing) {
+      existing.textContent = text || 'Binding content…';
+      return;
+    }
+    try {
+      var computed = window.getComputedStyle(target);
+      if (computed && computed.position === 'static') target.style.position = 'relative';
+    } catch(e) {}
+    var badge = document.createElement('div');
+    badge.className = 'ts-vf-loading-badge';
+    var dot = document.createElement('span');
+    dot.className = 'ts-vf-loading-dot';
+    var label = document.createElement('span');
+    label.textContent = text || 'Binding content…';
+    badge.appendChild(dot);
+    badge.appendChild(label);
+    target.appendChild(badge);
   }
 
   function focusById(vfId){
@@ -588,6 +645,7 @@ export function injectPreviewFocusBridge(html) {
 
       if (target) {
         target.classList.add('ts-vf-loading');
+        addLoadingBadge(target, op === 'vf-hydration' ? 'Binding content…' : 'Updating…');
         try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(e) {}
         return;
       }
