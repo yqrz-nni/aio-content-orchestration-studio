@@ -2,7 +2,7 @@
 
 import React, { useContext, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Heading, View, Flex, Button, Text, ComboBox, Item, StatusLight, Divider } from "@adobe/react-spectrum";
+import { Heading, View, Flex, Button, Text, ComboBox, Item, StatusLight, Divider, ActionButton, TooltipTrigger, Tooltip } from "@adobe/react-spectrum";
 
 import actions from "../config.json";
 import actionWebInvoke from "../utils";
@@ -20,8 +20,30 @@ function toPrbOption(it) {
     label,
     prbNumber: prbNumber || "",
     name: name || "",
+    path: it?._path || "",
+    deepLinkUrl: it?.deepLinkUrl || null,
     raw: it,
   };
+}
+
+function safeOpenNewTab(url) {
+  if (!url) return;
+  try {
+    window.open(url, "_blank", "noopener,noreferrer");
+  } catch {
+    // ignore
+  }
+}
+
+function ExternalOpenIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path
+        d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3zM5 5h6v2H7v10h10v-4h2v6H5V5z"
+        fill="currentColor"
+      />
+    </svg>
+  );
 }
 
 export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
@@ -39,6 +61,7 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
   const [selectedPrbId, setSelectedPrbId] = useState(value || null);
   const [isLoading, setIsLoading] = useState(false);
   const [err, setErr] = useState("");
+  const [deepLinkConfig, setDeepLinkConfig] = useState({ cfDetailUrlPrefix: null });
 
   useEffect(() => {
     // keep internal state in sync when used embedded
@@ -47,6 +70,13 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
   }, [value, mode]);
 
   const selectedPrb = useMemo(() => prbOptions.find((o) => o.id === selectedPrbId) || null, [prbOptions, selectedPrbId]);
+  const selectedPrbHref = useMemo(() => {
+    if (!selectedPrb?.id) return null;
+    if (selectedPrb?.deepLinkUrl) return selectedPrb.deepLinkUrl;
+    const prefix = String(deepLinkConfig?.cfDetailUrlPrefix || "").trim();
+    if (!prefix) return null;
+    return `${prefix}${encodeURIComponent(String(selectedPrb.id))}`;
+  }, [deepLinkConfig?.cfDetailUrlPrefix, selectedPrb]);
 
   async function loadPrbList() {
     try {
@@ -55,6 +85,7 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
       const res = await actionWebInvoke(actions["aem-prb-list"], headers);
       const items = res?.data?.prbPropertiesList?.items || [];
       setPrbOptions(items.map((it) => toPrbOption(it)));
+      setDeepLinkConfig({ cfDetailUrlPrefix: res?.deepLinkConfig?.cfDetailUrlPrefix || null });
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Load PRBs failed:", e);
@@ -71,8 +102,10 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
 
   function proceed() {
     if (!selectedPrbId) return;
+    const prbObj = prbOptions.find((o) => o.id === selectedPrbId) || null;
     if (mode === "embedded") {
       onChange?.(selectedPrbId);
+      onSelect?.(prbObj);
       return;
     }
     nav(`/prb/${encodeURIComponent(selectedPrbId)}/templates`);
@@ -97,11 +130,6 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
               selectedKey={selectedPrbId}
               onSelectionChange={(key) => {
                 setSelectedPrbId(key);
-                if (mode === "embedded") {
-                  onChange?.(key);
-                  const prbObj = prbOptions.find((o) => o.id === key) || null;
-                  onSelect?.(prbObj);
-                }
               }}
               width="size-6000"
               menuTrigger="focus"
@@ -121,6 +149,17 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
             <Button variant="cta" onPress={proceed} isDisabled={!selectedPrbId}>
               Continue
             </Button>
+            <TooltipTrigger>
+              <ActionButton
+                isQuiet
+                aria-label="Open PRB in AEM"
+                isDisabled={!selectedPrbHref}
+                onPress={() => safeOpenNewTab(selectedPrbHref)}
+              >
+                <ExternalOpenIcon />
+              </ActionButton>
+              <Tooltip>{selectedPrbHref ? "Open PRB in AEM (new tab)" : "PRB link unavailable"}</Tooltip>
+            </TooltipTrigger>
           </Flex>
 
           {err ? (

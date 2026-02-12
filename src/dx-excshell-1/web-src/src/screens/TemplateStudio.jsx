@@ -167,8 +167,10 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const [vfDebugSample, setVfDebugSample] = useState(null);
   const [contentOptions, setContentOptions] = useState([]);
   const [deepLinkConfig, setDeepLinkConfig] = useState({
+    vfDetailUrlPrefix: null,
     vfTemplate: null,
     vfBaseUrl: null,
+    cfDetailUrlPrefix: null,
     cfTemplate: null,
     aemAuthor: null,
   });
@@ -314,6 +316,10 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   async function loadPrbList() {
     const res = await actionWebInvoke(actions["aem-prb-list"]);
     const items = res?.data?.prbPropertiesList?.items || [];
+    setDeepLinkConfig((prev) => ({
+      ...prev,
+      cfDetailUrlPrefix: res?.deepLinkConfig?.cfDetailUrlPrefix || prev.cfDetailUrlPrefix || null,
+    }));
 
     setPrbOptions(
       items.map((it) => {
@@ -360,6 +366,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     setVfItems(items);
     setDeepLinkConfig((prev) => ({
       ...prev,
+      vfDetailUrlPrefix: res?.deepLinkConfig?.vfDetailUrlPrefix || prev.vfDetailUrlPrefix || null,
       vfTemplate: res?.deepLinkConfig?.vfTemplate || prev.vfTemplate || null,
       vfBaseUrl: res?.deepLinkConfig?.vfBaseUrl || prev.vfBaseUrl || null,
     }));
@@ -389,6 +396,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       );
       setDeepLinkConfig((prev) => ({
         ...prev,
+        cfDetailUrlPrefix: res?.deepLinkConfig?.cfDetailUrlPrefix || prev.cfDetailUrlPrefix || null,
         cfTemplate: res?.deepLinkConfig?.cfTemplate || prev.cfTemplate || null,
         aemAuthor: res?.deepLinkConfig?.aemAuthor || prev.aemAuthor || null,
       }));

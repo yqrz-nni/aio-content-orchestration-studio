@@ -18,7 +18,9 @@ function applyUrlTemplate(template, vars = {}) {
   });
 }
 
-function buildAemCfDeepLink({ template, authorBase, id, path }) {
+function buildAemCfDeepLink({ prefix, template, authorBase, id, path }) {
+  const cleanPrefix = String(prefix || "").trim();
+  if (cleanPrefix && id) return `${cleanPrefix}${encodeURIComponent(String(id))}`;
   if (template) {
     return applyUrlTemplate(template, {
       id: String(id || ""),
@@ -119,6 +121,7 @@ async function main(params) {
     const linkedItems = rawItems.map((it) => ({
       ...it,
       deepLinkUrl: buildAemCfDeepLink({
+        prefix: params.AEM_CF_DETAIL_URL_PREFIX,
         template: params.AEM_CF_DEEPLINK_TEMPLATE,
         authorBase: params.AEM_AUTHOR,
         id: it?._id,
@@ -136,6 +139,7 @@ async function main(params) {
         },
       },
       deepLinkConfig: {
+        cfDetailUrlPrefix: params.AEM_CF_DETAIL_URL_PREFIX || null,
         cfTemplate: params.AEM_CF_DEEPLINK_TEMPLATE || null,
         aemAuthor: params.AEM_AUTHOR || null,
       },

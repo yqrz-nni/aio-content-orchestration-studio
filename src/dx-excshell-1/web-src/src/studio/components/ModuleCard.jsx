@@ -97,6 +97,8 @@ export function ModuleCard({
     if (vfMeta?.deepLinkUrl) return vfMeta.deepLinkUrl;
     const cleanVfId = normalizeVfId(module?.vfId);
     if (!cleanVfId) return null;
+    const vfPrefix = String(deepLinkConfig?.vfDetailUrlPrefix || "").trim();
+    if (vfPrefix) return `${vfPrefix}${encodeURIComponent(cleanVfId)}`;
     const fromTemplate = applyLinkTemplate(deepLinkConfig?.vfTemplate, {
       id: cleanVfId,
       rawId: String(module?.vfId || ""),
@@ -114,11 +116,20 @@ export function ModuleCard({
     } catch {
       return null;
     }
-  }, [deepLinkConfig?.vfBaseUrl, deepLinkConfig?.vfTemplate, module?.vfId, vfMeta?.deepLinkUrl, vfMeta?.name]);
+  }, [
+    deepLinkConfig?.vfBaseUrl,
+    deepLinkConfig?.vfDetailUrlPrefix,
+    deepLinkConfig?.vfTemplate,
+    module?.vfId,
+    vfMeta?.deepLinkUrl,
+    vfMeta?.name,
+  ]);
 
   const contentHref = useMemo(() => {
     if (selectedContent?.deepLinkUrl) return selectedContent.deepLinkUrl;
     if (!selectedContent?.id) return null;
+    const cfPrefix = String(deepLinkConfig?.cfDetailUrlPrefix || "").trim();
+    if (cfPrefix) return `${cfPrefix}${encodeURIComponent(String(selectedContent.id))}`;
     const fromTemplate = applyLinkTemplate(deepLinkConfig?.cfTemplate, {
       id: String(selectedContent.id),
       path: String(selectedContent.path || ""),
@@ -138,7 +149,7 @@ export function ModuleCard({
     } catch {
       return null;
     }
-  }, [deepLinkConfig?.aemAuthor, deepLinkConfig?.cfTemplate, repoId, selectedContent]);
+  }, [deepLinkConfig?.aemAuthor, deepLinkConfig?.cfDetailUrlPrefix, deepLinkConfig?.cfTemplate, repoId, selectedContent]);
 
   return (
     <View

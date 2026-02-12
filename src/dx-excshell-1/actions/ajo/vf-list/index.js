@@ -45,9 +45,10 @@ function applyUrlTemplate(template, vars = {}) {
   });
 }
 
-function buildVfDeepLink({ template, baseUrl, id, rawId, name }) {
+function buildVfDeepLink({ prefix, template, baseUrl, id, rawId, name }) {
   const cleanId = normalizeFragmentId(id || rawId);
   if (!cleanId) return null;
+  if (prefix) return `${String(prefix).trim()}${encodeURIComponent(cleanId)}`;
   if (template) {
     return applyUrlTemplate(template, {
       id: cleanId,
@@ -212,6 +213,7 @@ async function main(params) {
     const linked = enriched.map((it) => ({
       ...it,
       deepLinkUrl: buildVfDeepLink({
+        prefix: params.AJO_VF_DETAIL_URL_PREFIX,
         template: params.AJO_VF_DEEPLINK_TEMPLATE,
         baseUrl: params.AJO_VF_DEEPLINK_BASE_URL,
         id: it?.id,
@@ -242,6 +244,7 @@ async function main(params) {
         compiledReferencesDefaultVfId: params.AJO_COMPILED_REFERENCES_DEFAULT_VF || null,
       },
       deepLinkConfig: {
+        vfDetailUrlPrefix: params.AJO_VF_DETAIL_URL_PREFIX || null,
         vfTemplate: params.AJO_VF_DEEPLINK_TEMPLATE || null,
         vfBaseUrl: params.AJO_VF_DEEPLINK_BASE_URL || null,
       },
