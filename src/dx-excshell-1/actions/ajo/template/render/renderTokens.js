@@ -1346,7 +1346,8 @@ function renderNamespaceByBindingOrder({
     const brandPropsCtx = deriveBrandPropsContext(effectivePrb);
 
     const miniRoot = buildMiniAjoRootCtx({
-      cfCtx: namespace === "cf" ? defaultCtx : defaultCfCtx,
+      // Prevent CF token bleed in non-CF passes (duplicate unbound VF instances).
+      cfCtx: namespace === "cf" ? defaultCtx : null,
       prbCtx: effectivePrb,
       stylesCtx: deriveStylesContext({
         prbCtx: effectivePrb,
@@ -1399,7 +1400,8 @@ function renderNamespaceByBindingOrder({
     const brandPropsCtx = deriveBrandPropsContext(effectivePrb);
 
     const miniRoot = buildMiniAjoRootCtx({
-      cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
+      // Prevent CF token bleed in non-CF passes (duplicate unbound VF instances).
+      cfCtx: namespace === "cf" ? effectiveCtx : null,
       prbCtx: effectivePrb,
       stylesCtx: deriveStylesContext({
         prbCtx: effectivePrb,
@@ -1462,7 +1464,8 @@ function renderNamespaceByBindingOrder({
   const brandPropsCtx = deriveBrandPropsContext(effectivePrb);
 
   const miniRoot = buildMiniAjoRootCtx({
-    cfCtx: namespace === "cf" ? effectiveCtx : defaultCfCtx,
+    // Prevent CF token bleed in non-CF passes (duplicate unbound VF instances).
+    cfCtx: namespace === "cf" ? effectiveCtx : null,
     prbCtx: effectivePrb,
     stylesCtx: deriveStylesContext({
       prbCtx: effectivePrb,
@@ -1555,7 +1558,8 @@ function resolveStylesByBindings({
     const brandPropsCtx = deriveBrandPropsContext(defaultPrbCtx);
 
     const miniRoot = buildMiniAjoRootCtx({
-      cfCtx: defaultCfCtx,
+      // Styles pass should not render CF namespace tokens globally.
+      cfCtx: null,
       prbCtx: defaultPrbCtx,
       stylesCtx: styles,
       brandPropsCtx,
@@ -1605,7 +1609,8 @@ function resolveStylesByBindings({
     let seg = stitchedHtml.slice(cursor, tagPos);
 
     const miniRoot = buildMiniAjoRootCtx({
-      cfCtx: currentCf || defaultCfCtx,
+      // Styles pass should not render CF namespace tokens globally.
+      cfCtx: null,
       prbCtx: currentPrb || defaultPrbCtx,
       stylesCtx: currentStyles,
       brandPropsCtx: currentBrandProps,
@@ -1641,7 +1646,8 @@ function resolveStylesByBindings({
   let tail = stitchedHtml.slice(cursor);
 
   const tailRoot = buildMiniAjoRootCtx({
-    cfCtx: currentCf || defaultCfCtx,
+    // Styles pass should not render CF namespace tokens globally.
+    cfCtx: null,
     prbCtx: currentPrb || defaultPrbCtx,
     stylesCtx: currentStyles,
     brandPropsCtx: currentBrandProps,
@@ -1748,7 +1754,8 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     const brandPropsCtx = deriveBrandPropsContext(defaultPrbCtx);
 
     const miniRoot = buildMiniAjoRootCtx({
-      cfCtx: defaultCfCtx,
+      // Final global pass should not re-apply CF context outside scoped CF binding order.
+      cfCtx: null,
       prbCtx: defaultPrbCtx,
       stylesCtx: deriveStylesContext({ prbCtx: defaultPrbCtx, cfCtx: defaultCfCtx }),
       brandPropsCtx,
