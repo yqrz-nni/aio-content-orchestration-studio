@@ -174,6 +174,166 @@ body {
   box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
   border-color: #dbe2ee;
 }
+
+.PreviewCanvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.PreviewCanvas iframe {
+  display: block;
+  background: #ffffff;
+}
+
+.PreviewCanvas.is-rendering iframe {
+  filter: saturate(0.92) brightness(0.97);
+}
+
+.PreviewLoadingOverlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(251, 253, 255, 0.94), rgba(247, 250, 255, 0.92));
+  backdrop-filter: blur(2px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 6px;
+}
+
+.PreviewLoadingOverlay.mode-soft {
+  background: linear-gradient(180deg, rgba(251, 253, 255, 0.86), rgba(247, 250, 255, 0.82));
+}
+
+.PreviewLoadingHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.PreviewLoadingDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #2f6fed;
+  animation: preview-pulse 900ms ease-in-out infinite;
+}
+
+.PreviewLoadingTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1f2a44;
+}
+
+.PreviewLoadingDetail {
+  font-size: 12px;
+  color: #57607a;
+}
+
+.PreviewLoadingProgress {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(47, 111, 237, 0.18);
+  position: relative;
+}
+
+.PreviewLoadingProgress::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 38%;
+  background: linear-gradient(90deg, #2f6fed, #76a2ff);
+  animation: preview-progress 1.1s ease-in-out infinite;
+}
+
+.PreviewSkeletonStack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.PreviewSkeletonCard {
+  display: grid;
+  grid-template-columns: 1fr 140px;
+  gap: 12px;
+  border: 1px solid #dbe4f4;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 10px;
+}
+
+.PreviewSkeletonText {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.PreviewSkLine,
+.PreviewSkImage {
+  background: linear-gradient(90deg, #e7edf8 20%, #f4f7fd 50%, #e7edf8 80%);
+  background-size: 220% 100%;
+  animation: preview-shimmer 1.1s linear infinite;
+}
+
+.PreviewSkLine {
+  height: 10px;
+  border-radius: 999px;
+  width: 100%;
+}
+
+.PreviewSkLine.is-lg {
+  height: 12px;
+  width: 78%;
+}
+
+.PreviewSkImage {
+  height: 68px;
+  border-radius: 8px;
+}
+
+@keyframes preview-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -20% 0;
+  }
+}
+
+@keyframes preview-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes preview-progress {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(320%);
+  }
+}
+
+@media (max-width: 768px) {
+  .PreviewSkeletonCard {
+    grid-template-columns: 1fr;
+  }
+
+  .PreviewSkImage {
+    height: 56px;
+  }
+}
 .FlowNote {
   margin-top: 8px;
   font-size: 12px;

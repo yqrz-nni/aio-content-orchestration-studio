@@ -85,6 +85,25 @@ function safeJson(obj, space = 2) {
   }
 }
 
+function extractModuleSkeletonHints(html) {
+  if (!html || typeof html !== "string") return [];
+  const out = [];
+  const re = /<!--\s*ts:module id="([^"]+)"\s*-->([\s\S]*?)<!--\s*ts:module-end id="\1"\s*-->/g;
+  let match;
+  while ((match = re.exec(html)) !== null) {
+    const moduleId = match[1];
+    const block = match[2] || "";
+    const imageCount = (block.match(/<img\b/gi) || []).length;
+    const textCount = (block.match(/data-tmp-component-id=["']text["']/gi) || []).length;
+    out.push({
+      moduleId,
+      hasImage: imageCount > 0,
+      textWeight: Math.max(2, Math.min(5, textCount || 3)),
+    });
+  }
+  return out;
+}
+
 export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverride }) {
   const ims = useContext(ImsContext);
   const headers = useMemo(() => buildHeaders(ims), [ims]);
@@ -190,6 +209,8 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
   // Operation queue
   const opQueueRef = useRef(Promise.resolve());
+  const pendingRenderIntentRef = useRef(null);
+  const [activeRenderIntent, setActiveRenderIntent] = useState(null);
   function enqueue(asyncFn) {
     opQueueRef.current = opQueueRef.current
       .then(() => asyncFn())
@@ -198,6 +219,10 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         console.error("Queued op failed:", e);
       });
     return opQueueRef.current;
+  }
+
+  function queueRenderIntent(kind, meta = {}) {
+    pendingRenderIntentRef.current = { kind, ...meta, at: Date.now() };
   }
 
   // Iframe message listener (bridge)
@@ -255,6 +280,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     }
 
     const hydrated = hydrateFromHtml(html);
+    queueRenderIntent("template-load");
     setCanonicalHtml(html);
 
     if (hydrated?.prbCfId) {
@@ -336,6 +362,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
           repoId,
         });
 
+        queueRenderIntent("prb-change", { prbId: prbObj.id });
         setCanonicalHtml(nextHtml);
 
         await actionWebInvoke(actions["ajo-template-update"], headers, {
@@ -378,6 +405,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       setPendingFocusModule({ moduleId, vfId, vfOrdinal });
 
       const nextHtml = appendPatternOnlyToTemplateHtml(canonicalHtml, { vfId, vfName, moduleId });
+      queueRenderIntent("pattern-add", { moduleId, vfId });
       setCanonicalHtml(nextHtml);
     });
   }
@@ -569,6 +597,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         vars: m.vars || { firstName: "" },
       });
 
+      queueRenderIntent("vf-hydration", { moduleId, contentId });
       setCanonicalHtml(nextHtml);
     });
   }
@@ -578,6 +607,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
     enqueue(async () => {
       setModules((prev) => prev.filter((m) => m.moduleId !== moduleId));
+      queueRenderIntent("module-remove", { moduleId });
       setCanonicalHtml((prevHtml) => removeModuleFromTemplateHtml(prevHtml, moduleId));
     });
   }
@@ -599,6 +629,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         return next;
       });
 
+      queueRenderIntent("module-reorder", { moduleId, direction });
       setCanonicalHtml((prevHtml) => moveModuleInTemplateHtml(prevHtml, moduleId, direction));
     });
   }
@@ -610,6 +641,9 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       setPreviewWarnings([]);
       setIframeMsgs([]);
       setIsRendering(true);
+      const intent = pendingRenderIntentRef.current || { kind: "rerender" };
+      pendingRenderIntentRef.current = null;
+      setActiveRenderIntent(intent);
 
       try {
         previewScrollRef.current = iframeRef.current?.contentWindow?.scrollY || 0;
@@ -687,6 +721,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       setPreviewHtml(safeInjectFocusBridge(marked));
     } finally {
       setIsRendering(false);
+      setActiveRenderIntent(null);
     }
   }
 
@@ -763,6 +798,42 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       // ignore
     }
   }, [focusDebug]);
+
+  const moduleSkeletonHints = useMemo(() => {
+    const hinted = extractModuleSkeletonHints(canonicalHtml);
+    if (hinted.length) return hinted.slice(0, 3);
+    return (modules || []).slice(0, 3).map((m, i) => ({
+      moduleId: m?.moduleId || `fallback-${i}`,
+      hasImage: i % 2 === 0,
+      textWeight: i % 2 === 0 ? 4 : 3,
+    }));
+  }, [canonicalHtml, modules]);
+
+  const loadingUi = useMemo(() => {
+    const kind = activeRenderIntent?.kind || "rerender";
+    if (kind === "pattern-add") {
+      return { title: "Adding pattern", detail: "Updating preview with the new module.", mode: "skeleton" };
+    }
+    if (kind === "vf-hydration") {
+      return { title: "Hydrating content", detail: "Applying content fragment data.", mode: "skeleton" };
+    }
+    if (kind === "module-reorder") {
+      return { title: "Reordering modules", detail: "Refreshing preview order.", mode: "soft" };
+    }
+    if (kind === "module-remove") {
+      return { title: "Removing module", detail: "Refreshing preview composition.", mode: "soft" };
+    }
+    if (kind === "prb-change") {
+      return { title: "Applying PRB", detail: "Recomputing brand and context variables.", mode: "soft" };
+    }
+    if (kind === "template-load") {
+      return { title: "Loading template", detail: "Preparing preview canvas.", mode: "skeleton" };
+    }
+    if (kind === "manual") {
+      return { title: "Rendering preview", detail: "Running server-side render pipeline.", mode: "soft" };
+    }
+    return { title: "Updating preview", detail: "Applying latest changes.", mode: "soft" };
+  }, [activeRenderIntent]);
 
   return (
     <View>
@@ -874,7 +945,14 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200" UNSAFE_className="StudioPreviewPanel">
           <Flex justifyContent="space-between" alignItems="center">
             <Heading level={4}>Preview</Heading>
-            <Button variant="primary" onPress={renderPreview} isDisabled={!canonicalHtml || isRendering}>
+            <Button
+              variant="primary"
+              onPress={() => {
+                queueRenderIntent("manual");
+                renderPreview();
+              }}
+              isDisabled={!canonicalHtml || isRendering}
+            >
               {isRendering ? "Rendering…" : "Render preview"}
             </Button>
           </Flex>
@@ -898,28 +976,57 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                     </View>
                   ) : null}
 
-                  <iframe
-                    title="Email Preview"
-                    style={{ width: "100%", height: "100%", border: "none" }}
-                    sandbox="allow-same-origin allow-scripts"
-                    srcDoc={previewHtml}
-                    ref={iframeRef}
-                    onLoad={() => {
-                      try {
-                        const win = iframeRef.current?.contentWindow;
-                        if (!win) return;
-                        const y = previewScrollRef.current || 0;
-                        if (y > 0) win.scrollTo(0, y);
-                        const focus = pendingFocusModule || (activeModuleId || activeVfId ? { moduleId: activeModuleId, vfId: activeVfId } : null);
-                        if (focus?.vfId || focus?.moduleId) {
-                          focusPreviewVf(focus);
-                          if (pendingFocusModule) setPendingFocusModule(null);
+                  <div className={`PreviewCanvas ${isRendering ? "is-rendering" : ""}`}>
+                    <iframe
+                      title="Email Preview"
+                      style={{ width: "100%", height: "100%", border: "none" }}
+                      sandbox="allow-same-origin allow-scripts"
+                      srcDoc={previewHtml}
+                      ref={iframeRef}
+                      onLoad={() => {
+                        try {
+                          const win = iframeRef.current?.contentWindow;
+                          if (!win) return;
+                          const y = previewScrollRef.current || 0;
+                          if (y > 0) win.scrollTo(0, y);
+                          const focus = pendingFocusModule || (activeModuleId || activeVfId ? { moduleId: activeModuleId, vfId: activeVfId } : null);
+                          if (focus?.vfId || focus?.moduleId) {
+                            focusPreviewVf(focus);
+                            if (pendingFocusModule) setPendingFocusModule(null);
+                          }
+                        } catch {
+                          // ignore
                         }
-                      } catch {
-                        // ignore
-                      }
-                    }}
-                  />
+                      }}
+                    />
+                    {isRendering ? (
+                      <div className={`PreviewLoadingOverlay mode-${loadingUi.mode}`} aria-live="polite">
+                        <div className="PreviewLoadingHeader">
+                          <div className="PreviewLoadingDot" />
+                          <div>
+                            <div className="PreviewLoadingTitle">{loadingUi.title}</div>
+                            <div className="PreviewLoadingDetail">{loadingUi.detail}</div>
+                          </div>
+                        </div>
+                        {loadingUi.mode === "skeleton" ? (
+                          <div className="PreviewSkeletonStack">
+                            {moduleSkeletonHints.map((hint) => (
+                              <div className="PreviewSkeletonCard" key={`sk-${hint.moduleId}`}>
+                                <div className="PreviewSkeletonText">
+                                  {Array.from({ length: hint.textWeight }).map((_, i) => (
+                                    <div key={`${hint.moduleId}-t-${i}`} className={`PreviewSkLine ${i === 0 ? "is-lg" : ""}`} />
+                                  ))}
+                                </div>
+                                {hint.hasImage ? <div className="PreviewSkImage" /> : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="PreviewLoadingProgress" />
+                        )}
+                      </div>
+                    ) : null}
+                  </div>
                 </View>
               </Item>
 
