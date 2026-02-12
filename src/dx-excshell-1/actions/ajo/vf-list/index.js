@@ -4,7 +4,11 @@ const { fetchJson } = require("../../_lib/fetchJson");
 function buildFragmentsUrl(baseUrl, { orderBy = "+name", limit = 1000 } = {}) {
   const u = new URL(baseUrl);
   if (!u.searchParams.get("orderBy")) u.searchParams.set("orderBy", orderBy);
-  if (!u.searchParams.get("limit")) u.searchParams.set("limit", String(limit));
+  const currentLimit = u.searchParams.get("limit");
+  const rawLimit = currentLimit ?? String(limit);
+  const parsedLimit = Number.parseInt(rawLimit, 10);
+  const safeLimit = Number.isFinite(parsedLimit) ? Math.min(parsedLimit, 1000) : 1000;
+  u.searchParams.set("limit", String(safeLimit));
   return u.toString();
 }
 
@@ -45,17 +49,41 @@ async function main(params) {
     });
 
     const items = Array.isArray(payload?.items) ? payload.items : [];
-    const filtered = items.filter((it) => hasLabel(it, "vf:content-block"));
+    const tagged = items.filter((it) => hasLabel(it, "vf:content-block"));
+    const fallback = items.filter((it) => {
+      const type = String(it?.type || "").toLowerCase();
+      const channels = Array.isArray(it?.channels) ? it.channels : [];
+      return type === "html" && channels.includes("email");
+    });
+    const filtered = tagged.length ? tagged : fallback;
     const debug = params.debug === true || params.debug === "true";
+    const debugFull = params.debug === "full";
 
     return ok({
       sandbox: params.SANDBOX_NAME,
       totalFetched: items.length,
       totalFiltered: filtered.length,
+      usedFallback: tagged.length === 0,
+      warning:
+        tagged.length === 0
+          ? "No vf:content-block labels found; falling back to type=html + channels includes 'email'."
+          : undefined,
       items: filtered,
       page: payload?._page,
-      debug: debug
+      debug: debug || debugFull
         ? {
+            keysSeen: Array.from(
+              new Set(
+                items.flatMap((it) =>
+                  it && typeof it === "object" ? Object.keys(it) : []
+                )
+              )
+            ).sort(),
+            counts: {
+              withLabels: items.filter((it) => Array.isArray(it?.labels) && it.labels.length).length,
+              withTags: items.filter((it) => Array.isArray(it?.tags) && it.tags.length).length,
+              withTagIds: items.filter((it) => Array.isArray(it?.tagIds) && it.tagIds.length).length,
+            },
             sample: items.slice(0, 3).map((it) => ({
               id: it?.id,
               name: it?.name,
@@ -65,8 +93,10 @@ async function main(params) {
               type: it?.type,
               channels: it?.channels,
             })),
+            sampleFull: debugFull ? items.slice(0, 3) : undefined,
           }
         : undefined,
+      itemsAll: debugFull ? items.slice(0, 200) : undefined,
     });
   } catch (e) {
     return serverError(e.message, {
