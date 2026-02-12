@@ -1370,6 +1370,14 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                   <Tooltip>{templateHref ? "Open template in AJO (new tab)" : "Template link unavailable"}</Tooltip>
                 </TooltipTrigger>
                 <Button
+                  variant="secondary"
+                  isQuiet
+                  onPress={exportRenderedHtml}
+                  isDisabled={!lastRenderResult?.renderedHtml}
+                >
+                  Export HTML
+                </Button>
+                <Button
                   variant="primary"
                   onPress={() => {
                     queueRenderIntent("manual");
@@ -1380,14 +1388,6 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                   {isRendering ? "Refreshing..." : "Refresh"}
                 </Button>
               </Flex>
-              <Button
-                variant="secondary"
-                isQuiet
-                onPress={exportRenderedHtml}
-                isDisabled={!lastRenderResult?.renderedHtml}
-              >
-                Export HTML
-              </Button>
             </Flex>
           </Flex>
 
