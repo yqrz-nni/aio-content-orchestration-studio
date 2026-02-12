@@ -667,6 +667,20 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     return tagIds.some((t) => String(t || "") === String(tagId));
   }
 
+  function isCompiledReferencesModule(mod) {
+    const compiledTagId = vfAutoInsertConfig?.compiledReferencesTagId || null;
+    const compiledDefaultVfId = normalizeVfId(vfAutoInsertConfig?.compiledReferencesDefaultVfId);
+    return vfHasTagId(mod?.vfId, compiledTagId) || (compiledDefaultVfId && normalizeVfId(mod?.vfId) === compiledDefaultVfId);
+  }
+
+  function moduleHasDynamicReferences(mod) {
+    if (!mod?.contentId) return false;
+    const content = (contentOptions || []).find((c) => c?.id === mod.contentId) || null;
+    // Conservative default: unknown content could still contain dynamic references.
+    if (!content) return true;
+    return content?.hasDynamicReferences === true || hasDynamicReferenceTokens(content);
+  }
+
   function bindContent(moduleId, contentId) {
     if (!templateId) return;
     if (!moduleId || !contentId) return;
@@ -886,6 +900,34 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
           showAutoPatternToast("Pattern Automatically Added: Compiled Reference Statements");
         });
       }
+
+      // After hydration/removal renders, clean up compiled-reference pattern if no dynamic refs remain.
+      if (intent.kind === "vf-hydration" || intent.kind === "module-remove") {
+        enqueue(async () => {
+          const currentModules = Array.isArray(modulesRef.current) ? modulesRef.current : [];
+          const currentHtml = canonicalHtmlRef.current || "";
+          if (!currentModules.length || !currentHtml) return;
+
+          const hasAnyDynamicRefs = currentModules.some((mod) => moduleHasDynamicReferences(mod));
+          if (hasAnyDynamicRefs) return;
+
+          const compiledModules = currentModules.filter((mod) => isCompiledReferencesModule(mod));
+          if (!compiledModules.length) return;
+
+          const removeIds = new Set(compiledModules.map((m) => m.moduleId).filter(Boolean));
+          const nextModules = currentModules.filter((m) => !removeIds.has(m.moduleId));
+          let nextHtml = currentHtml;
+          for (const mod of compiledModules) {
+            if (!mod?.moduleId) continue;
+            nextHtml = removeModuleFromTemplateHtml(nextHtml, mod.moduleId);
+          }
+
+          setModules(nextModules);
+          queueRenderIntent("module-remove", { auto: true, reason: "compiled-references-cleanup" });
+          setCanonicalHtml(nextHtml);
+          showAutoPatternToast("Pattern Automatically Removed: Compiled Reference Statements");
+        });
+      }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Render preview failed:", e);
@@ -1051,10 +1093,11 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
           aria-live="polite"
           style={{
             position: "fixed",
-            top: 20,
-            right: 20,
+            left: "50%",
+            bottom: "20vh",
+            transform: "translateX(-50%)",
             zIndex: 9999,
-            maxWidth: 460,
+            width: "min(760px, calc(100vw - 40px))",
             background: "#0f172a",
             color: "#ffffff",
             border: "1px solid #1d4ed8",
@@ -1064,6 +1107,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
             fontSize: 13,
             fontWeight: 700,
             letterSpacing: "0.2px",
+            textAlign: "center",
           }}
         >
           {autoPatternToast}
