@@ -358,6 +358,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     if (!canonicalHtml) return;
 
     enqueue(async () => {
+      const vfName = (vfItems.find((v) => v?.id === vfId)?.name || "").trim() || null;
       const moduleId = `m_${Date.now()}`;
       const nextModules = [
         ...modules,
@@ -375,7 +376,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       setHoveredModule(null);
       setPendingFocusModule({ moduleId, vfId, vfOrdinal });
 
-      const nextHtml = appendPatternOnlyToTemplateHtml(canonicalHtml, { vfId, moduleId });
+      const nextHtml = appendPatternOnlyToTemplateHtml(canonicalHtml, { vfId, vfName, moduleId });
       setCanonicalHtml(nextHtml);
     });
   }
@@ -552,6 +553,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
     const m = modules.find((x) => x.moduleId === moduleId);
     if (!m?.vfId) return;
+    const vfName = (vfItems.find((v) => v?.id === m.vfId)?.name || "").trim() || null;
 
     enqueue(async () => {
       const nextModules = modules.map((x) => (x.moduleId === moduleId ? { ...x, contentId } : x));
@@ -560,6 +562,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       const nextHtml = bindContentInModuleHtml(canonicalHtml, {
         moduleId,
         vfId: m.vfId,
+        vfName,
         aemCfId: contentId,
         repoId,
         vars: m.vars || { firstName: "" },

@@ -4,32 +4,63 @@
  * Template engine: headers, HTML mutations, hydration (best-effort)
  * ============================================================================= */
 
+function escapeAjoAttrValue(val) {
+  return String(val ?? "").replace(/"/g, "&quot;");
+}
+
+function wrapAcrFragmentTag(rawTag) {
+  return `{{!-- [acr-start-fragment] --}}${rawTag}{{!-- [acr-end-fragment] --}}`;
+}
+
+function buildAcrWrappedAjoFragmentTag(vfId, vfName = null) {
+  const safeName = typeof vfName === "string" && vfName.trim() ? ` name="${escapeAjoAttrValue(vfName.trim())}"` : "";
+  const raw = `{{ fragment id="ajo:${vfId}"${safeName} mode="inline" }}`;
+  return wrapAcrFragmentTag(raw);
+}
+
+function buildAemCfFragmentTag({ aemCfId, repoId, vars = {} }) {
+  const varAttrs = Object.entries(vars)
+    .map(([k, v]) => `${k}='${String(v ?? "")}'`)
+    .join(" ");
+  const extraAttrs = varAttrs ? ` ${varAttrs}` : "";
+  return `{{fragment id='aem:${aemCfId}?repoId=${repoId}' result='cf'${extraAttrs} r1=r1 r2=r2 r3=r3 r4=r4 r5=r5 r6=r6 r7=r7 r8=r8 r9=r9 r10=r10}}`;
+}
+
+function wrapAcrExprField(rawTag) {
+  return `{{!-- [acr-start-expr-field] --}}${rawTag}{{!-- [acr-end-expr-field] --}}`;
+}
+
 // Deterministic PRB replacement: replace any existing prbProperties AEM binding
 export function applyPrbToTemplateHtml(html, { prbCfId, repoId }) {
   if (!html) return html;
 
   const newCall = `{{fragment id='aem:${prbCfId}?repoId=${repoId}' result='prbProperties'}}`;
+  const wrappedNewCall = wrapAcrExprField(newCall);
 
-  const re = /{{\s*fragment\s+id=(['"])aem:[^'"]+\?repoId=[^'"]+\1\s+result=(['"])prbProperties\2\s*}}/g;
+  const re = /{{\s*fragment\s+id=(['"])aem:[^'"]+\?repoId=[^'"]+\1\s+result=(['"])prbProperties\2\s*}}/;
+  const wrappedRe =
+    /{{!--\s*\[acr-start-expr-field\]\s*--}}\s*{{\s*fragment\s+id=(['"])aem:[^'"]+\?repoId=[^'"]+\1\s+result=(['"])prbProperties\2\s*}}\s*{{!--\s*\[acr-end-expr-field\]\s*--}}/;
 
-  if (!re.test(html)) {
+  if (!wrappedRe.test(html) && !re.test(html)) {
     // eslint-disable-next-line no-console
     console.warn("Baseline HTML did not contain prbProperties binding; refusing to inject automatically.");
     return html;
   }
 
-  return html.replace(re, newCall);
+  if (wrappedRe.test(html)) {
+    return html.replace(new RegExp(wrappedRe.source, "g"), wrappedNewCall);
+  }
+  return html.replace(new RegExp(re.source, "g"), wrappedNewCall);
 }
 
 // v1 module insertion: append module block before the closing marker
-export function appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars = {}, moduleId = null }) {
-  const varAttrs = Object.entries(vars)
-    .map(([k, v]) => `${k}='${String(v ?? "")}'`)
-    .join(" ");
-
+export function appendModuleToTemplateHtml(html, { vfId, vfName = null, aemCfId, repoId, vars = {}, moduleId = null }) {
   // Optional marker comments (do not change sequential cf namespace model)
   const openMarker = moduleId ? `<!-- ts:module id="${moduleId}" -->` : "";
   const closeMarker = moduleId ? `<!-- ts:module-end id="${moduleId}" -->` : "";
+  const cfTag = buildAemCfFragmentTag({ aemCfId, repoId, vars });
+  const wrappedCfTag = wrapAcrExprField(cfTag);
+  const wrappedVfTag = buildAcrWrappedAjoFragmentTag(vfId, vfName);
 
   const insertion = `
   ${openMarker}
@@ -40,10 +71,10 @@ export function appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars =
           <th class="colspan1">
             <div class="acr-fragment acr-component" data-component-id="text" data-contenteditable="false">
               <div class="text-container" data-contenteditable="true">
-                <p>{{fragment id='aem:${aemCfId}?repoId=${repoId}' result='cf' ${varAttrs} r1=r1 r2=r2 r3=r3 r4=r4 r5=r5 r6=r6 r7=r7 r8=r8 r9=r9 r10=r10}}</p>
+                <p>${wrappedCfTag}</p>
               </div>
             </div>
-            {{ fragment id="ajo:${vfId}" mode="inline" }}
+            ${wrappedVfTag}
           </th>
         </tr>
       </tbody>
@@ -58,9 +89,10 @@ export function appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars =
 }
 
 // Append a pattern (VF) even before content is bound.
-export function appendPatternOnlyToTemplateHtml(html, { vfId, moduleId = null }) {
+export function appendPatternOnlyToTemplateHtml(html, { vfId, vfName = null, moduleId = null }) {
   const openMarker = moduleId ? `<!-- ts:module id="${moduleId}" -->` : "";
   const closeMarker = moduleId ? `<!-- ts:module-end id="${moduleId}" -->` : "";
+  const wrappedVfTag = buildAcrWrappedAjoFragmentTag(vfId, vfName);
 
   const insertion = `
   ${openMarker}
@@ -69,7 +101,7 @@ export function appendPatternOnlyToTemplateHtml(html, { vfId, moduleId = null })
       <tbody>
         <tr role="presentation">
           <th class="colspan1">
-            {{ fragment id="ajo:${vfId}" mode="inline" }}
+            ${wrappedVfTag}
           </th>
         </tr>
       </tbody>
@@ -85,9 +117,9 @@ export function appendPatternOnlyToTemplateHtml(html, { vfId, moduleId = null })
 
 // Bind content into an existing module block (identified by marker comments).
 // If markers aren’t found, fall back to appending a full module (safe but may duplicate layout).
-export function bindContentInModuleHtml(html, { moduleId, vfId, aemCfId, repoId, vars = {} }) {
+export function bindContentInModuleHtml(html, { moduleId, vfId, vfName = null, aemCfId, repoId, vars = {} }) {
   if (!html || !moduleId) {
-    return appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars, moduleId: moduleId || null });
+    return appendModuleToTemplateHtml(html, { vfId, vfName, aemCfId, repoId, vars, moduleId: moduleId || null });
   }
 
   const open = `<!-- ts:module id="${moduleId}" -->`;
@@ -97,36 +129,42 @@ export function bindContentInModuleHtml(html, { moduleId, vfId, aemCfId, repoId,
   const end = html.indexOf(close);
 
   if (start < 0 || end < 0 || end <= start) {
-    return appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars, moduleId });
+    return appendModuleToTemplateHtml(html, { vfId, vfName, aemCfId, repoId, vars, moduleId });
   }
 
   const block = html.slice(start, end + close.length);
-
-  const varAttrs = Object.entries(vars)
-    .map(([k, v]) => `${k}='${String(v ?? "")}'`)
-    .join(" ");
-
-  const cfTag = `{{fragment id='aem:${aemCfId}?repoId=${repoId}' result='cf' ${varAttrs} r1=r1 r2=r2 r3=r3 r4=r4 r5=r5 r6=r6 r7=r7 r8=r8 r9=r9 r10=r10}}`;
+  const cfTag = buildAemCfFragmentTag({ aemCfId, repoId, vars });
+  const wrappedCfTag = wrapAcrExprField(cfTag);
 
   const cfRe = /{{\s*fragment\b[^}]*\bid=(['"])aem:[^'"]+\?repoId=[^'"]+\1[^}]*\bresult=(['"])cf\2[^}]*}}/gim;
+  const wrappedCfRe =
+    /{{!--\s*\[acr-start-expr-field\]\s*--}}\s*{{\s*fragment\b[^}]*\bid=(['"])aem:[^'"]+\?repoId=[^'"]+\1[^}]*\bresult=(['"])cf\2[^}]*}}\s*{{!--\s*\[acr-end-expr-field\]\s*--}}/gim;
 
   let nextBlock = block;
-  if (cfRe.test(block)) {
-    nextBlock = block.replace(cfRe, cfTag);
+  if (wrappedCfRe.test(block)) {
+    nextBlock = block.replace(wrappedCfRe, wrappedCfTag);
+  } else if (cfRe.test(block)) {
+    nextBlock = block.replace(cfRe, wrappedCfTag);
   } else {
-    // Insert a basic text-container wrapper right before the VF include.
+    // Insert a basic text-container wrapper before the VF block/tag.
     const vfIncludeRe = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:[^'"]+\1[^}]*}}/i;
+    const wrappedVfBlockRe =
+      /{{!--\s*\[acr-start-fragment\]\s*--}}\s*{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:[^'"]+\1[^}]*}}\s*{{!--\s*\[acr-end-fragment\]\s*--}}/i;
     if (vfIncludeRe.test(block)) {
       const insert = `
             <div class="acr-fragment acr-component" data-component-id="text" data-contenteditable="false">
               <div class="text-container" data-contenteditable="true">
-                <p>${cfTag}</p>
+                <p>${wrappedCfTag}</p>
               </div>
             </div>
       `;
-      nextBlock = block.replace(vfIncludeRe, `${insert}\n            $&`);
+      if (wrappedVfBlockRe.test(block)) {
+        nextBlock = block.replace(wrappedVfBlockRe, `${insert}\n            $&`);
+      } else {
+        nextBlock = block.replace(vfIncludeRe, (_m) => `${insert}\n            ${wrapAcrFragmentTag(_m)}`);
+      }
     } else {
-      return appendModuleToTemplateHtml(html, { vfId, aemCfId, repoId, vars, moduleId });
+      return appendModuleToTemplateHtml(html, { vfId, vfName, aemCfId, repoId, vars, moduleId });
     }
   }
 
