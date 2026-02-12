@@ -92,7 +92,6 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const prbId = mode === "embedded" ? prbIdOverride : params.prbId;
   const templateId = mode === "embedded" ? templateIdOverride : params.templateId;
   const [searchParams] = useSearchParams();
-  const focusDebugFromUrl = searchParams.get("focusdebug") === "1";
   const [focusDebug, setFocusDebug] = useState(() => {
     try {
       return window.localStorage.getItem("ts_focus_debug") === "1";
