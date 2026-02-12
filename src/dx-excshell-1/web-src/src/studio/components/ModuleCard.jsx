@@ -1,7 +1,8 @@
 // File: src/dx-excshell-1/web-src/src/studio/components/ModuleCard.jsx
 
 import React, { useMemo, useState } from "react";
-import { View, Flex, Text, Divider, ComboBox, Item, Button, DialogTrigger } from "@adobe/react-spectrum";
+import { View, Flex, Text, Divider, ComboBox, Item, Button, DialogTrigger, ActionButton, TooltipTrigger, Tooltip } from "@adobe/react-spectrum";
+import Edit from "@spectrum-icons/workflow/Edit";
 import { PatternPickerDialog } from "./PatternPickerDialog";
 
 function vfNameById(vfItems, vfId) {
@@ -93,14 +94,18 @@ export function ModuleCard({
 
       <Divider size="S" marginY="size-100" />
 
-      <View marginBottom="size-100">
-        <Text UNSAFE_style={{ fontSize: 12, opacity: 0.7, marginBottom: 2 }}>Pattern</Text>
+      <View marginBottom="size-75">
         <Flex alignItems="center" gap="size-100" wrap>
-          <Text>{name}</Text>
+          <Text>
+            <strong>Pattern:</strong> {name}
+          </Text>
           <DialogTrigger>
-            <Button variant="secondary" isQuiet data-keep-module-focus="true">
-              Change
-            </Button>
+            <TooltipTrigger>
+              <ActionButton isQuiet aria-label="Edit pattern" data-keep-module-focus="true">
+                <Edit />
+              </ActionButton>
+              <Tooltip>Edit pattern</Tooltip>
+            </TooltipTrigger>
             <PatternPickerDialog
               vfItems={vfItems}
               onSelect={(nextVfId) => onChangePattern?.(module.moduleId, nextVfId)}
@@ -112,10 +117,25 @@ export function ModuleCard({
         </Flex>
       </View>
 
-      <Divider size="S" marginY="size-100" />
-
       <View>
-        <Text UNSAFE_style={{ fontSize: 12, opacity: 0.7, marginBottom: 2 }}>Content</Text>
+        <Flex alignItems="center" gap="size-100" wrap>
+          <Text>
+            <strong>Content:</strong> {selectedContent ? selectedContent.label : ""}
+          </Text>
+          {showBindUi ? (
+            <TooltipTrigger>
+              <ActionButton
+                isQuiet
+                aria-label="Edit content"
+                onPress={() => setIsEditingContent((v) => !v)}
+                data-keep-module-focus="true"
+              >
+                <Edit />
+              </ActionButton>
+              <Tooltip>Edit content</Tooltip>
+            </TooltipTrigger>
+          ) : null}
+        </Flex>
 
         {showBindUi && isEditingContent ? (
           <Flex alignItems="end" gap="size-100" wrap>
@@ -136,21 +156,7 @@ export function ModuleCard({
               ))}
             </ComboBox>
             <Button variant="secondary" isQuiet onPress={() => setIsEditingContent(false)} data-keep-module-focus="true">
-              Cancel
-            </Button>
-          </Flex>
-        ) : selectedContent ? (
-          <Flex alignItems="center" gap="size-100" wrap>
-            <Text>{selectedContent.label}</Text>
-            <Button variant="secondary" isQuiet onPress={() => setIsEditingContent(true)} data-keep-module-focus="true">
-              Edit
-            </Button>
-          </Flex>
-        ) : showBindUi ? (
-          <Flex alignItems="center" gap="size-100" wrap>
-            <Text UNSAFE_style={{ color: "#8a5a00", fontSize: 12, fontWeight: 600 }}>Not Bound</Text>
-            <Button variant="secondary" isQuiet onPress={() => setIsEditingContent(true)} data-keep-module-focus="true">
-              Bind
+              Done
             </Button>
           </Flex>
         ) : null}
