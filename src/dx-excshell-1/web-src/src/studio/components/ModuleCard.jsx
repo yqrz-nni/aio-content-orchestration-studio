@@ -94,10 +94,11 @@ export function ModuleCard({
       <Divider size="S" marginY="size-100" />
 
       <View marginBottom="size-100">
-        <Flex alignItems="center" justifyContent="space-between" gap="size-100">
-          <Text UNSAFE_style={{ fontSize: 12, opacity: 0.7 }}>Pattern</Text>
+        <Text UNSAFE_style={{ fontSize: 12, opacity: 0.7, marginBottom: 2 }}>Pattern</Text>
+        <Flex alignItems="center" gap="size-100" wrap>
+          <Text>{name}</Text>
           <DialogTrigger>
-            <Button variant="secondary" data-keep-module-focus="true">
+            <Button variant="secondary" isQuiet data-keep-module-focus="true">
               Change
             </Button>
             <PatternPickerDialog
@@ -109,48 +110,49 @@ export function ModuleCard({
             />
           </DialogTrigger>
         </Flex>
-        <Text>{name}</Text>
       </View>
 
       <Divider size="S" marginY="size-100" />
 
       <View>
-        <Flex alignItems="center" justifyContent="space-between" gap="size-100">
-          <Text UNSAFE_style={{ fontSize: 12, opacity: 0.7 }}>Content</Text>
-          {showBindUi ? (
-            isEditingContent ? (
-              <Button variant="secondary" onPress={() => setIsEditingContent(false)} data-keep-module-focus="true">
-                Cancel
-              </Button>
-            ) : (
-              <Button variant="secondary" onPress={() => setIsEditingContent(true)} data-keep-module-focus="true">
-                {module?.contentId ? "Edit" : "Bind"}
-              </Button>
-            )
-          ) : null}
-        </Flex>
+        <Text UNSAFE_style={{ fontSize: 12, opacity: 0.7, marginBottom: 2 }}>Content</Text>
 
         {showBindUi && isEditingContent ? (
-          <ComboBox
-            label="Bind Content Fragment"
-            placeholder="Select content..."
-            selectedKey={module?.contentId || null}
-            onSelectionChange={(key) => {
-              onBindContent(module.moduleId, key);
-              setIsEditingContent(false);
-            }}
-            width="size-4600"
-            menuTrigger="focus"
-            data-keep-module-focus="true"
-          >
-            {options.map((cf) => (
-              <Item key={cf.id}>{cf.label}</Item>
-            ))}
-          </ComboBox>
+          <Flex alignItems="end" gap="size-100" wrap>
+            <ComboBox
+              label="Bind Content Fragment"
+              placeholder="Select content..."
+              selectedKey={module?.contentId || null}
+              onSelectionChange={(key) => {
+                onBindContent(module.moduleId, key);
+                setIsEditingContent(false);
+              }}
+              width="size-4600"
+              menuTrigger="focus"
+              data-keep-module-focus="true"
+            >
+              {options.map((cf) => (
+                <Item key={cf.id}>{cf.label}</Item>
+              ))}
+            </ComboBox>
+            <Button variant="secondary" isQuiet onPress={() => setIsEditingContent(false)} data-keep-module-focus="true">
+              Cancel
+            </Button>
+          </Flex>
         ) : selectedContent ? (
-          <Text>{selectedContent.label}</Text>
+          <Flex alignItems="center" gap="size-100" wrap>
+            <Text>{selectedContent.label}</Text>
+            <Button variant="secondary" isQuiet onPress={() => setIsEditingContent(true)} data-keep-module-focus="true">
+              Edit
+            </Button>
+          </Flex>
         ) : showBindUi ? (
-          <Text UNSAFE_style={{ color: "#8a5a00", fontSize: 12, fontWeight: 600 }}>Not Bound</Text>
+          <Flex alignItems="center" gap="size-100" wrap>
+            <Text UNSAFE_style={{ color: "#8a5a00", fontSize: 12, fontWeight: 600 }}>Not Bound</Text>
+            <Button variant="secondary" isQuiet onPress={() => setIsEditingContent(true)} data-keep-module-focus="true">
+              Bind
+            </Button>
+          </Flex>
         ) : null}
       </View>
 
