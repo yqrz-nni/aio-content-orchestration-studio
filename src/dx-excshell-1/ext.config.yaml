@@ -25,6 +25,7 @@ runtimeManifest:
             AEM_GQL_PATH: $AEM_GQL_PATH
             AEM_GQL_PATH_PROXY: $AEM_GQL_PATH_PROXY
             USE_AEM_PROXY: $USE_AEM_PROXY
+            AEM_CF_DETAIL_URL_PREFIX: $AEM_CF_DETAIL_URL_PREFIX
         ajo-vf-demo:
           function: actions/ajo/vf-demo/index.js
           web: 'yes'
@@ -42,6 +43,7 @@ runtimeManifest:
             AJO_GET_FRAGMENT_URL: $AJO_GET_FRAGMENT_URL
             AJO_API_KEY: $AJO_API_KEY
             SANDBOX_NAME: $SANDBOX_NAME
+            AJO_VF_DETAIL_URL_PREFIX: $AJO_VF_DETAIL_URL_PREFIX
             AJO_VF_CONTENT_BLOCK_TAG_ID: $AJO_VF_CONTENT_BLOCK_TAG_ID
             AJO_VF_COMPILED_REFERENCES_TAG_ID: $AJO_VF_COMPILED_REFERENCES_TAG_ID
             AJO_VF_FOOTER_TAG_ID: $AJO_VF_FOOTER_TAG_ID
@@ -112,6 +114,7 @@ runtimeManifest:
             AEM_GQL_PATH: $AEM_GQL_PATH
             AEM_GQL_PATH_PROXY: $AEM_GQL_PATH_PROXY
             USE_AEM_PROXY: $USE_AEM_PROXY
+            AEM_CF_DETAIL_URL_PREFIX: $AEM_CF_DETAIL_URL_PREFIX
         aem-prb-get:
           function: actions/aem/prb-get/index.js
           web: 'yes'
