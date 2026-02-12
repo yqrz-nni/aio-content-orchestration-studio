@@ -12,9 +12,10 @@ function buildFragmentsUrl(baseUrl, { orderBy = "+name", limit = 1000 } = {}) {
   return u.toString();
 }
 
-function hasLabel(it, label) {
-  const labels = Array.isArray(it?.labels) ? it.labels : [];
-  return labels.some((l) => String(l || "").toLowerCase() === String(label || "").toLowerCase());
+function hasTagId(it, tagId) {
+  if (!tagId) return false;
+  const tagIds = Array.isArray(it?.tagIds) ? it.tagIds : [];
+  return tagIds.some((t) => String(t || "") === String(tagId));
 }
 
 async function main(params) {
@@ -48,8 +49,12 @@ async function main(params) {
       },
     });
 
+    if (!params.AJO_VF_CONTENT_BLOCK_TAG_ID) {
+      return serverError("Missing AJO_VF_CONTENT_BLOCK_TAG_ID");
+    }
+
     const items = Array.isArray(payload?.items) ? payload.items : [];
-    const tagged = items.filter((it) => hasLabel(it, "vf:content-block"));
+    const tagged = items.filter((it) => hasTagId(it, params.AJO_VF_CONTENT_BLOCK_TAG_ID));
     const fallback = items.filter((it) => {
       const type = String(it?.type || "").toLowerCase();
       const channels = Array.isArray(it?.channels) ? it.channels : [];
