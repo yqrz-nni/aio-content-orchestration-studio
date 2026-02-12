@@ -1477,6 +1477,45 @@ function renderNamespaceByBindingOrder({
   const needed = collectTopLevelVarNames(tail);
   tail = evaluateLiquidLetsAndReplace(tail, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
+  // CF tail scoping:
+  // Only hydrate the first ACR fragment block after the last CF binding tag.
+  // This prevents context leak into later unbound duplicate modules.
+  if (namespace === "cf" && effectiveCtx) {
+    const startRe = /{{!--\s*\[acr-start-fragment\]\s*--}}/i;
+    const endRe = /{{!--\s*\[acr-end-fragment\]\s*--}}/i;
+    const startMatch = startRe.exec(tail);
+    if (startMatch) {
+      const blockStart = startMatch.index;
+      const afterStart = tail.slice(blockStart + startMatch[0].length);
+      const endMatch = endRe.exec(afterStart);
+
+      if (endMatch) {
+        const blockEnd = blockStart + startMatch[0].length + endMatch.index + endMatch[0].length;
+        const prefix = tail.slice(0, blockStart);
+        let boundBlock = tail.slice(blockStart, blockEnd);
+        const suffix = tail.slice(blockEnd);
+
+        // Apply CF context + dynamic refs only to the bound block.
+        boundBlock = resolveDynamicReferencesInSegment({
+          html: boundBlock,
+          cfCtx: effectiveCtx,
+          dynState,
+          diag,
+          segmentKey: "cf:tail",
+        });
+        boundBlock = replaceNamespaceVars(boundBlock, "brandProps", brandPropsCtx);
+        boundBlock = replaceNamespaceVars(boundBlock, namespace, effectiveCtx);
+
+        // Keep surrounding content unbound for CF namespace.
+        const cleanPrefix = replaceNamespaceVars(prefix, "brandProps", brandPropsCtx);
+        const cleanSuffix = replaceNamespaceVars(suffix, "brandProps", brandPropsCtx);
+
+        out += cleanPrefix + boundBlock + cleanSuffix;
+        return out;
+      }
+    }
+  }
+
   if (dynEnabled && namespace === "cf") {
     tail = resolveDynamicReferencesInSegment({
       html: tail,
