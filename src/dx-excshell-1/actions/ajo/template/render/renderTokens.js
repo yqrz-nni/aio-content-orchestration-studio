@@ -886,6 +886,19 @@ function replaceBodyCopyVarBestEffort(segment, cfCtx) {
   // if raw bodyCopy was not already rendered.
   if (!out.includes(raw) && out.includes("thisBodyCopy.replace(")) {
     out = out.replace(/\bfalse\b/i, raw);
+
+    // Deterministic fallback: if the loop scaffold exists but produced no body content,
+    // inject raw bodyCopy between the hidden lead and trailing {{/each}} span.
+    out = out.replace(
+      /(<span[^>]*display\s*:\s*none[^>]*>[\s\S]*?<\/span>)([\s\S]*?)(<span[^>]*display\s*:\s*none[^>]*>\s*\{\{\/each\}\}\s*<\/span>)/i,
+      (_m, lead, mid, tail) => {
+        const middle = String(mid || "");
+        if (middle.includes(raw)) return `${lead}${middle}${tail}`;
+        if (/\{\{\{?\s*bodyCopy\s*\}\}?\}/.test(middle)) return `${lead}${middle.replace(/\{\{\{?\s*bodyCopy\s*\}\}?\}/g, raw)}${tail}`;
+        if (!middle.trim() || /^false$/i.test(middle.trim())) return `${lead}\n    ${raw}\n${tail}`;
+        return `${lead}${middle}${tail}`;
+      }
+    );
   }
   return out;
 }
