@@ -377,6 +377,26 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     win.postMessage({ __TS_PREVIEW__: true, type: "clear-vf" }, "*");
   }
 
+  function safeInjectMarkers(html) {
+    try {
+      return injectPreviewMarkers(html);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("Preview marker inject failed:", e);
+      return html;
+    }
+  }
+
+  function safeInjectFocusBridge(html) {
+    try {
+      return injectPreviewFocusBridge(html);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("Preview focus bridge inject failed:", e);
+      return html;
+    }
+  }
+
   const activeModuleId = pinnedModule?.moduleId || hoveredModule?.moduleId || null;
   const activeVfId = pinnedModule?.vfId || hoveredModule?.vfId || null;
 
@@ -537,8 +557,8 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       }
 
       const bridged = enableIframeBridge ? injectPreviewBridge(sanitized, expectedVfIds) : sanitized;
-      const marked = injectPreviewMarkers(bridged);
-      const withFocusBridge = injectPreviewFocusBridge(marked);
+      const marked = safeInjectMarkers(bridged);
+      const withFocusBridge = safeInjectFocusBridge(marked);
       setPreviewHtml(withFocusBridge);
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -546,8 +566,8 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       setRenderError(e?.message || "Render failed");
       setPreviewWarnings([]);
       const fallback = stripAjoSyntax(canonicalHtml || "<html><body><p>Render failed.</p></body></html>");
-      const marked = injectPreviewMarkers(fallback);
-      setPreviewHtml(injectPreviewFocusBridge(marked));
+      const marked = safeInjectMarkers(fallback);
+      setPreviewHtml(safeInjectFocusBridge(marked));
     } finally {
       setIsRendering(false);
     }

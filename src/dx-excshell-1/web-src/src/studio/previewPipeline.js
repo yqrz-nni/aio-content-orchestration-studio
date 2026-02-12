@@ -274,9 +274,9 @@ export function injectPreviewMarkers(html) {
   });
 
   const re = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:([^'"]+)\1[^}]*}}/gim;
-  out = out.replace(re, (m, _q, id, offset) => {
+  out = out.replace(re, (m, _q, id, offset, full) => {
     if (!id) return m;
-    const prefix = out.slice(Math.max(0, offset - 160), offset);
+    const prefix = full.slice(Math.max(0, offset - 160), offset);
     if (prefix.includes('data-ts-marker="true"')) return m;
     return `<span data-fragment-id="ajo:${id}" data-ts-marker="true"></span>${m}`;
   });
