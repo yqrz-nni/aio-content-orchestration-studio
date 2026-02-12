@@ -256,13 +256,9 @@ function stripAjoFragmentTags(html) {
 
 export function resolvePreviewHtmlFromRenderResult(renderResult, fallbackHtml) {
   if (typeof renderResult?.renderedHtml === "string" && renderResult.renderedHtml.trim()) {
-    const stitched = renderResult?.stitchedHtml ?? renderResult?.html ?? fallbackHtml ?? "";
-    const cfBindings = (Array.isArray(renderResult?.aemBindingsEncountered) ? renderResult.aemBindingsEncountered : []).filter(
-      (b) => b?.result === "cf"
-    ).length;
-    const vfIds = extractAllAjoVfIdsFromHtml(stitched);
-    const likelyUnbound = cfBindings > 0 && vfIds.length > 0 && cfBindings < vfIds.length;
-    if (!likelyUnbound && !hasUnboundVfModules(stitched)) return renderResult.renderedHtml;
+    // Server-side renderedHtml is the most faithful preview representation and
+    // already includes fragment stitching + token/render logic.
+    return renderResult.renderedHtml;
   }
 
   const stitchedHtml = renderResult?.stitchedHtml ?? renderResult?.html ?? fallbackHtml ?? "";
@@ -297,6 +293,12 @@ export function stripAjoSyntax(html) {
 
   // Remove ACR marker comments only; keep enclosed stitched content.
   out = out.replace(/{{!--\s*\[acr-(?:start|end)[^\]]*\]\s*--}}/gim, "");
+
+  // Remove unresolved Handlebars block control tags that can leak into preview.
+  // Keep normal {{var}} bindings (for unresolved-but-expected placeholders).
+  out = out
+    .replace(/{{\s*#\w+[^}]*}}/g, "")
+    .replace(/{{\s*\/\w+\s*}}/g, "");
 
   return out;
 }
