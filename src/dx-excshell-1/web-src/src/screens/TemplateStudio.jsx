@@ -171,6 +171,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   });
 
   const [modules, setModules] = useState([]);
+  const modulesRef = useRef([]);
   const [hoveredModule, setHoveredModule] = useState(null);
   const [pinnedModule, setPinnedModule] = useState(null);
   const compositionRef = useRef(null);
@@ -185,6 +186,8 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const [previewWarnings, setPreviewWarnings] = useState([]);
   const [autoPatternToast, setAutoPatternToast] = useState("");
   const autoPatternToastTimerRef = useRef(null);
+  const canonicalHtmlRef = useRef("");
+  const pendingAutoRefVfInsertRef = useRef(null);
 
   const [iframeMsgs, setIframeMsgs] = useState([]);
 
@@ -679,6 +682,15 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     const selectedContent = (contentOptions || []).find((c) => c?.id === contentId) || null;
     const contentHasDynamicReferences =
       selectedContent?.hasDynamicReferences === true || hasDynamicReferenceTokens(selectedContent || {});
+    if (contentHasDynamicReferences) {
+      pendingAutoRefVfInsertRef.current = {
+        sourceModuleId: moduleId,
+        sourceContentId: contentId,
+        requestedAt: Date.now(),
+      };
+    } else {
+      pendingAutoRefVfInsertRef.current = null;
+    }
 
     enqueue(async () => {
       let nextModules = modules.map((x) => (x.moduleId === moduleId ? { ...x, contentId } : x));
@@ -692,61 +704,9 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         vars: m.vars || { firstName: "" },
       });
 
-      let compiledPatternAdded = false;
-      if (contentHasDynamicReferences) {
-        const compiledTagId = vfAutoInsertConfig?.compiledReferencesTagId || null;
-        const footerTagId = vfAutoInsertConfig?.footerTagId || null;
-        const compiledDefaultVfId = normalizeVfId(vfAutoInsertConfig?.compiledReferencesDefaultVfId);
-
-        const hasCompiledPattern = nextModules.some(
-          (mod) =>
-            vfHasTagId(mod?.vfId, compiledTagId) ||
-            (compiledDefaultVfId && normalizeVfId(mod?.vfId) === compiledDefaultVfId)
-        );
-
-        if (!hasCompiledPattern && compiledDefaultVfId) {
-          const footerModule =
-            nextModules.find((mod) => vfHasTagId(mod?.vfId, footerTagId)) || null;
-
-          const compiledModuleId = `m_${Date.now()}_compiled_refs`;
-          const compiledVfMeta = (vfItems || []).find((v) => normalizeVfId(v?.id) === compiledDefaultVfId) || null;
-          const compiledVfName = (compiledVfMeta?.name || "").trim() || null;
-          const compiledModule = {
-            moduleId: compiledModuleId,
-            vfId: compiledDefaultVfId,
-            contentId: null,
-            vars: { firstName: "" },
-          };
-
-          if (footerModule?.moduleId) {
-            const footerIndex = nextModules.findIndex((mod) => mod?.moduleId === footerModule.moduleId);
-            const insertAt = footerIndex >= 0 ? footerIndex : nextModules.length;
-            nextModules = [...nextModules.slice(0, insertAt), compiledModule, ...nextModules.slice(insertAt)];
-            nextHtml = insertPatternBeforeModuleHtml(nextHtml, {
-              vfId: compiledDefaultVfId,
-              vfName: compiledVfName,
-              moduleId: compiledModuleId,
-              beforeModuleId: footerModule.moduleId,
-            });
-          } else {
-            nextModules = [...nextModules, compiledModule];
-            nextHtml = appendPatternOnlyToTemplateHtml(nextHtml, {
-              vfId: compiledDefaultVfId,
-              vfName: compiledVfName,
-              moduleId: compiledModuleId,
-            });
-          }
-          compiledPatternAdded = true;
-        }
-      }
-
       setModules(nextModules);
       queueRenderIntent("vf-hydration", { moduleId, contentId });
       setCanonicalHtml(nextHtml);
-
-      if (compiledPatternAdded) {
-        showAutoPatternToast("Pattern Automatically Added: Compiled Reference Statements");
-      }
     });
   }
 
@@ -860,6 +820,72 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       const marked = safeInjectMarkers(bridged);
       const withFocusBridge = safeInjectFocusBridge(marked);
       setPreviewHtml(withFocusBridge);
+
+      // Defer compiled-references auto-insert until the initial CF hydration render has completed.
+      if (intent.kind === "vf-hydration" && pendingAutoRefVfInsertRef.current) {
+        const pending = pendingAutoRefVfInsertRef.current;
+        pendingAutoRefVfInsertRef.current = null;
+
+        enqueue(async () => {
+          const currentModules = Array.isArray(modulesRef.current) ? modulesRef.current : [];
+          const currentHtml = canonicalHtmlRef.current || "";
+          if (!currentHtml) return;
+
+          const compiledTagId = vfAutoInsertConfig?.compiledReferencesTagId || null;
+          const footerTagId = vfAutoInsertConfig?.footerTagId || null;
+          const compiledDefaultVfId = normalizeVfId(vfAutoInsertConfig?.compiledReferencesDefaultVfId);
+          if (!compiledDefaultVfId) return;
+
+          const hasCompiledPattern = currentModules.some(
+            (mod) =>
+              vfHasTagId(mod?.vfId, compiledTagId) ||
+              normalizeVfId(mod?.vfId) === compiledDefaultVfId
+          );
+          if (hasCompiledPattern) return;
+
+          const footerModule = currentModules.find((mod) => vfHasTagId(mod?.vfId, footerTagId)) || null;
+          const compiledModuleId = `m_${Date.now()}_compiled_refs`;
+          const compiledVfMeta = (vfItems || []).find((v) => normalizeVfId(v?.id) === compiledDefaultVfId) || null;
+          const compiledVfName = (compiledVfMeta?.name || "").trim() || null;
+          const compiledModule = {
+            moduleId: compiledModuleId,
+            vfId: compiledDefaultVfId,
+            contentId: null,
+            vars: { firstName: "" },
+          };
+
+          let nextModules;
+          let nextHtml;
+          if (footerModule?.moduleId) {
+            const footerIndex = currentModules.findIndex((mod) => mod?.moduleId === footerModule.moduleId);
+            const insertAt = footerIndex >= 0 ? footerIndex : currentModules.length;
+            nextModules = [...currentModules.slice(0, insertAt), compiledModule, ...currentModules.slice(insertAt)];
+            nextHtml = insertPatternBeforeModuleHtml(currentHtml, {
+              vfId: compiledDefaultVfId,
+              vfName: compiledVfName,
+              moduleId: compiledModuleId,
+              beforeModuleId: footerModule.moduleId,
+            });
+          } else {
+            nextModules = [...currentModules, compiledModule];
+            nextHtml = appendPatternOnlyToTemplateHtml(currentHtml, {
+              vfId: compiledDefaultVfId,
+              vfName: compiledVfName,
+              moduleId: compiledModuleId,
+            });
+          }
+
+          setModules(nextModules);
+          queueRenderIntent("pattern-add", {
+            moduleId: compiledModuleId,
+            vfId: compiledDefaultVfId,
+            sourceModuleId: pending.sourceModuleId,
+            sourceContentId: pending.sourceContentId,
+          });
+          setCanonicalHtml(nextHtml);
+          showAutoPatternToast("Pattern Automatically Added: Compiled Reference Statements");
+        });
+      }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Render preview failed:", e);
@@ -984,6 +1010,14 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     return { title: "Updating preview", detail: "Applying latest changes.", mode: "soft" };
   }, [activeRenderIntent]);
 
+  useEffect(() => {
+    modulesRef.current = Array.isArray(modules) ? modules : [];
+  }, [modules]);
+
+  useEffect(() => {
+    canonicalHtmlRef.current = canonicalHtml || "";
+  }, [canonicalHtml]);
+
   return (
     <View>
       {mode === "route" ? (
@@ -1012,9 +1046,28 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
       {/* Studio content starts here */}
       {autoPatternToast ? (
-        <View marginBottom="size-150">
-          <StatusLight variant="info">{autoPatternToast}</StatusLight>
-        </View>
+        <div
+          role="status"
+          aria-live="polite"
+          style={{
+            position: "fixed",
+            top: 20,
+            right: 20,
+            zIndex: 9999,
+            maxWidth: 460,
+            background: "#0f172a",
+            color: "#ffffff",
+            border: "1px solid #1d4ed8",
+            borderRadius: 10,
+            boxShadow: "0 12px 28px rgba(2, 6, 23, 0.42)",
+            padding: "12px 14px",
+            fontSize: 13,
+            fontWeight: 700,
+            letterSpacing: "0.2px",
+          }}
+        >
+          {autoPatternToast}
+        </div>
       ) : null}
 
       {/* 2-column Studio */}
