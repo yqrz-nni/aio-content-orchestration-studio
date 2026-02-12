@@ -1475,11 +1475,6 @@ function renderNamespaceByBindingOrder({
     localCtx: effectiveCtx,
   });
 
-  tail = renderMiniAjo(tail, miniRoot);
-
-  const needed = collectTopLevelVarNames(tail);
-  tail = evaluateLiquidLetsAndReplace(tail, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
-
   // CF tail scoping:
   // Only hydrate the first ACR fragment block after the last CF binding tag.
   // This prevents context leak into later unbound duplicate modules.
@@ -1497,6 +1492,16 @@ function renderNamespaceByBindingOrder({
         const prefix = tail.slice(0, blockStart);
         let boundBlock = tail.slice(blockStart, blockEnd);
         const suffix = tail.slice(blockEnd);
+
+        // Apply mini AJO + lets only to the bound block (NOT full tail).
+        boundBlock = renderMiniAjo(boundBlock, miniRoot);
+        const boundNeeded = collectTopLevelVarNames(boundBlock);
+        boundBlock = evaluateLiquidLetsAndReplace(boundBlock, {
+          ctx: miniRoot,
+          locale: "en-US",
+          neededVars: boundNeeded,
+          diag,
+        });
 
         // Apply CF context + dynamic refs only to the bound block.
         boundBlock = resolveDynamicReferencesInSegment({
@@ -1518,6 +1523,12 @@ function renderNamespaceByBindingOrder({
       }
     }
   }
+
+  // Non-CF passes can safely evaluate the whole tail.
+  tail = renderMiniAjo(tail, miniRoot);
+
+  const needed = collectTopLevelVarNames(tail);
+  tail = evaluateLiquidLetsAndReplace(tail, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
   if (dynEnabled && namespace === "cf") {
     tail = resolveDynamicReferencesInSegment({
