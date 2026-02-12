@@ -1,11 +1,12 @@
 // File: src/dx-excshell-1/web-src/src/screens/PrbSelect.jsx
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useContext, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Heading, View, Flex, Button, Text, ComboBox, Item, StatusLight, Divider } from "@adobe/react-spectrum";
 
 import actions from "../config.json";
 import actionWebInvoke from "../utils";
+import { ImsContext } from "../context/ImsContext";
 
 function toPrbOption(it) {
   const prbNumber = it?.prbNumber || "";
@@ -24,6 +25,14 @@ function toPrbOption(it) {
 }
 
 export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
+  const ims = useContext(ImsContext);
+  const headers = useMemo(
+    () => ({
+      Authorization: ims?.token?.startsWith("Bearer ") ? ims.token : `Bearer ${ims?.token}`,
+      "x-gw-ims-org-id": ims?.org,
+    }),
+    [ims]
+  );
   const nav = useNavigate();
 
   const [prbOptions, setPrbOptions] = useState([]);
@@ -43,7 +52,7 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
     try {
       setErr("");
       setIsLoading(true);
-      const res = await actionWebInvoke(actions["aem-prb-list"]);
+      const res = await actionWebInvoke(actions["aem-prb-list"], headers);
       const items = res?.data?.prbPropertiesList?.items || [];
       setPrbOptions(items.map((it) => toPrbOption(it)));
     } catch (e) {
