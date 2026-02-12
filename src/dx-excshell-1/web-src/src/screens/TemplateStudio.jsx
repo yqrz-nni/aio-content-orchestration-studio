@@ -656,6 +656,18 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       ? lastRenderResult.fragmentsResolved
       : [];
 
+  useEffect(() => {
+    if (focusDebugFromUrl) setFocusDebug(true);
+  }, [focusDebugFromUrl]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem("ts_focus_debug", focusDebug ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [focusDebug]);
+
   return (
     <View>
       {mode === "route" ? (
@@ -984,14 +996,3 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     </View>
   );
 }
-  useEffect(() => {
-    if (focusDebugFromUrl) setFocusDebug(true);
-  }, [focusDebugFromUrl]);
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem("ts_focus_debug", focusDebug ? "1" : "0");
-    } catch {
-      // ignore
-    }
-  }, [focusDebug]);
