@@ -97,7 +97,7 @@ export function ModuleCard({
         <Flex alignItems="center" justifyContent="space-between" gap="size-100">
           <Text UNSAFE_style={{ fontSize: 12, opacity: 0.7 }}>Pattern</Text>
           <DialogTrigger>
-            <Button variant="secondary" staticColor="white" data-keep-module-focus="true">
+            <Button variant="secondary" data-keep-module-focus="true">
               Change
             </Button>
             <PatternPickerDialog
@@ -119,11 +119,11 @@ export function ModuleCard({
           <Text UNSAFE_style={{ fontSize: 12, opacity: 0.7 }}>Content</Text>
           {showBindUi ? (
             isEditingContent ? (
-              <Button variant="secondary" staticColor="white" onPress={() => setIsEditingContent(false)} data-keep-module-focus="true">
+              <Button variant="secondary" onPress={() => setIsEditingContent(false)} data-keep-module-focus="true">
                 Cancel
               </Button>
             ) : (
-              <Button variant="secondary" staticColor="white" onPress={() => setIsEditingContent(true)} data-keep-module-focus="true">
+              <Button variant="secondary" onPress={() => setIsEditingContent(true)} data-keep-module-focus="true">
                 {module?.contentId ? "Edit" : "Bind"}
               </Button>
             )
