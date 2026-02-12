@@ -71,7 +71,17 @@ export function ModuleCard({
           : undefined
       }
     >
-      <Flex justifyContent="space-between" alignItems="center" gap="size-200">
+      <Flex
+        justifyContent="space-between"
+        alignItems="center"
+        gap="size-200"
+        UNSAFE_style={{
+          background: isFocused ? "rgba(47,111,237,0.12)" : "#f2f4f8",
+          border: isFocused ? "1px solid rgba(47,111,237,0.35)" : "1px solid #e3e7ef",
+          borderRadius: 8,
+          padding: "6px 10px",
+        }}
+      >
         <Text UNSAFE_style={{ fontWeight: 600 }}>
           Module {index + 1}
         </Text>
@@ -135,6 +145,33 @@ export function ModuleCard({
               <Tooltip>Edit content</Tooltip>
             </TooltipTrigger>
           ) : null}
+          {!showBindUi && bindingHint ? (
+            <View
+              UNSAFE_style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+                color: "#3b4a66",
+                background: "#f3f6fb",
+                border: "1px solid #d7e1f1",
+                borderRadius: 999,
+                padding: "4px 10px",
+              }}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  background: "#6a86b9",
+                  display: "inline-block",
+                }}
+              />
+              {bindingHint}
+            </View>
+          ) : null}
         </Flex>
 
         {showBindUi && isEditingContent ? (
@@ -161,35 +198,6 @@ export function ModuleCard({
           </Flex>
         ) : null}
       </View>
-
-      {!showBindUi && bindingHint ? (
-        <View
-          UNSAFE_style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            fontSize: 12,
-            color: "#3b4a66",
-            background: "#f3f6fb",
-            border: "1px solid #d7e1f1",
-            borderRadius: 999,
-            padding: "4px 10px",
-            marginTop: 10,
-          }}
-        >
-          <span
-            aria-hidden="true"
-            style={{
-              width: 6,
-              height: 6,
-              borderRadius: "50%",
-              background: "#6a86b9",
-              display: "inline-block",
-            }}
-          />
-          {bindingHint}
-        </View>
-      ) : null}
 
       <Flex justifyContent="space-between" marginTop="size-100" gap="size-100" alignItems="center">
         <Flex gap="size-100">
