@@ -381,11 +381,17 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   function focusPreviewVf({ moduleId, vfId }) {
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
+    const moduleIndex = modules.findIndex((m) => m.moduleId === moduleId);
+    let vfOrdinal = 0;
+    if (moduleIndex >= 0) {
+      const same = modules.slice(0, moduleIndex + 1).filter((m) => m?.vfId === vfId);
+      vfOrdinal = Math.max(0, same.length - 1);
+    }
     if (focusDebug) {
       // eslint-disable-next-line no-console
-      console.log("focus->iframe", { moduleId, vfId });
+      console.log("focus->iframe", { moduleId, vfId, vfOrdinal });
     }
-    win.postMessage({ __TS_PREVIEW__: true, type: "focus-vf", vfId, moduleId }, "*");
+    win.postMessage({ __TS_PREVIEW__: true, type: "focus-vf", vfId, moduleId, vfOrdinal }, "*");
   }
 
   function clearPreviewFocus() {
@@ -466,11 +472,11 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     if (!list || typeof list.querySelector !== "function") return;
     const el = list.querySelector(`[data-module-id="${pendingScrollModuleId}"]`);
     if (!el) return;
-    const top = el.offsetTop || 0;
     requestAnimationFrame(() => {
       try {
-        list.scrollTo({ top: Math.max(top - 8, 0), behavior: "smooth" });
+        el.scrollIntoView({ block: "start", behavior: "smooth" });
       } catch {
+        const top = el.offsetTop || 0;
         list.scrollTop = Math.max(top - 8, 0);
       }
       setPendingScrollModuleId(null);
@@ -738,14 +744,20 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                   contentOptions={contentOptions}
                   onFocusVf={(id) => {
                     if (pinnedModule) return;
-                    setHoveredModule({ moduleId: m.moduleId, vfId: id });
+                    const next = { moduleId: m.moduleId, vfId: id };
+                    setHoveredModule(next);
+                    focusPreviewVf(next);
                   }}
                   onBlurVf={() => {
                     if (pinnedModule) return;
                     setHoveredModule(null);
                   }}
                   onPinVf={(id) => {
-                    setPinnedModule((cur) => (cur?.moduleId === m.moduleId ? null : { moduleId: m.moduleId, vfId: id }));
+                    setPinnedModule((cur) => {
+                      const next = cur?.moduleId === m.moduleId ? null : { moduleId: m.moduleId, vfId: id };
+                      if (next) focusPreviewVf(next);
+                      return next;
+                    });
                   }}
                   isFocused={activeModuleId === m.moduleId}
                   isPinned={pinnedModule?.moduleId === m.moduleId}

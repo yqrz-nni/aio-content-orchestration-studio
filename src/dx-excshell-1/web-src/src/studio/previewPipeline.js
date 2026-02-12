@@ -323,9 +323,22 @@ export function injectPreviewFocusBridge(html) {
     if (!msg || msg.__TS_PREVIEW__ !== true) return;
     if (msg.type === 'focus-vf') {
       try { parent.postMessage({ __TS_PREVIEW__: true, type: 'focus-ack', data: msg }, "*"); } catch(e) {}
+      var vfId = msg.vfId;
+      var ord = typeof msg.vfOrdinal === 'number' ? msg.vfOrdinal : null;
+      if (vfId) {
+        clearFocus();
+        var hits = document.querySelectorAll('[data-fragment-id="ajo:' + vfId + '"]');
+        if (hits && hits.length) {
+          var idx = ord != null ? Math.min(Math.max(ord, 0), hits.length - 1) : 0;
+          var t = hits[idx];
+          if (t) t.classList.add('ts-vf-focus');
+          try { t.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(e) {}
+          return;
+        }
+      }
       if (msg.moduleId) {
         clearFocus();
-        var marker = document.querySelector('[data-ts-module-id=\"' + msg.moduleId + '\"]');
+        var marker = document.querySelector('[data-ts-module-id="' + msg.moduleId + '"]');
         if (marker) {
           var target = marker.nextElementSibling || marker.parentElement || marker;
           if (target) target.classList.add('ts-vf-focus');
