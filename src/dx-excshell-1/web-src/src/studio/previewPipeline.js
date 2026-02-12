@@ -244,6 +244,16 @@ function hasUnboundVfModules(html) {
   return false;
 }
 
+function stripAemFragmentTags(html) {
+  if (!html || typeof html !== "string") return html;
+  return html.replace(/{{\s*fragment\b[^}]*\bid\s*=\s*(['"])aem:[^'"]+\1[^}]*}}/gim, "");
+}
+
+function stripAjoFragmentTags(html) {
+  if (!html || typeof html !== "string") return html;
+  return html.replace(/{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:[^'"]+\1[^}]*}}/gim, "");
+}
+
 export function resolvePreviewHtmlFromRenderResult(renderResult, fallbackHtml) {
   if (typeof renderResult?.renderedHtml === "string" && renderResult.renderedHtml.trim()) {
     const stitched = renderResult?.stitchedHtml ?? renderResult?.html ?? fallbackHtml ?? "";
@@ -273,7 +283,8 @@ export function resolvePreviewHtmlFromRenderResult(renderResult, fallbackHtml) {
     aemPrefetchDataByStreamKey: renderResult?.aemPrefetchDataByStreamKey,
   });
 
-  return resolvedCf || resolvedDerivedPrb || resolvedPrb || stitchedHtml || fallbackHtml || "";
+  const best = resolvedCf || resolvedDerivedPrb || resolvedPrb || stitchedHtml || fallbackHtml || "";
+  return stripAjoFragmentTags(stripAemFragmentTags(best));
 }
 
 export function stripAjoSyntax(html) {
