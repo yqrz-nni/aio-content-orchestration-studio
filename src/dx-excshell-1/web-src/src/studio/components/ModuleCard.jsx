@@ -94,11 +94,11 @@ export function ModuleCard({
   }, [module?.contentId, options]);
 
   const patternHref = useMemo(() => {
-    if (vfMeta?.deepLinkUrl) return vfMeta.deepLinkUrl;
     const cleanVfId = normalizeVfId(module?.vfId);
     if (!cleanVfId) return null;
     const vfPrefix = String(deepLinkConfig?.vfDetailUrlPrefix || "").trim();
     if (vfPrefix) return `${vfPrefix}${encodeURIComponent(cleanVfId)}`;
+    if (vfMeta?.deepLinkUrl) return vfMeta.deepLinkUrl;
     const fromTemplate = applyLinkTemplate(deepLinkConfig?.vfTemplate, {
       id: cleanVfId,
       rawId: String(module?.vfId || ""),
@@ -126,10 +126,10 @@ export function ModuleCard({
   ]);
 
   const contentHref = useMemo(() => {
-    if (selectedContent?.deepLinkUrl) return selectedContent.deepLinkUrl;
     if (!selectedContent?.id) return null;
     const cfPrefix = String(deepLinkConfig?.cfDetailUrlPrefix || "").trim();
     if (cfPrefix) return `${cfPrefix}${encodeURIComponent(String(selectedContent.id))}`;
+    if (selectedContent?.deepLinkUrl) return selectedContent.deepLinkUrl;
     const fromTemplate = applyLinkTemplate(deepLinkConfig?.cfTemplate, {
       id: String(selectedContent.id),
       path: String(selectedContent.path || ""),

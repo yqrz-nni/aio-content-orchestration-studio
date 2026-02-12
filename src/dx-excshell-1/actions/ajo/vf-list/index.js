@@ -35,35 +35,12 @@ function buildFragmentGetUrl(baseUrl, fragmentId) {
   return u.toString();
 }
 
-function applyUrlTemplate(template, vars = {}) {
-  if (!template) return null;
-  const raw = String(template || "").trim();
-  if (!raw) return null;
-  return raw.replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, key) => {
-    const val = vars[key];
-    return val == null ? "" : String(val);
-  });
-}
-
-function buildVfDeepLink({ prefix, template, baseUrl, id, rawId, name }) {
+function buildVfDeepLink({ prefix, id, rawId }) {
   const cleanId = normalizeFragmentId(id || rawId);
   if (!cleanId) return null;
-  if (prefix) return `${String(prefix).trim()}${encodeURIComponent(cleanId)}`;
-  if (template) {
-    return applyUrlTemplate(template, {
-      id: cleanId,
-      rawId: String(rawId || ""),
-      name: String(name || ""),
-      idEncoded: encodeURIComponent(cleanId),
-    });
-  }
-  if (baseUrl) {
-    const u = new URL(String(baseUrl));
-    const p = String(u.pathname || "").replace(/\/+$/, "");
-    u.pathname = `${p}/${encodeURIComponent(cleanId)}`;
-    return u.toString();
-  }
-  return null;
+  const p = String(prefix || "").trim();
+  if (!p) return null;
+  return `${p}${encodeURIComponent(cleanId)}`;
 }
 
 function pickFragmentContent(data) {
@@ -214,11 +191,8 @@ async function main(params) {
       ...it,
       deepLinkUrl: buildVfDeepLink({
         prefix: params.AJO_VF_DETAIL_URL_PREFIX,
-        template: params.AJO_VF_DEEPLINK_TEMPLATE,
-        baseUrl: params.AJO_VF_DEEPLINK_BASE_URL,
         id: it?.id,
         rawId: it?.id,
-        name: it?.name,
       }),
     }));
     const bindingDetectionEnabled = Boolean(params.AJO_GET_FRAGMENT_URL);

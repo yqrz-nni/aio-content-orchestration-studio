@@ -8,33 +8,10 @@ const {
 } = require("../../_lib/http");
 const { fetchJson } = require("../../_lib/fetchJson");
 
-function applyUrlTemplate(template, vars = {}) {
-  if (!template) return null;
-  const raw = String(template || "").trim();
-  if (!raw) return null;
-  return raw.replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, key) => {
-    const val = vars[key];
-    return val == null ? "" : String(val);
-  });
-}
-
-function buildAemCfDeepLink({ prefix, template, authorBase, id, path }) {
+function buildAemCfDeepLink({ prefix, id }) {
   const cleanPrefix = String(prefix || "").trim();
-  if (cleanPrefix && id) return `${cleanPrefix}${encodeURIComponent(String(id))}`;
-  if (template) {
-    return applyUrlTemplate(template, {
-      id: String(id || ""),
-      path: String(path || ""),
-      idEncoded: encodeURIComponent(String(id || "")),
-      pathEncoded: encodeURIComponent(String(path || "")),
-    });
-  }
-  if (authorBase && path) {
-    const u = new URL(String(authorBase));
-    u.pathname = `/assets.html${String(path)}`;
-    return u.toString();
-  }
-  return null;
+  if (!cleanPrefix || !id) return null;
+  return `${cleanPrefix}${encodeURIComponent(String(id))}`;
 }
 
 async function main(params) {
@@ -122,10 +99,7 @@ async function main(params) {
       ...it,
       deepLinkUrl: buildAemCfDeepLink({
         prefix: params.AEM_CF_DETAIL_URL_PREFIX,
-        template: params.AEM_CF_DEEPLINK_TEMPLATE,
-        authorBase: params.AEM_AUTHOR,
         id: it?._id,
-        path: it?._path,
       }),
     }));
 

@@ -72,10 +72,10 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
   const selectedPrb = useMemo(() => prbOptions.find((o) => o.id === selectedPrbId) || null, [prbOptions, selectedPrbId]);
   const selectedPrbHref = useMemo(() => {
     if (!selectedPrb?.id) return null;
-    if (selectedPrb?.deepLinkUrl) return selectedPrb.deepLinkUrl;
     const prefix = String(deepLinkConfig?.cfDetailUrlPrefix || "").trim();
-    if (!prefix) return null;
-    return `${prefix}${encodeURIComponent(String(selectedPrb.id))}`;
+    if (prefix) return `${prefix}${encodeURIComponent(String(selectedPrb.id))}`;
+    if (selectedPrb?.deepLinkUrl) return selectedPrb.deepLinkUrl;
+    return null;
   }, [deepLinkConfig?.cfDetailUrlPrefix, selectedPrb]);
 
   async function loadPrbList() {
@@ -164,6 +164,10 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
 
           {err ? (
             <StatusLight variant="negative">{err}</StatusLight>
+          ) : !deepLinkConfig?.cfDetailUrlPrefix ? (
+            <StatusLight variant="info">
+              PRB deep-link prefix missing (`AEM_CF_DETAIL_URL_PREFIX`), so external-link action may be disabled.
+            </StatusLight>
           ) : selectedPrbId ? (
             <StatusLight variant="positive">Selected: {selectedPrb?.label || selectedPrbId}</StatusLight>
           ) : null}
