@@ -261,3 +261,46 @@ export function extractAllAjoVfIdsFromHtml(html) {
 
   return [...ids];
 }
+
+export function injectPreviewFocusBridge(html) {
+  const script = `
+<style>
+  .ts-vf-focus {
+    outline: 2px solid #2f6fed;
+    box-shadow: 0 0 0 4px rgba(47, 111, 237, 0.18);
+    transition: outline-color 120ms ease, box-shadow 120ms ease;
+  }
+</style>
+<script>
+(function(){
+  function clearFocus(){
+    var nodes = document.querySelectorAll('[data-fragment-id^="ajo:"]');
+    for (var i=0;i<nodes.length;i++) nodes[i].classList.remove('ts-vf-focus');
+  }
+
+  function focusById(vfId){
+    if (!vfId) return clearFocus();
+    clearFocus();
+    var selector = '[data-fragment-id="ajo:' + vfId + '"]';
+    var hits = document.querySelectorAll(selector);
+    for (var i=0;i<hits.length;i++) hits[i].classList.add('ts-vf-focus');
+    if (hits.length) {
+      try { hits[0].scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(e) {}
+    }
+  }
+
+  window.addEventListener('message', function(ev){
+    var msg = ev && ev.data;
+    if (!msg || msg.__TS_PREVIEW__ !== true) return;
+    if (msg.type === 'focus-vf') focusById(msg.vfId);
+    if (msg.type === 'clear-vf') clearFocus();
+  });
+})();
+</script>
+`;
+
+  if (typeof html === "string" && html.includes("</body>")) {
+    return html.replace("</body>", `${script}</body>`);
+  }
+  return `${html}\n${script}`;
+}

@@ -160,6 +160,20 @@ body {
 .FlowSection-3 .FlowBody {
   transition-delay: 100ms;
 }
+
+.StudioGrid {
+  align-items: stretch;
+}
+
+.StudioPanel {
+  background: #ffffff;
+}
+
+.StudioPreviewPanel {
+  background: #ffffff;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+  border-color: #dbe2ee;
+}
 .FlowNote {
   margin-top: 8px;
   font-size: 12px;

@@ -8,7 +8,7 @@ function vfNameById(vfItems, vfId) {
   return hit?.name || vfId || "(unknown VF)";
 }
 
-export function ModuleCard({ module, index, vfItems, contentOptions, onBindContent, onRemove }) {
+export function ModuleCard({ module, index, vfItems, contentOptions, onBindContent, onRemove, onFocusVf, onBlurVf, onPinVf, isFocused, isPinned }) {
   const name = vfNameById(vfItems, module?.vfId);
 
   const status = module?.contentId ? (
@@ -31,18 +31,31 @@ export function ModuleCard({ module, index, vfItems, contentOptions, onBindConte
 
   return (
     <View
+      data-vf-id={module?.vfId || ""}
       borderWidth="thin"
       borderColor="light"
       borderRadius="small"
       padding="size-150"
       marginBottom="size-150"
-      backgroundColor="gray-50"
+      backgroundColor={isFocused ? "blue-50" : "gray-50"}
+      onMouseEnter={() => onFocusVf && onFocusVf(module?.vfId)}
+      onMouseLeave={() => onBlurVf && onBlurVf()}
+      onFocus={() => onFocusVf && onFocusVf(module?.vfId)}
+      onBlur={() => onBlurVf && onBlurVf()}
+      onClick={(ev) => {
+        ev.stopPropagation();
+        if (onPinVf) onPinVf(module?.vfId);
+      }}
+      tabIndex={0}
     >
       <Flex justifyContent="space-between" alignItems="center" gap="size-200">
         <Text UNSAFE_style={{ fontWeight: 600 }}>
           {index + 1}. {name}
         </Text>
-        {status}
+        <Flex alignItems="center" gap="size-100">
+          {isPinned ? <StatusLight variant="notice">Focused</StatusLight> : null}
+          {status}
+        </Flex>
       </Flex>
 
       <Divider size="S" marginY="size-100" />

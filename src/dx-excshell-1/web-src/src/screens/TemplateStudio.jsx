@@ -36,6 +36,7 @@ import {
 import {
   stripAjoSyntax,
   injectPreviewBridge,
+  injectPreviewFocusBridge,
   computePreviewWarnings,
   extractAllAjoVfIdsFromHtml,
   resolvePreviewHtmlFromRenderResult,
@@ -96,6 +97,8 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
   const [canonicalHtml, setCanonicalHtml] = useState("");
   const [previewHtml, setPreviewHtml] = useState("");
+  const iframeRef = useRef(null);
+  const previewScrollRef = useRef(0);
 
   const [lastRenderResult, setLastRenderResult] = useState(null);
   const [lastBestHtml, setLastBestHtml] = useState("");
@@ -112,6 +115,9 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const [contentOptions, setContentOptions] = useState([]);
 
   const [modules, setModules] = useState([]);
+  const [hoveredVfId, setHoveredVfId] = useState(null);
+  const [pinnedVfId, setPinnedVfId] = useState(null);
+  const compositionRef = useRef(null);
 
   const [isUpdatingPrb, setIsUpdatingPrb] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
@@ -351,6 +357,56 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     });
   }
 
+  function focusPreviewVf(vfId) {
+    const win = iframeRef.current?.contentWindow;
+    if (!win) return;
+    win.postMessage({ __TS_PREVIEW__: true, type: "focus-vf", vfId }, "*");
+  }
+
+  function clearPreviewFocus() {
+    const win = iframeRef.current?.contentWindow;
+    if (!win) return;
+    win.postMessage({ __TS_PREVIEW__: true, type: "clear-vf" }, "*");
+  }
+
+  const activeVfId = pinnedVfId || hoveredVfId || null;
+
+  useEffect(() => {
+    if (!activeVfId) {
+      clearPreviewFocus();
+      return;
+    }
+    focusPreviewVf(activeVfId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeVfId]);
+
+  useEffect(() => {
+    function onDocClick(ev) {
+      const root = compositionRef.current;
+      if (!root) return;
+      const inComposition = root.contains(ev.target);
+      const card = ev.target?.closest ? ev.target.closest("[data-vf-id]") : null;
+      const clickedVfId = card?.getAttribute ? card.getAttribute("data-vf-id") : null;
+
+      if (!inComposition) {
+        if (pinnedVfId) setPinnedVfId(null);
+        return;
+      }
+
+      if (!card) {
+        if (pinnedVfId) setPinnedVfId(null);
+        return;
+      }
+
+      if (pinnedVfId && clickedVfId !== pinnedVfId) {
+        setPinnedVfId(null);
+      }
+    }
+
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [pinnedVfId]);
+
   function bindContent(moduleId, contentId) {
     if (!templateId) return;
     if (!moduleId || !contentId) return;
@@ -390,6 +446,12 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       setPreviewWarnings([]);
       setIframeMsgs([]);
       setIsRendering(true);
+
+      try {
+        previewScrollRef.current = iframeRef.current?.contentWindow?.scrollY || 0;
+      } catch {
+        previewScrollRef.current = 0;
+      }
 
       if (!canonicalHtml) {
         setPreviewHtml("<html><body><p>No HTML loaded yet.</p></body></html>");
@@ -446,13 +508,15 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       }
 
       const bridged = enableIframeBridge ? injectPreviewBridge(sanitized, expectedVfIds) : sanitized;
-      setPreviewHtml(bridged);
+      const withFocusBridge = injectPreviewFocusBridge(bridged);
+      setPreviewHtml(withFocusBridge);
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Render preview failed:", e);
       setRenderError(e?.message || "Render failed");
       setPreviewWarnings([]);
-      setPreviewHtml(stripAjoSyntax(canonicalHtml || "<html><body><p>Render failed.</p></body></html>"));
+      const fallback = stripAjoSyntax(canonicalHtml || "<html><body><p>Render failed.</p></body></html>");
+      setPreviewHtml(injectPreviewFocusBridge(fallback));
     } finally {
       setIsRendering(false);
     }
@@ -549,9 +613,16 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       {/* Studio content starts here */}
 
       {/* 2-column Studio */}
-      <Grid columns={["1fr", "1fr"]} gap="size-200" height="78vh">
+      <Grid columns={["0.85fr", "1.15fr"]} gap="size-200" height="80vh" UNSAFE_className="StudioGrid">
         {/* Left: Composition */}
-        <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
+        <View
+          borderWidth="thin"
+          borderColor="dark"
+          borderRadius="small"
+          padding="size-200"
+          UNSAFE_className="StudioPanel"
+          ref={compositionRef}
+        >
           <Flex justifyContent="space-between" alignItems="center">
             <Heading level={4}>Composition</Heading>
 
@@ -580,6 +651,19 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                   index={idx}
                   vfItems={vfItems}
                   contentOptions={contentOptions}
+                  onFocusVf={(id) => {
+                    if (pinnedVfId) return;
+                    setHoveredVfId(id);
+                  }}
+                  onBlurVf={() => {
+                    if (pinnedVfId) return;
+                    setHoveredVfId(null);
+                  }}
+                  onPinVf={(id) => {
+                    setPinnedVfId((cur) => (cur === id ? null : id));
+                  }}
+                  isFocused={activeVfId === m.vfId}
+                  isPinned={pinnedVfId === m.vfId}
                   onBindContent={bindContent}
                   onRemove={removeModule}
                 />
@@ -589,7 +673,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         </View>
 
         {/* Right: Preview + Diagnostics tabs */}
-        <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200">
+        <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200" UNSAFE_className="StudioPreviewPanel">
           <Flex justifyContent="space-between" alignItems="center">
             <Heading level={4}>Preview</Heading>
             <Button variant="primary" onPress={renderPreview} isDisabled={!canonicalHtml || isRendering}>
@@ -609,7 +693,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
             <TabPanels>
               <Item key="preview">
-                <View borderWidth="thin" borderColor="light" borderRadius="small" height="64vh" padding="size-100">
+                <View borderWidth="thin" borderColor="light" borderRadius="small" height="70vh" padding="size-100">
                   {renderError ? (
                     <View marginBottom="size-100">
                       <StatusLight variant="negative">{renderError}</StatusLight>
@@ -621,6 +705,20 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                     style={{ width: "100%", height: "100%", border: "none" }}
                     sandbox="allow-same-origin allow-scripts"
                     srcDoc={previewHtml}
+                    ref={iframeRef}
+                    onLoad={() => {
+                      try {
+                        const win = iframeRef.current?.contentWindow;
+                        if (!win) return;
+                        const y = previewScrollRef.current || 0;
+                        if (y > 0) win.scrollTo(0, y);
+                        if (activeVfId) {
+                          win.postMessage({ __TS_PREVIEW__: true, type: "focus-vf", vfId: activeVfId }, "*");
+                        }
+                      } catch {
+                        // ignore
+                      }
+                    }}
                   />
                 </View>
               </Item>
