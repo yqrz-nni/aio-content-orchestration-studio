@@ -40,6 +40,8 @@ export function ModuleCard({ module, index, vfItems, contentOptions, onBindConte
       backgroundColor={isFocused ? "blue-50" : "gray-50"}
       onMouseEnter={() => onFocusVf && onFocusVf(module?.vfId)}
       onMouseLeave={() => onBlurVf && onBlurVf()}
+      onPointerEnter={() => onFocusVf && onFocusVf(module?.vfId)}
+      onPointerLeave={() => onBlurVf && onBlurVf()}
       onFocus={() => onFocusVf && onFocusVf(module?.vfId)}
       onBlur={() => onBlurVf && onBlurVf()}
       onClick={(ev) => {
@@ -47,6 +49,11 @@ export function ModuleCard({ module, index, vfItems, contentOptions, onBindConte
         if (onPinVf) onPinVf(module?.vfId);
       }}
       tabIndex={0}
+      UNSAFE_style={
+        isFocused
+          ? { boxShadow: "0 0 0 2px rgba(47, 111, 237, 0.35)", borderColor: "#2f6fed" }
+          : undefined
+      }
     >
       <Flex justifyContent="space-between" alignItems="center" gap="size-200">
         <Text UNSAFE_style={{ fontWeight: 600 }}>

@@ -36,6 +36,7 @@ import {
 import {
   stripAjoSyntax,
   injectPreviewBridge,
+  injectPreviewMarkers,
   injectPreviewFocusBridge,
   computePreviewWarnings,
   extractAllAjoVfIdsFromHtml,
@@ -118,6 +119,8 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const [hoveredVfId, setHoveredVfId] = useState(null);
   const [pinnedVfId, setPinnedVfId] = useState(null);
   const compositionRef = useRef(null);
+  const compositionListRef = useRef(null);
+  const [pendingScrollModuleId, setPendingScrollModuleId] = useState(null);
 
   const [isUpdatingPrb, setIsUpdatingPrb] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
@@ -351,6 +354,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         },
       ];
       setModules(nextModules);
+      setPendingScrollModuleId(moduleId);
 
       const nextHtml = appendPatternOnlyToTemplateHtml(canonicalHtml, { vfId, moduleId });
       setCanonicalHtml(nextHtml);
@@ -406,6 +410,21 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [pinnedVfId]);
+
+  useEffect(() => {
+    if (!pendingScrollModuleId) return;
+    const list = compositionListRef.current;
+    if (!list || typeof list.querySelector !== "function") return;
+    const el = list.querySelector(`[data-module-id="${pendingScrollModuleId}"]`);
+    if (!el) return;
+    const top = el.offsetTop || 0;
+    try {
+      list.scrollTo({ top: Math.max(top - 8, 0), behavior: "smooth" });
+    } catch {
+      list.scrollTop = Math.max(top - 8, 0);
+    }
+    setPendingScrollModuleId(null);
+  }, [modules, pendingScrollModuleId]);
 
   function bindContent(moduleId, contentId) {
     if (!templateId) return;
@@ -508,7 +527,8 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       }
 
       const bridged = enableIframeBridge ? injectPreviewBridge(sanitized, expectedVfIds) : sanitized;
-      const withFocusBridge = injectPreviewFocusBridge(bridged);
+      const marked = injectPreviewMarkers(bridged);
+      const withFocusBridge = injectPreviewFocusBridge(marked);
       setPreviewHtml(withFocusBridge);
     } catch (e) {
       // eslint-disable-next-line no-console
@@ -516,7 +536,8 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       setRenderError(e?.message || "Render failed");
       setPreviewWarnings([]);
       const fallback = stripAjoSyntax(canonicalHtml || "<html><body><p>Render failed.</p></body></html>");
-      setPreviewHtml(injectPreviewFocusBridge(fallback));
+      const marked = injectPreviewMarkers(fallback);
+      setPreviewHtml(injectPreviewFocusBridge(marked));
     } finally {
       setIsRendering(false);
     }
@@ -640,11 +661,12 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
           <Divider size="S" marginY="size-200" />
 
-          <View height="72vh" overflow="auto">
+          <View height="72vh" overflow="auto" ref={compositionListRef}>
             {!modules.length ? (
               <Text UNSAFE_style={{ opacity: 0.85 }}>No modules yet. Add a pattern to start.</Text>
             ) : (
               modules.map((m, idx) => (
+                <div key={`wrap-${m.moduleId}`} data-module-id={m.moduleId}>
                 <ModuleCard
                   key={m.moduleId}
                   module={m}
@@ -667,6 +689,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                   onBindContent={bindContent}
                   onRemove={removeModule}
                 />
+                </div>
               ))
             )}
           </View>

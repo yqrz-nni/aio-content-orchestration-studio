@@ -262,6 +262,15 @@ export function extractAllAjoVfIdsFromHtml(html) {
   return [...ids];
 }
 
+export function injectPreviewMarkers(html) {
+  if (!html || typeof html !== "string") return html;
+  const re = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:([^'"]+)\1[^}]*}}/gim;
+  return html.replace(re, (_m, _q, id) => {
+    if (!id) return _m;
+    return `<span data-fragment-id="ajo:${id}" data-ts-marker="true"></span>${_m}`;
+  });
+}
+
 export function injectPreviewFocusBridge(html) {
   const script = `
 <style>
