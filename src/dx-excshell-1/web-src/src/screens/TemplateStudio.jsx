@@ -116,12 +116,12 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const [contentOptions, setContentOptions] = useState([]);
 
   const [modules, setModules] = useState([]);
-  const [hoveredVfId, setHoveredVfId] = useState(null);
-  const [pinnedVfId, setPinnedVfId] = useState(null);
+  const [hoveredModule, setHoveredModule] = useState(null);
+  const [pinnedModule, setPinnedModule] = useState(null);
   const compositionRef = useRef(null);
   const compositionListRef = useRef(null);
   const [pendingScrollModuleId, setPendingScrollModuleId] = useState(null);
-  const [pendingFocusVfId, setPendingFocusVfId] = useState(null);
+  const [pendingFocusModule, setPendingFocusModule] = useState(null);
 
   const [isUpdatingPrb, setIsUpdatingPrb] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
@@ -356,19 +356,19 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       ];
       setModules(nextModules);
       setPendingScrollModuleId(moduleId);
-      setPinnedVfId(vfId);
-      setHoveredVfId(null);
-      setPendingFocusVfId(vfId);
+      setPinnedModule({ moduleId, vfId });
+      setHoveredModule(null);
+      setPendingFocusModule({ moduleId, vfId });
 
       const nextHtml = appendPatternOnlyToTemplateHtml(canonicalHtml, { vfId, moduleId });
       setCanonicalHtml(nextHtml);
     });
   }
 
-  function focusPreviewVf(vfId) {
+  function focusPreviewVf({ moduleId, vfId }) {
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
-    win.postMessage({ __TS_PREVIEW__: true, type: "focus-vf", vfId }, "*");
+    win.postMessage({ __TS_PREVIEW__: true, type: "focus-vf", vfId, moduleId }, "*");
   }
 
   function clearPreviewFocus() {
@@ -377,43 +377,47 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     win.postMessage({ __TS_PREVIEW__: true, type: "clear-vf" }, "*");
   }
 
-  const activeVfId = pinnedVfId || hoveredVfId || null;
+  const activeModuleId = pinnedModule?.moduleId || hoveredModule?.moduleId || null;
+  const activeVfId = pinnedModule?.vfId || hoveredModule?.vfId || null;
 
   useEffect(() => {
-    if (!activeVfId) {
+    if (!activeVfId && !activeModuleId) {
       clearPreviewFocus();
       return;
     }
-    focusPreviewVf(activeVfId);
+    focusPreviewVf({ moduleId: activeModuleId, vfId: activeVfId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeVfId]);
+  }, [activeVfId, activeModuleId]);
 
   useEffect(() => {
     function onDocClick(ev) {
       const root = compositionRef.current;
       if (!root || typeof root.contains !== "function") return;
       const inComposition = root.contains(ev.target);
-      const card = ev.target?.closest ? ev.target.closest("[data-vf-id]") : null;
-      const clickedVfId = card?.getAttribute ? card.getAttribute("data-vf-id") : null;
+      const inPopover = ev.target?.closest ? ev.target.closest(".spectrum-Popover, .spectrum-Modal, .spectrum-Dialog") : null;
+      const card = ev.target?.closest ? ev.target.closest("[data-module-id]") : null;
+      const clickedModuleId = card?.getAttribute ? card.getAttribute("data-module-id") : null;
+
+      if (inPopover) return;
 
       if (!inComposition) {
-        if (pinnedVfId) setPinnedVfId(null);
+        if (pinnedModule) setPinnedModule(null);
         return;
       }
 
       if (!card) {
-        if (pinnedVfId) setPinnedVfId(null);
+        if (pinnedModule) setPinnedModule(null);
         return;
       }
 
-      if (pinnedVfId && clickedVfId !== pinnedVfId) {
-        setPinnedVfId(null);
+      if (pinnedModule && clickedModuleId !== pinnedModule.moduleId) {
+        setPinnedModule(null);
       }
     }
 
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
-  }, [pinnedVfId]);
+  }, [pinnedModule]);
 
   useEffect(() => {
     if (!pendingScrollModuleId) return;
@@ -680,18 +684,18 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                   vfItems={vfItems}
                   contentOptions={contentOptions}
                   onFocusVf={(id) => {
-                    if (pinnedVfId) return;
-                    setHoveredVfId(id);
+                    if (pinnedModule) return;
+                    setHoveredModule({ moduleId: m.moduleId, vfId: id });
                   }}
                   onBlurVf={() => {
-                    if (pinnedVfId) return;
-                    setHoveredVfId(null);
+                    if (pinnedModule) return;
+                    setHoveredModule(null);
                   }}
                   onPinVf={(id) => {
-                    setPinnedVfId((cur) => (cur === id ? null : id));
+                    setPinnedModule((cur) => (cur?.moduleId === m.moduleId ? null : { moduleId: m.moduleId, vfId: id }));
                   }}
-                  isFocused={activeVfId === m.vfId}
-                  isPinned={pinnedVfId === m.vfId}
+                  isFocused={activeModuleId === m.moduleId}
+                  isPinned={pinnedModule?.moduleId === m.moduleId}
                   onBindContent={bindContent}
                   onRemove={removeModule}
                 />
@@ -742,10 +746,10 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                         if (!win) return;
                         const y = previewScrollRef.current || 0;
                         if (y > 0) win.scrollTo(0, y);
-                        const vfId = pendingFocusVfId || activeVfId;
-                        if (vfId) {
-                          win.postMessage({ __TS_PREVIEW__: true, type: "focus-vf", vfId }, "*");
-                          if (pendingFocusVfId) setPendingFocusVfId(null);
+                        const focus = pendingFocusModule || (activeModuleId || activeVfId ? { moduleId: activeModuleId, vfId: activeVfId } : null);
+                        if (focus?.vfId || focus?.moduleId) {
+                          win.postMessage({ __TS_PREVIEW__: true, type: "focus-vf", vfId: focus.vfId, moduleId: focus.moduleId }, "*");
+                          if (pendingFocusModule) setPendingFocusModule(null);
                         }
                       } catch {
                         // ignore

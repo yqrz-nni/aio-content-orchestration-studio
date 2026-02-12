@@ -264,11 +264,24 @@ export function extractAllAjoVfIdsFromHtml(html) {
 
 export function injectPreviewMarkers(html) {
   if (!html || typeof html !== "string") return html;
-  const re = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:([^'"]+)\1[^}]*}}/gim;
-  return html.replace(re, (_m, _q, id) => {
-    if (!id) return _m;
-    return `<span data-fragment-id="ajo:${id}" data-ts-marker="true"></span>${_m}`;
+  const moduleRe =
+    /<!--\s*ts:module\s+id="([^"]+)"\s*-->([\s\S]*?)({{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:([^'"]+)\4[^}]*}})/gim;
+
+  let out = html.replace(moduleRe, (_m, moduleId, before, frag, _q, vfId) => {
+    if (!moduleId || !vfId) return _m;
+    const marker = `<span data-ts-module-id="${moduleId}" data-fragment-id="ajo:${vfId}" data-ts-marker="true"></span>`;
+    return `<!-- ts:module id="${moduleId}" -->${before}${marker}${frag}`;
   });
+
+  const re = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:([^'"]+)\1[^}]*}}/gim;
+  out = out.replace(re, (m, _q, id, offset) => {
+    if (!id) return m;
+    const prefix = out.slice(Math.max(0, offset - 160), offset);
+    if (prefix.includes('data-ts-marker="true"')) return m;
+    return `<span data-fragment-id="ajo:${id}" data-ts-marker="true"></span>${m}`;
+  });
+
+  return out;
 }
 
 export function injectPreviewFocusBridge(html) {
@@ -301,7 +314,19 @@ export function injectPreviewFocusBridge(html) {
   window.addEventListener('message', function(ev){
     var msg = ev && ev.data;
     if (!msg || msg.__TS_PREVIEW__ !== true) return;
-    if (msg.type === 'focus-vf') focusById(msg.vfId);
+    if (msg.type === 'focus-vf') {
+      if (msg.moduleId) {
+        clearFocus();
+        var marker = document.querySelector('[data-ts-module-id=\"' + msg.moduleId + '\"]');
+        if (marker) {
+          var target = marker.nextElementSibling || marker.parentElement || marker;
+          if (target) target.classList.add('ts-vf-focus');
+          try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(e) {}
+          return;
+        }
+      }
+      focusById(msg.vfId);
+    }
     if (msg.type === 'clear-vf') clearFocus();
   });
 })();
