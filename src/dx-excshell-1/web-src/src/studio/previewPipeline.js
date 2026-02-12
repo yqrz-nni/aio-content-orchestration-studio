@@ -295,10 +295,7 @@ export function stripAjoSyntax(html) {
   // Remove Liquid tags like {% let x = ... %}
   out = out.replace(/{%\s*[\s\S]*?\s*%}/g, "");
 
-  // Strip ALL ACR marker blocks (everything from start marker to end marker)
-  out = out.replace(/{{!--\s*\[acr-start[\s\S]*?--}}[\s\S]*?{{!--\s*\[acr-end[\s\S]*?--}}/gim, "");
-
-  // Remove any stray marker comments
+  // Remove ACR marker comments only; keep enclosed stitched content.
   out = out.replace(/{{!--\s*\[acr-(?:start|end)[^\]]*\]\s*--}}/gim, "");
 
   return out;
