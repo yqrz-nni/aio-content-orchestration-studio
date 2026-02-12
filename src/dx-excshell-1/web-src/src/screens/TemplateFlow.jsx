@@ -7,10 +7,7 @@
 // Keeps deep links intact elsewhere; this is just a UX wrapper.
 
 import React, { useMemo, useState } from "react";
-import { View, Divider, Flex, Text, Button, ActionButton, Tooltip, TooltipTrigger } from "@adobe/react-spectrum";
-import Edit from "@spectrum-icons/workflow/Edit";
-import EditIn from "@spectrum-icons/workflow/EditIn";
-import ViewDetail from "@spectrum-icons/workflow/ViewDetail";
+import { View, Divider, Flex, Text, Button, DialogContainer, Dialog, Content, ButtonGroup, Heading } from "@adobe/react-spectrum";
 
 import { PrbSelect } from "./PrbSelect";
 import { TemplateSelect } from "./TemplateSelect";
@@ -21,6 +18,7 @@ export function TemplateFlow() {
   const [prbId, setPrbId] = useState(null);
   const [templateId, setTemplateId] = useState(null);
   const [openStep, setOpenStep] = useState("prb");
+  const [confirmStartOver, setConfirmStartOver] = useState(false);
 
   const hasPrb = !!prbId;
   const hasTemplate = !!templateId;
@@ -33,6 +31,10 @@ export function TemplateFlow() {
     setOpenStep(step);
   }
 
+  function startOver() {
+    setConfirmStartOver(true);
+  }
+
   return (
     <View>
       {showToolbar ? (
@@ -43,24 +45,9 @@ export function TemplateFlow() {
             {hasTemplate ? <Text UNSAFE_className="FlowToolbarPill">Template</Text> : null}
           </Flex>
           <Flex gap="size-100" alignItems="center">
-            <TooltipTrigger>
-              <ActionButton onPress={() => open("prb")}>
-                <Edit />
-              </ActionButton>
-              <Tooltip>Edit PRB</Tooltip>
-            </TooltipTrigger>
-            <TooltipTrigger>
-              <ActionButton onPress={() => open("template")} isDisabled={!hasPrb}>
-                <EditIn />
-              </ActionButton>
-              <Tooltip>Edit Template</Tooltip>
-            </TooltipTrigger>
-            <TooltipTrigger>
-              <ActionButton onPress={() => open("studio")} isDisabled={!hasTemplate}>
-                <ViewDetail />
-              </ActionButton>
-              <Tooltip>Open Studio</Tooltip>
-            </TooltipTrigger>
+            <Button variant="secondary" onPress={startOver}>
+              Start Over
+            </Button>
           </Flex>
         </Flex>
       ) : null}
@@ -69,17 +56,20 @@ export function TemplateFlow() {
         <View UNSAFE_className="FlowAccordion">
           {/* Step 1: PRB */}
           <View UNSAFE_className={`FlowSection ${openStep === "prb" ? "is-open" : ""}`}>
-            <Flex justifyContent="space-between" alignItems="center" UNSAFE_className="FlowHeader">
-              <View>
-                <Text UNSAFE_className="FlowTitle">1. PRB Properties</Text>
-                <Text UNSAFE_className="FlowHint">Choose the global PRB context to start.</Text>
-              </View>
-            <Button variant="secondary" onPress={() => open("prb")}>
-              {openStep === "prb" ? "Open" : "Edit"}
-            </Button>
-            </Flex>
-            {openStep === "prb" ? (
-              <View UNSAFE_className="FlowBody">
+          <View
+            role="button"
+            tabIndex={0}
+            onClick={() => open("prb")}
+            onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && open("prb")}
+            UNSAFE_className="FlowHeader"
+          >
+            <View>
+              <Text UNSAFE_className="FlowTitle">1. PRB Properties</Text>
+              <Text UNSAFE_className="FlowHint">Choose the global PRB context to start.</Text>
+            </View>
+          </View>
+          {openStep === "prb" ? (
+            <View UNSAFE_className="FlowBody">
               <PrbSelect
                 mode="embedded"
                 value={prbId}
@@ -89,6 +79,9 @@ export function TemplateFlow() {
                   if (next) open("template");
                 }}
               />
+              <Text UNSAFE_className="FlowNote">
+                Toggling back to PRB doesn’t change anything. Changing PRB will update bindings in your current HTML.
+              </Text>
             </View>
           ) : (
             <View UNSAFE_className="FlowSummary">
@@ -101,22 +94,18 @@ export function TemplateFlow() {
 
           {/* Step 2: Template list / create */}
           <View UNSAFE_className={`FlowSection ${openStep === "template" ? "is-open" : ""} ${!hasPrb ? "is-disabled" : ""}`}>
-          <Flex justifyContent="space-between" alignItems="center" UNSAFE_className="FlowHeader" wrap>
+          <View
+            role="button"
+            tabIndex={0}
+            onClick={() => open("template")}
+            onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && open("template")}
+            UNSAFE_className="FlowHeader"
+          >
             <View>
               <Text UNSAFE_className="FlowTitle">2. Template</Text>
               <Text UNSAFE_className="FlowHint">Open or create a template for this PRB.</Text>
             </View>
-            <Flex gap="size-100" alignItems="center">
-              {hasPrb ? (
-                <Button variant="secondary" onPress={() => open("prb")}>
-                  Edit PRB
-                </Button>
-              ) : null}
-              <Button variant="secondary" onPress={() => open("template")} isDisabled={!hasPrb}>
-              {openStep === "template" ? "Open" : "Edit"}
-              </Button>
-            </Flex>
-          </Flex>
+          </View>
           {openStep === "template" ? (
             <View UNSAFE_className="FlowBody">
               <TemplateSelect
@@ -128,6 +117,9 @@ export function TemplateFlow() {
                   if (tid) open("studio");
                 }}
               />
+              <Text UNSAFE_className="FlowNote">
+                Switching templates will rebuild the Studio workspace. You’ll be asked to confirm.
+              </Text>
             </View>
           ) : (
             <View UNSAFE_className="FlowSummary">
@@ -140,15 +132,18 @@ export function TemplateFlow() {
 
           {/* Step 3: Studio */}
           <View UNSAFE_className={`FlowSection ${openStep === "studio" ? "is-open" : ""} ${!hasTemplate ? "is-disabled" : ""}`}>
-          <Flex justifyContent="space-between" alignItems="center" UNSAFE_className="FlowHeader">
+          <View
+            role="button"
+            tabIndex={0}
+            onClick={() => open("studio")}
+            onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && open("studio")}
+            UNSAFE_className="FlowHeader"
+          >
             <View>
               <Text UNSAFE_className="FlowTitle">3. Studio</Text>
               <Text UNSAFE_className="FlowHint">Compose with Visual Fragments and AEM Content Fragments.</Text>
             </View>
-            <Button variant="secondary" onPress={() => open("studio")} isDisabled={!hasTemplate}>
-              {openStep === "studio" ? "Open" : "Edit"}
-            </Button>
-          </Flex>
+          </View>
           {openStep === "studio" ? (
             <View UNSAFE_className="FlowBody">
               {hasPrb && hasTemplate ? (
@@ -173,6 +168,33 @@ export function TemplateFlow() {
           )}
         </View>
       )}
+
+      <DialogContainer onDismiss={() => setConfirmStartOver(false)}>
+        {confirmStartOver ? (
+          <Dialog>
+            <Heading>Confirm Template Rebuild</Heading>
+            <Content>
+              This will clear the current PRB and template selection and restart the flow. Continue?
+            </Content>
+            <ButtonGroup>
+              <Button variant="secondary" onPress={() => setConfirmStartOver(false)}>
+                No
+              </Button>
+              <Button
+                variant="negative"
+                onPress={() => {
+                  setConfirmStartOver(false);
+                  setPrbId(null);
+                  setTemplateId(null);
+                  setOpenStep("prb");
+                }}
+              >
+                Yes
+              </Button>
+            </ButtonGroup>
+          </Dialog>
+        ) : null}
+      </DialogContainer>
     </View>
   );
 }

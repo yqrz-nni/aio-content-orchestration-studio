@@ -8,12 +8,15 @@ import {
   Flex,
   Button,
   Text,
-  ListView,
+  ComboBox,
   Item,
   Divider,
   TextField,
   StatusLight,
-  Grid,
+  DialogContainer,
+  Dialog,
+  Content,
+  ButtonGroup,
 } from "@adobe/react-spectrum";
 
 import actions from "../config.json";
@@ -64,11 +67,10 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
   const [templateName, setTemplateName] = useState("Baseline Clone");
   const [templates, setTemplates] = useState([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState(null);
-  const [templateFilter, setTemplateFilter] = useState("");
-
-  const [manualTemplateId, setManualTemplateId] = useState("");
+  const [templateMode, setTemplateMode] = useState(null); // "new" | "existing"
   const [status, setStatus] = useState("");
   const [err, setErr] = useState("");
+  const [confirmAction, setConfirmAction] = useState(null);
 
   const [isLoadingPrb, setIsLoadingPrb] = useState(false);
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
@@ -217,26 +219,47 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
     nav(`/prb/${encodeURIComponent(prbId)}/templates/${encodeURIComponent(tid)}/studio`);
   }
 
-  function openSelectedTemplate() {
-    if (!selectedTemplateId) return;
-    openTemplateId(selectedTemplateId);
-  }
+  async function createFromTemplateAndOpen() {
+    try {
+      if (!selectedPrb || !prbId || !selectedTemplateId) return;
 
-  function openManualTemplate() {
-    const tid = String(manualTemplateId || "").trim();
-    if (!tid) return;
-    openTemplateId(tid);
-  }
+      if (isMounted()) {
+        setErr("");
+        setStatus("");
+        setIsCreating(true);
+      }
 
-  const filteredTemplates = useMemo(() => {
-    const q = String(templateFilter || "").trim().toLowerCase();
-    if (!q) return templates;
-    return templates.filter((t) => {
-      const name = String(t?.name || "").toLowerCase();
-      const id = String(t?.id || "").toLowerCase();
-      return name.includes(q) || id.includes(q);
-    });
-  }, [templates, templateFilter]);
+      const prbNumber = selectedPrb?.raw?.prbNumber || null;
+
+      const res = await actionWebInvoke(actions["ajo-template-create"], headers, {
+        name: templateName,
+        description: "Created from existing template via App Builder",
+        createFromBaseline: true,
+        baselineTemplateId: selectedTemplateId,
+        prbNumber: prbNumber,
+        prbName: selectedPrb?.raw?.name || null,
+      });
+
+      const newTemplateId = res?.templateId;
+      if (!newTemplateId) {
+        if (isMounted()) setErr("Template created but no templateId returned.");
+        return;
+      }
+
+      if (mode === "embedded") {
+        onOpenTemplate?.(newTemplateId);
+        return;
+      }
+
+      nav(`/prb/${encodeURIComponent(prbId)}/templates/${encodeURIComponent(newTemplateId)}/studio`);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("Create-from-template failed:", e);
+      if (isMounted()) setErr(e?.message || "Create failed");
+    } finally {
+      if (isMounted()) setIsCreating(false);
+    }
+  }
 
   return (
     <View UNSAFE_style={{ opacity: isDisabled ? 0.5 : 1, pointerEvents: isDisabled ? "none" : "auto" }} UNSAFE_className={mode === "embedded" ? "FlowCompact" : ""}>
@@ -250,83 +273,123 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
 
       <View UNSAFE_className="FlowCompactCard">
         <Flex direction="column" gap="size-150">
-          <Flex gap="size-200" alignItems="end" wrap justifyContent="center">
+          <Flex gap="size-150" alignItems="end" wrap justifyContent="center">
             <TextField label="New template name" value={templateName} onChange={setTemplateName} width="size-3600" />
-            <Button variant="cta" onPress={createFromBaselineAndOpen} isDisabled={!selectedPrb || isCreating || isDisabled}>
-              {isCreating ? "Creating…" : "Create from baseline"}
+            <Button
+              variant="cta"
+              onPress={() => {
+                setTemplateMode("new");
+                setConfirmAction({ type: "createFromBaseline" });
+              }}
+              isDisabled={!selectedPrb || isCreating || isDisabled}
+            >
+              {isCreating ? "Creating…" : "Create New Template"}
+            </Button>
+            <Button
+              variant="secondary"
+              onPress={() => setTemplateMode("existing")}
+              isDisabled={!selectedPrb || isDisabled}
+            >
+              Choose Existing Template
             </Button>
           </Flex>
+
+          <Text UNSAFE_style={{ opacity: 0.8 }}>
+            Choose Existing Template to create a new version or view the current version.
+          </Text>
 
           {err ? <StatusLight variant="negative">{err}</StatusLight> : null}
           {status ? <StatusLight variant="info">{status}</StatusLight> : null}
         </Flex>
       </View>
 
-      <Divider size="S" marginY="size-150" />
+      {templateMode === "existing" ? (
+        <View>
+          <Divider size="S" marginY="size-150" />
 
-      <View UNSAFE_className="FlowCompactCard">
-        <Flex direction="column" gap="size-150">
-          <Flex justifyContent="space-between" alignItems="center" wrap>
-            <Text UNSAFE_style={{ fontWeight: 600 }}>Templates for PRB</Text>
-            <Flex gap="size-100" alignItems="center">
-              <Button
-                variant="secondary"
-                onPress={() => selectedPrb && loadTemplatesForPrb(selectedPrb)}
-                isDisabled={isLoadingTemplates || !selectedPrb || isDisabled}
+          <View UNSAFE_className="FlowCompactCard">
+            <Flex direction="column" gap="size-150">
+              <ComboBox
+                label="Template"
+                placeholder={isLoadingTemplates ? "Loading…" : "Search template name…"}
+                selectedKey={selectedTemplateId}
+                onSelectionChange={(key) => setSelectedTemplateId(key)}
+                width="100%"
+                menuTrigger="focus"
+                isDisabled={isLoadingTemplates || isDisabled}
               >
-                {isLoadingTemplates ? "Loading…" : "Refresh"}
-              </Button>
-              <Button variant="primary" onPress={openSelectedTemplate} isDisabled={!selectedTemplateId || isDisabled}>
-                Open
-              </Button>
+                {templates.map((t) => (
+                  <Item key={t.id} textValue={t.name || t.id}>
+                    {t.name || t.id}
+                  </Item>
+                ))}
+              </ComboBox>
+
+              {selectedTemplateId ? (
+                <View>
+                  <Text UNSAFE_style={{ opacity: 0.85, marginBottom: 8 }}>
+                    Selected: {selectedTemplate?.name || selectedTemplateId}
+                  </Text>
+                  {selectedTemplate?.id ? (
+                    <Text UNSAFE_style={{ opacity: 0.6, fontSize: 12, marginBottom: 8 }}>ID: {selectedTemplate.id}</Text>
+                  ) : null}
+                  <Flex gap="size-100" alignItems="center" wrap>
+                    <Button
+                      variant="primary"
+                      onPress={() => setConfirmAction({ type: "createFromTemplate" })}
+                      isDisabled={!selectedTemplateId || isCreating || isDisabled}
+                    >
+                      {isCreating ? "Creating…" : "Create New Version"}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onPress={() => setConfirmAction({ type: "openTemplate", templateId: selectedTemplateId })}
+                      isDisabled={!selectedTemplateId || isDisabled}
+                    >
+                      View Current Version
+                    </Button>
+                  </Flex>
+                  <Text UNSAFE_style={{ opacity: 0.7, fontSize: 12, marginTop: 8 }}>
+                    Actions above rebuild the Studio workspace.
+                  </Text>
+                </View>
+              ) : null}
             </Flex>
-          </Flex>
+          </View>
+        </View>
+      ) : null}
 
-          <TextField
-            label="Search templates"
-            placeholder="Filter by name or id…"
-            value={templateFilter}
-            onChange={setTemplateFilter}
-            width="100%"
-          />
-
-          {!filteredTemplates.length ? (
-            <Text UNSAFE_style={{ opacity: 0.85 }}>
-              {isLoadingTemplates ? "Loading templates…" : "No templates match this filter."}
-            </Text>
-          ) : (
-            <ListView
-              aria-label="Templates"
-              selectionMode="single"
-              selectedKeys={selectedTemplateId ? [selectedTemplateId] : []}
-              onSelectionChange={(keys) => setSelectedTemplateId([...keys][0])}
-              height="22vh"
-            >
-              {filteredTemplates.map((t) => (
-                <Item key={t.id}>{t.name}</Item>
-              ))}
-            </ListView>
-          )}
-        </Flex>
-      </View>
-
-      <Divider size="S" marginY="size-150" />
-
-      <View UNSAFE_className="FlowCompactCard">
-        <Flex direction="column" gap="size-100">
-          <Text UNSAFE_style={{ fontWeight: 600 }}>Open by Template ID</Text>
-          <TextField
-            label="Template ID"
-            placeholder="Paste templateId…"
-            value={manualTemplateId}
-            onChange={setManualTemplateId}
-            width="100%"
-          />
-          <Button variant="primary" onPress={openManualTemplate} isDisabled={!manualTemplateId.trim() || isDisabled}>
-            Open
-          </Button>
-        </Flex>
-      </View>
+      <DialogContainer onDismiss={() => setConfirmAction(null)}>
+        {confirmAction ? (
+          <Dialog>
+            <Heading>Confirm Template Rebuild</Heading>
+            <Content>
+              This will rebuild the Studio workspace and may discard current changes. Continue?
+            </Content>
+            <ButtonGroup>
+              <Button variant="secondary" onPress={() => setConfirmAction(null)}>
+                No
+              </Button>
+              <Button
+                variant="negative"
+                onPress={async () => {
+                  const action = confirmAction;
+                  setConfirmAction(null);
+                  if (action?.type === "createFromBaseline") await createFromBaselineAndOpen();
+                  if (action?.type === "createFromTemplate") await createFromTemplateAndOpen();
+                  if (action?.type === "openTemplate") openTemplateId(action.templateId);
+                }}
+              >
+                Yes
+              </Button>
+            </ButtonGroup>
+          </Dialog>
+        ) : null}
+      </DialogContainer>
     </View>
   );
 }
+  const selectedTemplate = useMemo(
+    () => templates.find((t) => t.id === selectedTemplateId) || null,
+    [templates, selectedTemplateId]
+  );

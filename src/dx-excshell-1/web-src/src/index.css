@@ -96,6 +96,24 @@ body {
 
 .FlowHeader {
   gap: 12px;
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  padding-right: 16px;
+}
+
+.FlowHeader::after {
+  content: "▸";
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #6b7285;
+  font-size: 12px;
+}
+
+.FlowSection.is-open .FlowHeader::after {
+  content: "▾";
 }
 
 .FlowTitle {
@@ -113,6 +131,12 @@ body {
 
 .FlowBody {
   margin-top: 8px;
+}
+
+.FlowNote {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #6b7285;
 }
 
 .FlowSummary {
