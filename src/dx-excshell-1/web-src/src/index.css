@@ -136,8 +136,30 @@ body {
 
 .FlowBody {
   margin-top: 8px;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transform: translateY(-4px);
+  transition: max-height 260ms ease, opacity 200ms ease, transform 200ms ease;
 }
 
+.FlowSection.is-open .FlowBody {
+  max-height: 2000px;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.FlowSection-1 .FlowBody {
+  transition-delay: 0ms;
+}
+
+.FlowSection-2 .FlowBody {
+  transition-delay: 50ms;
+}
+
+.FlowSection-3 .FlowBody {
+  transition-delay: 100ms;
+}
 .FlowNote {
   margin-top: 8px;
   font-size: 12px;

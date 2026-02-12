@@ -60,6 +60,11 @@ export function TemplateFlow() {
             >
               Expand
             </Button>
+            {hasTemplate && openStep !== "studio" ? (
+              <Button variant="secondary" onPress={() => open("studio")}>
+                Back to Studio
+              </Button>
+            ) : null}
             <Button variant="secondary" onPress={startOver}>
               Start Over
             </Button>
@@ -70,7 +75,7 @@ export function TemplateFlow() {
       {!focusStudio ? (
         <View UNSAFE_className="FlowAccordion">
           {/* Step 1: PRB */}
-          <View UNSAFE_className={`FlowSection ${openStep === "prb" ? "is-open" : ""}`}>
+          <View UNSAFE_className={`FlowSection FlowSection-1 ${openStep === "prb" ? "is-open" : ""}`}>
           <View
             role="button"
             tabIndex={0}
@@ -107,7 +112,7 @@ export function TemplateFlow() {
           <Divider size="S" marginY="size-200" />
 
           {/* Step 2: Template list / create */}
-          <View UNSAFE_className={`FlowSection ${openStep === "template" ? "is-open" : ""} ${!hasPrb ? "is-disabled" : ""}`}>
+          <View UNSAFE_className={`FlowSection FlowSection-2 ${openStep === "template" ? "is-open" : ""} ${!hasPrb ? "is-disabled" : ""}`}>
           <View
             role="button"
             tabIndex={0}
@@ -144,7 +149,7 @@ export function TemplateFlow() {
           <Divider size="S" marginY="size-200" />
 
           {/* Step 3: Studio */}
-          <View UNSAFE_className={`FlowSection ${openStep === "studio" ? "is-open" : ""} ${!hasTemplate ? "is-disabled" : ""}`}>
+          <View UNSAFE_className={`FlowSection FlowSection-3 ${openStep === "studio" ? "is-open" : ""} ${!hasTemplate ? "is-disabled" : ""}`}>
           <View
             role="button"
             tabIndex={0}
