@@ -2,6 +2,10 @@
 
 Welcome to my Adobe I/O Application!
 
+## Architecture
+
+- Current-state and future-state (AEP-enabled) architecture map: `docs/architecture-map.md`
+
 ## Setup
 
 - Populate the `.env` file in the project root and fill it as shown [below](#env)
