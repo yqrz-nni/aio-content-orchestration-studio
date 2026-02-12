@@ -108,6 +108,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const [selectedPrb, setSelectedPrb] = useState(null);
 
   const [vfItems, setVfItems] = useState([]);
+  const [vfDebugSample, setVfDebugSample] = useState(null);
   const [contentOptions, setContentOptions] = useState([]);
 
   const [modules, setModules] = useState([]);
@@ -243,9 +244,10 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   }
 
   async function loadVfs() {
-    const res = await actionWebInvoke(actions["ajo-vf-list"], headers);
+    const res = await actionWebInvoke(actions["ajo-vf-list"], headers, { debug: true });
     const items = res?.items || res?.fragments || [];
     setVfItems(items);
+    setVfDebugSample(res?.debug?.sample || null);
   }
 
   async function loadContentList() {
@@ -779,6 +781,16 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                       </Text>
                     ) : null}
                   </View>
+
+                  {vfDebugSample ? (
+                    <View marginTop="size-200" borderWidth="thin" borderColor="light" borderRadius="small" padding="size-150">
+                      <Heading level={5}>VF Debug Sample</Heading>
+                      <Divider size="S" marginY="size-100" />
+                      <Text UNSAFE_style={{ fontFamily: "monospace", fontSize: 12, opacity: 0.9 }}>
+                        {safeJson(vfDebugSample, 2)}
+                      </Text>
+                    </View>
+                  ) : null}
                 </View>
               </Item>
             </TabPanels>

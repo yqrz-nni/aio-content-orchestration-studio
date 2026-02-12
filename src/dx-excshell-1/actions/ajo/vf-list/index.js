@@ -46,6 +46,7 @@ async function main(params) {
 
     const items = Array.isArray(payload?.items) ? payload.items : [];
     const filtered = items.filter((it) => hasLabel(it, "vf:content-block"));
+    const debug = params.debug === true || params.debug === "true";
 
     return ok({
       sandbox: params.SANDBOX_NAME,
@@ -53,6 +54,19 @@ async function main(params) {
       totalFiltered: filtered.length,
       items: filtered,
       page: payload?._page,
+      debug: debug
+        ? {
+            sample: items.slice(0, 3).map((it) => ({
+              id: it?.id,
+              name: it?.name,
+              labels: it?.labels,
+              tagIds: it?.tagIds,
+              tags: it?.tags,
+              type: it?.type,
+              channels: it?.channels,
+            })),
+          }
+        : undefined,
     });
   } catch (e) {
     return serverError(e.message, {
