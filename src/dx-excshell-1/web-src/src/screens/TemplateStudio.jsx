@@ -809,7 +809,9 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       const intent = pendingRenderIntentRef.current || { kind: "rerender" };
       pendingRenderIntentRef.current = null;
       setActiveRenderIntent(intent);
-      if (intent.kind === "vf-hydration" || intent.kind === "pattern-add") emitPreviewOpStart(intent);
+      if (intent.kind === "vf-hydration" || intent.kind === "pattern-add" || intent.kind === "pattern-change") {
+        emitPreviewOpStart(intent);
+      }
 
       try {
         previewScrollRef.current = iframeRef.current?.contentWindow?.scrollY || 0;
