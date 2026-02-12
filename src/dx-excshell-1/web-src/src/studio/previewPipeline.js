@@ -94,6 +94,85 @@ export function resolveNamespaceByBindings({ stitchedHtml, namespace, aemBinding
   return out;
 }
 
+function derivePrbContext(aemBindingsEncountered, aemPrefetchDataByStreamKey) {
+  const binds = (Array.isArray(aemBindingsEncountered) ? aemBindingsEncountered : []).filter((b) => b?.result === "prbProperties");
+  if (!binds.length) return null;
+
+  const streamKey = `${binds[0].index}:${binds[0].result}`;
+  const prb = aemPrefetchDataByStreamKey?.[streamKey];
+  if (!prb || typeof prb !== "object") return null;
+
+  const brandProps = Array.isArray(prb.brands) ? prb.brands[0] : null;
+  const styles = prb.brandStyle || null;
+
+  let prbDate = null;
+  if (prb.startingDate) {
+    const d = new Date(prb.startingDate);
+    if (!Number.isNaN(d.getTime())) prbDate = d;
+  }
+
+  let prbMonth = "";
+  let prbMonthName = "";
+  let prbYear = "";
+
+  if (prbDate) {
+    const month = prbDate.getMonth() + 1;
+    prbMonth = month < 10 ? `0${month}` : String(month);
+    prbYear = String(prbDate.getFullYear());
+    try {
+      prbMonthName = new Intl.DateTimeFormat("en-US", { month: "long" }).format(prbDate);
+    } catch {
+      prbMonthName = "";
+    }
+  }
+
+  return {
+    brandProps,
+    styles,
+    prbNumber: prb.prbNumber || "",
+    prbDate,
+    prbMonth,
+    prbMonthName,
+    prbYear,
+  };
+}
+
+function replaceDerivedVars(html, ctx) {
+  if (!html || !ctx) return html;
+  let out = html;
+
+  const nsReplacements = [
+    { ns: "brandProps", value: ctx.brandProps },
+    { ns: "styles", value: ctx.styles },
+  ];
+
+  for (const { ns, value } of nsReplacements) {
+    if (!value) continue;
+    const triple = new RegExp(`\\{\\{\\{\\s*${ns}\\.([a-zA-Z0-9_$.]+)\\s*\\}\\}\\}`, "g");
+    const dbl = new RegExp(`\\{\\{\\s*${ns}\\.([a-zA-Z0-9_$.]+)\\s*\\}\\}`, "g");
+
+    out = out.replace(triple, (_m, path) => coerceValue(getByPath(value, path)));
+    out = out.replace(dbl, (_m, path) => escapeHtml(coerceValue(getByPath(value, path))));
+  }
+
+  const top = {
+    prbNumber: ctx.prbNumber,
+    prbMonth: ctx.prbMonth,
+    prbMonthName: ctx.prbMonthName,
+    prbYear: ctx.prbYear,
+  };
+
+  for (const [key, val] of Object.entries(top)) {
+    if (val == null || val === "") continue;
+    const triple = new RegExp(`\\{\\{\\{\\s*${key}\\s*\\}\\}\\}`, "g");
+    const dbl = new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, "g");
+    out = out.replace(triple, coerceValue(val));
+    out = out.replace(dbl, escapeHtml(coerceValue(val)));
+  }
+
+  return out;
+}
+
 export function resolveCfByStructure({ stitchedHtml, aemBindingsEncountered, aemPrefetchDataByStreamKey }) {
   if (!stitchedHtml) return stitchedHtml;
 
@@ -185,13 +264,16 @@ export function resolvePreviewHtmlFromRenderResult(renderResult, fallbackHtml) {
     aemPrefetchDataByStreamKey: renderResult?.aemPrefetchDataByStreamKey,
   });
 
+  const derivedPrbCtx = derivePrbContext(renderResult?.aemBindingsEncountered, renderResult?.aemPrefetchDataByStreamKey);
+  const resolvedDerivedPrb = replaceDerivedVars(resolvedPrb, derivedPrbCtx);
+
   const resolvedCf = resolveCfByStructure({
-    stitchedHtml: resolvedPrb,
+    stitchedHtml: resolvedDerivedPrb,
     aemBindingsEncountered: renderResult?.aemBindingsEncountered,
     aemPrefetchDataByStreamKey: renderResult?.aemPrefetchDataByStreamKey,
   });
 
-  return resolvedCf || resolvedPrb || stitchedHtml || fallbackHtml || "";
+  return resolvedCf || resolvedDerivedPrb || resolvedPrb || stitchedHtml || fallbackHtml || "";
 }
 
 export function stripAjoSyntax(html) {
