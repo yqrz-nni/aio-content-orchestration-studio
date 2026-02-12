@@ -1,5 +1,6 @@
 const { ok, badRequest, serverError, corsPreflight } = require("../../_lib/http");
 const { fetchJson } = require("../../_lib/fetchJson");
+const { fetchRaw } = require("../../_lib/fetchRaw");
 
 function buildFragmentsUrl(baseUrl, { orderBy = "+name", limit = 1000 } = {}) {
   const u = new URL(baseUrl);
@@ -16,6 +17,117 @@ function hasTagId(it, tagId) {
   if (!tagId) return false;
   const tagIds = Array.isArray(it?.tagIds) ? it.tagIds : [];
   return tagIds.some((t) => String(t || "") === String(tagId));
+}
+
+function normalizeFragmentId(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  return s.toLowerCase().startsWith("ajo:") ? s.slice(4) : s;
+}
+
+function buildFragmentGetUrl(baseUrl, fragmentId) {
+  const clean = normalizeFragmentId(fragmentId);
+  if (!baseUrl || !clean) return null;
+  const u = new URL(baseUrl);
+  const basePath = String(u.pathname || "").replace(/\/+$/, "");
+  u.pathname = `${basePath}/${encodeURIComponent(clean)}`;
+  return u.toString();
+}
+
+function pickFragmentContent(data) {
+  const candidates = [
+    data?.fragment?.content,
+    data?.fragment?.processedContent,
+    data?.fragment?.expression,
+    data?.fragment?.content?.expression,
+    data?.fragment?.content?.html,
+    data?.fragment?.content?.markup,
+    data?.fragment?.content?.value,
+    data?.fragment?.channels?.email?.content,
+    data?.fragment?.channels?.email?.processedContent,
+    data?.content,
+    data?.processedContent,
+    data?.expression,
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return c;
+  }
+  return null;
+}
+
+function detectPrbGlobalUsage(fragmentContent) {
+  if (!fragmentContent || typeof fragmentContent !== "string") return false;
+  return (
+    /\{\{\{?\s*(styles|brandProps|prbProperties)\./i.test(fragmentContent) ||
+    /\{\{\{?\s*prb(?:Number|Month|MonthName|Year)\s*\}?\}/i.test(fragmentContent) ||
+    /\bprbProperties\./i.test(fragmentContent)
+  );
+}
+
+function classifyBindingMode(fragmentContent) {
+  if (!fragmentContent || typeof fragmentContent !== "string") return null;
+
+  const hasCfSignals =
+    /\{\{\{?\s*cf\./i.test(fragmentContent) ||
+    /\bresult\s*=\s*(['"])cf\1/i.test(fragmentContent);
+  if (hasCfSignals) return "cf";
+
+  if (detectPrbGlobalUsage(fragmentContent)) return "prb-global";
+
+  const hasNestedAjoFragments = /\{\{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:/i.test(fragmentContent);
+  if (hasNestedAjoFragments) return "unknown";
+
+  return "none";
+}
+
+async function enrichCfBindingCapabilities({ items, params, authHeader, imsOrg }) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return list;
+  if (!params.AJO_GET_FRAGMENT_URL) return list.map((it) => ({ ...it, supportsCfBinding: null, bindingMode: null }));
+
+  const concurrency = Number.isFinite(Number(params.vfBindingDetectConcurrency))
+    ? Math.max(1, Math.min(12, Number(params.vfBindingDetectConcurrency)))
+    : 8;
+
+  const out = list.slice();
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < out.length) {
+      const idx = cursor++;
+      const item = out[idx];
+      const url = buildFragmentGetUrl(params.AJO_GET_FRAGMENT_URL, item?.id);
+      if (!url) {
+        out[idx] = { ...item, supportsCfBinding: null };
+        continue;
+      }
+      try {
+        const resp = await fetchRaw(url, {
+          method: "GET",
+          headers: {
+            Authorization: authHeader,
+            "x-gw-ims-org-id": imsOrg,
+            "x-api-key": params.AJO_API_KEY,
+            "x-sandbox-name": params.SANDBOX_NAME,
+            accept: "application/vnd.adobe.ajo.fragment.v1.0+json",
+          },
+        });
+
+        const content = pickFragmentContent(resp?.data || {});
+        const bindingMode = classifyBindingMode(content);
+        const supportsCfBinding =
+          bindingMode === "cf" ? true : bindingMode === "prb-global" || bindingMode === "none" ? false : null;
+        out[idx] = { ...item, supportsCfBinding, bindingMode };
+      } catch {
+        out[idx] = { ...item, supportsCfBinding: null, bindingMode: null };
+      }
+    }
+  }
+
+  const workers = Array.from({ length: Math.min(concurrency, out.length) }, () => worker());
+  await Promise.all(workers);
+  return out;
 }
 
 async function main(params) {
@@ -61,19 +173,25 @@ async function main(params) {
       return type === "html" && channels.includes("email");
     });
     const filtered = tagged.length ? tagged : fallback;
+    const enriched = await enrichCfBindingCapabilities({
+      items: filtered,
+      params,
+      authHeader,
+      imsOrg,
+    });
     const debug = params.debug === true || params.debug === "true";
     const debugFull = params.debug === "full";
 
     return ok({
       sandbox: params.SANDBOX_NAME,
       totalFetched: items.length,
-      totalFiltered: filtered.length,
+      totalFiltered: enriched.length,
       usedFallback: tagged.length === 0,
       warning:
         tagged.length === 0
           ? "No vf:content-block labels found; falling back to type=html + channels includes 'email'."
           : undefined,
-      items: filtered,
+      items: enriched,
       page: payload?._page,
       debug: debug || debugFull
         ? {
