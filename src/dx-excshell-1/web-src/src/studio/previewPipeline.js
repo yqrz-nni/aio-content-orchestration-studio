@@ -571,13 +571,14 @@ export function injectPreviewFocusBridge(html) {
       var vfId = data.vfId;
       var moduleId = data.moduleId;
       var ord = typeof data.vfOrdinal === 'number' ? data.vfOrdinal : null;
+      var preferPlaceholder = data.preferPlaceholder === true;
       var target = null;
 
       if (moduleId) {
         var marker = document.querySelector('[data-ts-module-id="' + moduleId + '"]');
         if (marker) target = marker.nextElementSibling || marker.parentElement || marker;
       }
-      if (!target && vfId) {
+      if (!target && vfId && !preferPlaceholder) {
         var hits = document.querySelectorAll('[data-fragment-id="ajo:' + vfId + '"]');
         if (hits && hits.length) {
           var idx = ord != null ? Math.min(Math.max(ord, 0), hits.length - 1) : 0;

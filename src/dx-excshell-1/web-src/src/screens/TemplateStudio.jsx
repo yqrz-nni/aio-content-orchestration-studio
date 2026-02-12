@@ -486,7 +486,13 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   function emitPreviewOpStart(intent) {
     const win = iframeRef.current?.contentWindow;
     if (!win || !intent) return;
-    const payload = { kind: intent.kind, moduleId: intent.moduleId || null, vfId: intent.vfId || null, vfOrdinal: null };
+    const payload = {
+      kind: intent.kind,
+      moduleId: intent.moduleId || null,
+      vfId: intent.vfId || null,
+      vfOrdinal: null,
+      preferPlaceholder: intent.kind === "pattern-add",
+    };
     if (intent.moduleId) {
       const idx = modules.findIndex((m) => m?.moduleId === intent.moduleId);
       if (idx >= 0) {
