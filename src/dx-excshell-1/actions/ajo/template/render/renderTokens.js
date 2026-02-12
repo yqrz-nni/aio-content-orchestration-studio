@@ -1465,13 +1465,15 @@ function renderNamespaceByBindingOrder({
 
     let maybeExpanded = renderMiniAjo(html, miniRoot);
 
-    const needed = namespace === "cf" ? null : collectTopLevelVarNames(maybeExpanded);
-    maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, {
-      ctx: miniRoot,
-      locale: "en-US",
-      neededVars: needed,
-      diag,
-    });
+    if (namespace !== "cf") {
+      const needed = collectTopLevelVarNames(maybeExpanded);
+      maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, {
+        ctx: miniRoot,
+        locale: "en-US",
+        neededVars: needed,
+        diag,
+      });
+    }
 
     // Dynamic references (only meaningful with cf context)
     if (dynEnabled && namespace === "cf") {
@@ -1482,10 +1484,6 @@ function renderNamespaceByBindingOrder({
         diag,
         segmentKey: "cf:default",
       });
-    }
-
-    if (namespace === "cf") {
-      maybeExpanded = replaceBodyCopyVarBestEffort(maybeExpanded, defaultCtx);
     }
 
     // Resolve brandProps tokens anywhere in this pass (header links, logo src, etc.)
@@ -1523,8 +1521,10 @@ function renderNamespaceByBindingOrder({
 
     before = renderMiniAjo(before, miniRoot);
 
-    const needed = namespace === "cf" ? null : collectTopLevelVarNames(before);
-    before = evaluateLiquidLetsAndReplace(before, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
+    if (namespace !== "cf") {
+      const needed = collectTopLevelVarNames(before);
+      before = evaluateLiquidLetsAndReplace(before, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
+    }
 
     // Dynamic references pass per segment (only cf)
     if (dynEnabled && namespace === "cf") {
@@ -1550,10 +1550,6 @@ function renderNamespaceByBindingOrder({
         diag,
         segmentKey: segKey,
       });
-    }
-
-    if (namespace === "cf") {
-      before = replaceBodyCopyVarBestEffort(before, effectiveCtx);
     }
 
     // Resolve style + brandProps vars that can appear outside fragments
@@ -1609,13 +1605,15 @@ function renderNamespaceByBindingOrder({
 
         // Apply mini AJO + lets only to the bound block (NOT full tail).
         boundBlock = renderMiniAjo(boundBlock, miniRoot);
-        const boundNeeded = namespace === "cf" ? null : collectTopLevelVarNames(boundBlock);
-        boundBlock = evaluateLiquidLetsAndReplace(boundBlock, {
-          ctx: miniRoot,
-          locale: "en-US",
-          neededVars: boundNeeded,
-          diag,
-        });
+        if (namespace !== "cf") {
+          const boundNeeded = collectTopLevelVarNames(boundBlock);
+          boundBlock = evaluateLiquidLetsAndReplace(boundBlock, {
+            ctx: miniRoot,
+            locale: "en-US",
+            neededVars: boundNeeded,
+            diag,
+          });
+        }
 
         // Apply CF context + dynamic refs only to the bound block.
         boundBlock = resolveDynamicReferencesInSegment({
@@ -1625,7 +1623,6 @@ function renderNamespaceByBindingOrder({
           diag,
           segmentKey: "cf:tail",
         });
-        boundBlock = replaceBodyCopyVarBestEffort(boundBlock, effectiveCtx);
         boundBlock = replaceNamespaceVars(boundBlock, "brandProps", brandPropsCtx);
         boundBlock = replaceNamespaceVars(boundBlock, namespace, effectiveCtx);
 
@@ -1642,8 +1639,10 @@ function renderNamespaceByBindingOrder({
   // Non-CF passes can safely evaluate the whole tail.
   tail = renderMiniAjo(tail, miniRoot);
 
-  const needed = namespace === "cf" ? null : collectTopLevelVarNames(tail);
-  tail = evaluateLiquidLetsAndReplace(tail, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
+  if (namespace !== "cf") {
+    const needed = collectTopLevelVarNames(tail);
+    tail = evaluateLiquidLetsAndReplace(tail, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
+  }
 
   if (dynEnabled && namespace === "cf") {
     tail = resolveDynamicReferencesInSegment({
@@ -1653,10 +1652,6 @@ function renderNamespaceByBindingOrder({
       diag,
       segmentKey: "cf:tail",
     });
-  }
-
-  if (namespace === "cf") {
-    tail = replaceBodyCopyVarBestEffort(tail, effectiveCtx);
   }
 
   tail = replaceNamespaceVars(tail, "brandProps", brandPropsCtx);
