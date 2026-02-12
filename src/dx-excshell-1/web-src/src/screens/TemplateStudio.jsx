@@ -607,6 +607,10 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     const m = modules.find((x) => x.moduleId === moduleId);
     if (!m?.vfId) return;
     const vfName = (vfItems.find((v) => v?.id === m.vfId)?.name || "").trim() || null;
+    const focusTarget = { moduleId, vfId: m.vfId };
+    setPinnedModule(focusTarget);
+    setHoveredModule(null);
+    setPendingFocusModule(focusTarget);
 
     enqueue(async () => {
       const nextModules = modules.map((x) => (x.moduleId === moduleId ? { ...x, contentId } : x));
