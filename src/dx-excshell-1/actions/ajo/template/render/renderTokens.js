@@ -857,10 +857,35 @@ function replaceBodyCopyVarBestEffort(segment, cfCtx) {
   // Fallback for observed preview collapse where bodyCopy block degrades to a literal "false".
   // Keep this conservative: only when refArrayCheck marker exists in the same segment.
   if (out.includes("refArrayCheck")) {
+    // Most robust path: match the hidden refArrayCheck span block (with any nested Liquid)
+    // and replace a standalone false immediately after it.
+    out = out.replace(
+      /(<span[^>]*display\s*:\s*none[^>]*>[\s\S]*?\{\{#each\s+refArrayCheck[\s\S]*?\{\{\/each\}\}[\s\S]*?<\/span>\s*)false(\s*<span[^>]*display\s*:\s*none[^>]*>)/i,
+      `$1${raw}$2`
+    );
+
     out = out.replace(
       /(<span[^>]*display\s*:\s*none[^>]*>\s*(?:{{#each\s+refArrayCheck[\s\S]*?{{\/each}})?\s*<\/span>\s*)false(\s*<span[^>]*display\s*:\s*none[^>]*>)/i,
       `$1${raw}$2`
     );
+
+    // Broader fallback: if the collapsed token is just a bare "false" text node
+    // near the refArrayCheck loop, inject bodyCopy once.
+    out = out.replace(
+      /(\{\{#each\s+refArrayCheck[\s\S]*?\{\{\/each\}\}[\s\S]{0,300}?>)\s*false(\s*<)/i,
+      `$1${raw}$2`
+    );
+
+    // Last-resort narrow fallback in this segment only.
+    if (!out.includes(raw) && !/\{\{\{?\s*bodyCopy\s*\}\}?\}/.test(out)) {
+      out = out.replace(/>\s*false\s*</i, `>${raw}<`);
+    }
+  }
+
+  // Extra guard: in known bodyCopy templating blocks, replace a lone fallback "false"
+  // if raw bodyCopy was not already rendered.
+  if (!out.includes(raw) && out.includes("thisBodyCopy.replace(")) {
+    out = out.replace(/\bfalse\b/i, raw);
   }
   return out;
 }
@@ -1427,7 +1452,7 @@ function renderNamespaceByBindingOrder({
 
     let maybeExpanded = renderMiniAjo(html, miniRoot);
 
-    const needed = collectTopLevelVarNames(maybeExpanded);
+    const needed = namespace === "cf" ? null : collectTopLevelVarNames(maybeExpanded);
     maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, {
       ctx: miniRoot,
       locale: "en-US",
@@ -1485,7 +1510,7 @@ function renderNamespaceByBindingOrder({
 
     before = renderMiniAjo(before, miniRoot);
 
-    const needed = collectTopLevelVarNames(before);
+    const needed = namespace === "cf" ? null : collectTopLevelVarNames(before);
     before = evaluateLiquidLetsAndReplace(before, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
     // Dynamic references pass per segment (only cf)
@@ -1571,7 +1596,7 @@ function renderNamespaceByBindingOrder({
 
         // Apply mini AJO + lets only to the bound block (NOT full tail).
         boundBlock = renderMiniAjo(boundBlock, miniRoot);
-        const boundNeeded = collectTopLevelVarNames(boundBlock);
+        const boundNeeded = namespace === "cf" ? null : collectTopLevelVarNames(boundBlock);
         boundBlock = evaluateLiquidLetsAndReplace(boundBlock, {
           ctx: miniRoot,
           locale: "en-US",
@@ -1604,7 +1629,7 @@ function renderNamespaceByBindingOrder({
   // Non-CF passes can safely evaluate the whole tail.
   tail = renderMiniAjo(tail, miniRoot);
 
-  const needed = collectTopLevelVarNames(tail);
+  const needed = namespace === "cf" ? null : collectTopLevelVarNames(tail);
   tail = evaluateLiquidLetsAndReplace(tail, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
   if (dynEnabled && namespace === "cf") {
