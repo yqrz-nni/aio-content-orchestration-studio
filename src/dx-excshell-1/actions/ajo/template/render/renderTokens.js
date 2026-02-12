@@ -346,7 +346,7 @@ function splitArgs(raw) {
 
 function parseFnCall(expr) {
   const s = String(expr ?? "").trim();
-  const m = s.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([\s\S]*)\)$/);
+  const m = s.match(/^([a-zA-Z_][a-zA-Z0-9_.]*)\s*\(([\s\S]*)\)$/);
   if (!m) return null;
   return { name: m[1], argsRaw: m[2] };
 }
@@ -549,6 +549,28 @@ function evalLiquidExpr(expr, { ctx, vars, locale = "en-US", diag }) {
 
 function evalLiquidFn(name, argsRaw, { ctx, vars, locale, diag }) {
   const args = splitArgs(argsRaw).map((a) => evalLiquidExpr(a, { ctx, vars, locale, diag }));
+
+  // Support dotted method-style calls found in templates, e.g.:
+  // thisBodyCopy.replace("<p>", cssBuilder)
+  const dot = String(name || "").lastIndexOf(".");
+  if (dot > 0) {
+    const targetExpr = String(name).slice(0, dot);
+    const method = String(name).slice(dot + 1);
+    const targetVal = evalLiquidExpr(targetExpr, { ctx, vars, locale, diag });
+    const target = coerceValue(targetVal);
+
+    if (method === "replace") {
+      const search = String(args[0] ?? "");
+      const repl = String(args[1] ?? "");
+      return String(target).replace(search, repl);
+    }
+
+    if (method === "replaceAll") {
+      const search = String(args[0] ?? "");
+      const repl = String(args[1] ?? "");
+      return String(target).split(search).join(repl);
+    }
+  }
 
   switch (name) {
     case "toString":
@@ -1015,6 +1037,27 @@ function extractReferenceNotesFromCf(cfCtx) {
     notes.push(String(s ?? ""));
   }
   return notes;
+}
+
+function hydrateDynStateFromAllCfReferences({ dynState, aemBindingsEncountered, dataByStreamKey }) {
+  if (!dynState || !Array.isArray(aemBindingsEncountered) || !dataByStreamKey) return;
+  if (Array.isArray(dynState.orderedNotes) && dynState.orderedNotes.length) return;
+
+  const cfBinds = aemBindingsEncountered
+    .filter((b) => b?.result === "cf" && Number.isFinite(Number(b?.index)))
+    .slice()
+    .sort((a, b) => Number(a.index) - Number(b.index));
+
+  for (const b of cfBinds) {
+    const skey = `${b.index}:${b.result}`;
+    const cfCtx = dataByStreamKey?.[skey];
+    const notes = extractReferenceNotesFromCf(cfCtx);
+    for (const note of notes) {
+      const normalized = String(note ?? "").trim();
+      if (!normalized) continue;
+      assignGlobalRefNumber(dynState, normalized);
+    }
+  }
 }
 
 function assignGlobalRefNumber(dynState, note) {
@@ -1785,6 +1828,14 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
   // Render any leftover refArray loops using our accumulated orderedNotes
   {
     const t = nowMs();
+    // Fallback: if wrapper-token based extraction found nothing,
+    // hydrate notes directly from all CF contexts in binding order.
+    hydrateDynStateFromAllCfReferences({
+      dynState,
+      aemBindingsEncountered,
+      dataByStreamKey: aemPrefetchDataByStreamKey,
+    });
+
     out = renderRefArrayBlocksBestEffort(out, dynState);
     if (diag) diag.timings.dynamicRefsRefArrayMs = nowMs() - t;
 
