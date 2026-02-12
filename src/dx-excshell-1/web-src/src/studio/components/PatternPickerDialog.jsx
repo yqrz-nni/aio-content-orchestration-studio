@@ -4,7 +4,13 @@ import React, { useState } from "react";
 import { Heading, Text, Divider, ListView, Item, Button, ButtonGroup, Dialog, Content, StatusLight } from "@adobe/react-spectrum";
 import { useDialogContainer } from "@react-spectrum/dialog";
 
-export function PatternPickerDialog({ vfItems, onSelect }) {
+export function PatternPickerDialog({
+  vfItems,
+  onSelect,
+  title = "Add pattern",
+  description = "Choose a Visual Fragment pattern. You can bind content after it's added.",
+  confirmLabel = "Add",
+}) {
   const [selected, setSelected] = useState(null);
   const dialog = useDialogContainer();
 
@@ -12,11 +18,9 @@ export function PatternPickerDialog({ vfItems, onSelect }) {
 
   return (
     <Dialog>
-      <Heading>Add pattern</Heading>
+      <Heading>{title}</Heading>
       <Content>
-        <Text UNSAFE_style={{ opacity: 0.85 }}>
-          Choose a Visual Fragment pattern. You can bind content after it’s added.
-        </Text>
+        <Text UNSAFE_style={{ opacity: 0.85 }}>{description}</Text>
 
         <Divider size="S" marginY="size-150" />
 
@@ -52,7 +56,7 @@ export function PatternPickerDialog({ vfItems, onSelect }) {
             dialog.dismiss();
           }}
         >
-          Add
+          {confirmLabel}
         </Button>
       </ButtonGroup>
     </Dialog>

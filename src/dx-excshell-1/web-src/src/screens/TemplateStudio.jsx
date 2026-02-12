@@ -32,6 +32,7 @@ import {
   hydrateFromHtml,
   insertPatternBeforeModuleHtml,
   moveModuleInTemplateHtml,
+  replacePatternInModuleHtml,
   removeModuleFromTemplateHtml,
   stripTsModuleMarkers,
 } from "../studio/templateEngine";
@@ -735,6 +736,37 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     });
   }
 
+  function changePattern(moduleId, nextVfId) {
+    if (!templateId) return;
+    if (!moduleId || !nextVfId) return;
+    if (!canonicalHtml) return;
+
+    const m = modules.find((x) => x.moduleId === moduleId);
+    if (!m) return;
+    const cleanNextVfId = normalizeVfId(nextVfId);
+    if (!cleanNextVfId || normalizeVfId(m.vfId) === cleanNextVfId) return;
+    const nextVfName = (vfItems.find((v) => normalizeVfId(v?.id) === cleanNextVfId)?.name || "").trim() || null;
+
+    const focusTarget = { moduleId, vfId: cleanNextVfId };
+    setPinnedModule(focusTarget);
+    setHoveredModule(null);
+    setPendingFocusModule(focusTarget);
+
+    enqueue(async () => {
+      const nextModules = modules.map((x) => (x.moduleId === moduleId ? { ...x, vfId: cleanNextVfId } : x));
+      setModules(nextModules);
+
+      const nextHtml = replacePatternInModuleHtml(canonicalHtml, {
+        moduleId,
+        vfId: cleanNextVfId,
+        vfName: nextVfName,
+      });
+
+      queueRenderIntent("pattern-change", { moduleId, vfId: cleanNextVfId });
+      setCanonicalHtml(nextHtml);
+    });
+  }
+
   function removeModule(moduleId) {
     if (!moduleId) return;
 
@@ -1042,6 +1074,9 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     if (kind === "pattern-add") {
       return { title: "Adding pattern", detail: "Updating preview with the new module.", mode: "targeted" };
     }
+    if (kind === "pattern-change") {
+      return { title: "Changing pattern", detail: "Updating module template.", mode: "targeted" };
+    }
     if (kind === "vf-hydration") {
       return { title: "Hydrating content", detail: "Applying content fragment data.", mode: "targeted" };
     }
@@ -1192,6 +1227,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
                     isFocused={activeModuleId === m.moduleId}
                     isPinned={pinnedModule?.moduleId === m.moduleId}
                     onBindContent={bindContent}
+                    onChangePattern={changePattern}
                     onMoveUp={(id) => moveModule(id, "up")}
                     onMoveDown={(id) => moveModule(id, "down")}
                     onRemove={removeModule}

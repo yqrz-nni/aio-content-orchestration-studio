@@ -222,6 +222,38 @@ export function removeModuleFromTemplateHtml(html, moduleId) {
 }
 
 /**
+ * Replace the VF include in a module block (identified by ts:module markers).
+ * If markers or VF include are missing, returns original html.
+ */
+export function replacePatternInModuleHtml(html, { moduleId, vfId, vfName = null }) {
+  if (!html || !moduleId || !vfId) return html;
+
+  const open = `<!-- ts:module id="${moduleId}" -->`;
+  const close = `<!-- ts:module-end id="${moduleId}" -->`;
+  const start = html.indexOf(open);
+  const end = html.indexOf(close);
+  if (start < 0 || end < 0 || end <= start) return html;
+
+  const block = html.slice(start, end + close.length);
+  const wrappedVfTag = buildAcrWrappedAjoFragmentTag(vfId, vfName);
+
+  const wrappedVfRe =
+    /{{!--\s*\[acr-start-fragment\]\s*--}}\s*{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:[^'"]+\1[^}]*}}\s*{{!--\s*\[acr-end-fragment\]\s*--}}/i;
+  const plainVfRe = /{{\s*fragment\b[^}]*\bid\s*=\s*(['"])ajo:[^'"]+\1[^}]*}}/i;
+
+  let nextBlock = block;
+  if (wrappedVfRe.test(block)) {
+    nextBlock = block.replace(wrappedVfRe, wrappedVfTag);
+  } else if (plainVfRe.test(block)) {
+    nextBlock = block.replace(plainVfRe, wrappedVfTag);
+  } else {
+    return html;
+  }
+
+  return html.slice(0, start) + nextBlock + html.slice(end + close.length);
+}
+
+/**
  * Reorder one module block by one step using ts:module markers.
  * Direction is "up" or "down". If move is invalid/no-op, returns original html.
  */

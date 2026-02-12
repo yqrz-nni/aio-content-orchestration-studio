@@ -1,7 +1,8 @@
 // File: src/dx-excshell-1/web-src/src/studio/components/ModuleCard.jsx
 
-import React, { useMemo } from "react";
-import { View, Flex, Text, Divider, ComboBox, Item, Button } from "@adobe/react-spectrum";
+import React, { useMemo, useState } from "react";
+import { View, Flex, Text, Divider, ComboBox, Item, Button, DialogTrigger } from "@adobe/react-spectrum";
+import { PatternPickerDialog } from "./PatternPickerDialog";
 
 function vfNameById(vfItems, vfId) {
   const hit = (vfItems || []).find((v) => v?.id === vfId);
@@ -18,6 +19,7 @@ export function ModuleCard({
   vfItems,
   contentOptions,
   onBindContent,
+  onChangePattern,
   onRemove,
   onMoveUp,
   onMoveDown,
@@ -26,14 +28,15 @@ export function ModuleCard({
   isFocused,
   isPinned,
 }) {
+  const [isEditingContent, setIsEditingContent] = useState(false);
   const name = vfNameById(vfItems, module?.vfId);
   const vfMeta = vfMetaById(vfItems, module?.vfId);
   const supportsCfBinding = vfMeta?.supportsCfBinding;
   const bindingMode = vfMeta?.bindingMode || null;
-  const showBindCombo = Boolean(module?.contentId) || supportsCfBinding !== false;
+  const showBindUi = Boolean(module?.contentId) || supportsCfBinding !== false;
   const bindingHint = bindingMode === "prb-global" ? "Binding Inherited" : bindingMode === "none" ? "No Binding" : null;
 
-  // If hydrated contentId isn’t in the loaded list yet, add a visible placeholder option.
+  // If hydrated contentId is not in the loaded list yet, add a visible placeholder option.
   const options = useMemo(() => {
     const base = Array.isArray(contentOptions) ? contentOptions : [];
     const cid = module?.contentId || null;
@@ -42,8 +45,14 @@ export function ModuleCard({
     const exists = base.some((o) => o?.id === cid);
     if (exists) return base;
 
-    return [{ id: cid, label: `Unknown CF — ${cid}` }, ...base];
+    return [{ id: cid, label: `Unknown CF - ${cid}` }, ...base];
   }, [contentOptions, module?.contentId]);
+
+  const selectedContent = useMemo(() => {
+    const cid = module?.contentId || null;
+    if (!cid) return null;
+    return options.find((o) => o?.id === cid) || null;
+  }, [module?.contentId, options]);
 
   return (
     <View
@@ -63,7 +72,7 @@ export function ModuleCard({
     >
       <Flex justifyContent="space-between" alignItems="center" gap="size-200">
         <Text UNSAFE_style={{ fontWeight: 600 }}>
-          {index + 1}. {name}
+          Module {index + 1}
         </Text>
         {isPinned ? (
           <Text
@@ -84,20 +93,68 @@ export function ModuleCard({
 
       <Divider size="S" marginY="size-100" />
 
-      {showBindCombo ? (
-        <ComboBox
-          label="Bind Content Fragment"
-          placeholder="Select content…"
-          selectedKey={module?.contentId || null}
-          onSelectionChange={(key) => onBindContent(module.moduleId, key)}
-          width="size-4600"
-          menuTrigger="focus"
-        >
-          {options.map((cf) => (
-            <Item key={cf.id}>{cf.label}</Item>
-          ))}
-        </ComboBox>
-      ) : bindingHint ? (
+      <View marginBottom="size-100">
+        <Flex alignItems="center" justifyContent="space-between" gap="size-100">
+          <Text UNSAFE_style={{ fontSize: 12, opacity: 0.7 }}>Pattern</Text>
+          <DialogTrigger>
+            <Button variant="secondary" staticColor="white" data-keep-module-focus="true">
+              Change
+            </Button>
+            <PatternPickerDialog
+              vfItems={vfItems}
+              onSelect={(nextVfId) => onChangePattern?.(module.moduleId, nextVfId)}
+              title="Change Pattern"
+              description="Choose a different Visual Fragment for this module."
+              confirmLabel="Apply Pattern"
+            />
+          </DialogTrigger>
+        </Flex>
+        <Text>{name}</Text>
+      </View>
+
+      <Divider size="S" marginY="size-100" />
+
+      <View>
+        <Flex alignItems="center" justifyContent="space-between" gap="size-100">
+          <Text UNSAFE_style={{ fontSize: 12, opacity: 0.7 }}>Content</Text>
+          {showBindUi ? (
+            isEditingContent ? (
+              <Button variant="secondary" staticColor="white" onPress={() => setIsEditingContent(false)} data-keep-module-focus="true">
+                Cancel
+              </Button>
+            ) : (
+              <Button variant="secondary" staticColor="white" onPress={() => setIsEditingContent(true)} data-keep-module-focus="true">
+                {module?.contentId ? "Edit" : "Bind"}
+              </Button>
+            )
+          ) : null}
+        </Flex>
+
+        {showBindUi && isEditingContent ? (
+          <ComboBox
+            label="Bind Content Fragment"
+            placeholder="Select content..."
+            selectedKey={module?.contentId || null}
+            onSelectionChange={(key) => {
+              onBindContent(module.moduleId, key);
+              setIsEditingContent(false);
+            }}
+            width="size-4600"
+            menuTrigger="focus"
+            data-keep-module-focus="true"
+          >
+            {options.map((cf) => (
+              <Item key={cf.id}>{cf.label}</Item>
+            ))}
+          </ComboBox>
+        ) : selectedContent ? (
+          <Text>{selectedContent.label}</Text>
+        ) : showBindUi ? (
+          <Text UNSAFE_style={{ color: "#8a5a00", fontSize: 12, fontWeight: 600 }}>Not Bound</Text>
+        ) : null}
+      </View>
+
+      {!showBindUi && bindingHint ? (
         <View
           UNSAFE_style={{
             display: "inline-flex",
@@ -109,6 +166,7 @@ export function ModuleCard({
             border: "1px solid #d7e1f1",
             borderRadius: 999,
             padding: "4px 10px",
+            marginTop: 10,
           }}
         >
           <span
