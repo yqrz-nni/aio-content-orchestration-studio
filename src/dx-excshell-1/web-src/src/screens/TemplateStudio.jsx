@@ -383,7 +383,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   useEffect(() => {
     function onDocClick(ev) {
       const root = compositionRef.current;
-      if (!root) return;
+      if (!root || typeof root.contains !== "function") return;
       const inComposition = root.contains(ev.target);
       const card = ev.target?.closest ? ev.target.closest("[data-vf-id]") : null;
       const clickedVfId = card?.getAttribute ? card.getAttribute("data-vf-id") : null;
@@ -615,14 +615,14 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       {/* 2-column Studio */}
       <Grid columns={["0.85fr", "1.15fr"]} gap="size-200" height="80vh" UNSAFE_className="StudioGrid">
         {/* Left: Composition */}
-        <View
-          borderWidth="thin"
-          borderColor="dark"
-          borderRadius="small"
-          padding="size-200"
-          UNSAFE_className="StudioPanel"
-          ref={compositionRef}
-        >
+        <div ref={compositionRef}>
+          <View
+            borderWidth="thin"
+            borderColor="dark"
+            borderRadius="small"
+            padding="size-200"
+            UNSAFE_className="StudioPanel"
+          >
           <Flex justifyContent="space-between" alignItems="center">
             <Heading level={4}>Composition</Heading>
 
@@ -671,6 +671,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
             )}
           </View>
         </View>
+        </div>
 
         {/* Right: Preview + Diagnostics tabs */}
         <View borderWidth="thin" borderColor="dark" borderRadius="small" padding="size-200" UNSAFE_className="StudioPreviewPanel">
