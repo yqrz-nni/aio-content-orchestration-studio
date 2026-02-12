@@ -1698,14 +1698,6 @@ function resolveStylesByBindings({
 
     let maybeExpanded = renderMiniAjo(stitchedHtml, miniRoot);
 
-    const needed = collectTopLevelVarNames(maybeExpanded);
-    maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, {
-      ctx: miniRoot,
-      locale: "en-US",
-      neededVars: needed,
-      diag,
-    });
-
     maybeExpanded = replaceNamespaceVars(maybeExpanded, "brandProps", brandPropsCtx);
 
     return replaceNamespaceVars(maybeExpanded, "styles", styles);
@@ -1749,8 +1741,7 @@ function resolveStylesByBindings({
 
     seg = renderMiniAjo(seg, miniRoot);
 
-    const needed = collectTopLevelVarNames(seg);
-    seg = evaluateLiquidLetsAndReplace(seg, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
+    
 
     // ✅ apply both replacements, then append ONCE (prevents visual fragment duplication)
     let rendered = replaceNamespaceVars(seg, "styles", currentStyles);
@@ -1786,8 +1777,7 @@ function resolveStylesByBindings({
 
   tail = renderMiniAjo(tail, tailRoot);
 
-  const needed = collectTopLevelVarNames(tail);
-  tail = evaluateLiquidLetsAndReplace(tail, { ctx: tailRoot, locale: "en-US", neededVars: needed, diag });
+  
 
   // ✅ apply both replacements, then append ONCE (prevents visual fragment duplication)
   let renderedTail = replaceNamespaceVars(tail, "styles", currentStyles);
@@ -1891,9 +1881,6 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
       brandPropsCtx,
       localCtx: null,
     });
-
-    const needed = collectTopLevelVarNames(out);
-    out = evaluateLiquidLetsAndReplace(out, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
 
     // Catch any lingering brandProps.* tokens in footer/global blocks
     out = replaceNamespaceVars(out, "brandProps", brandPropsCtx);
