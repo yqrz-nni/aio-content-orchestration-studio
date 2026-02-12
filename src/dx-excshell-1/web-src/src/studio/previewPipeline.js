@@ -322,6 +322,7 @@ export function injectPreviewFocusBridge(html) {
     var msg = ev && ev.data;
     if (!msg || msg.__TS_PREVIEW__ !== true) return;
     if (msg.type === 'focus-vf') {
+      try { parent.postMessage({ __TS_PREVIEW__: true, type: 'focus-ack', data: msg }, "*"); } catch(e) {}
       if (msg.moduleId) {
         clearFocus();
         var marker = document.querySelector('[data-ts-module-id=\"' + msg.moduleId + '\"]');

@@ -92,6 +92,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const prbId = mode === "embedded" ? prbIdOverride : params.prbId;
   const templateId = mode === "embedded" ? templateIdOverride : params.templateId;
   const [searchParams] = useSearchParams();
+  const focusDebug = searchParams.get("focusdebug") === "1";
 
   // TODO: make repoId dynamic from env/selection
   const repoId = "author-p131724-e1294209.adobeaemcloud.com";
@@ -195,6 +196,11 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     function onMessage(ev) {
       const msg = ev?.data;
       if (!msg || msg.__TS_PREVIEW__ !== true) return;
+
+      if (focusDebug && msg.type === "focus-ack") {
+        // eslint-disable-next-line no-console
+        console.log("focus-ack", msg.data);
+      }
 
       setIframeMsgs((prev) => {
         const next = [...prev, { at: new Date().toISOString(), ...msg }];
@@ -368,6 +374,10 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   function focusPreviewVf({ moduleId, vfId }) {
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
+    if (focusDebug) {
+      // eslint-disable-next-line no-console
+      console.log("focus->iframe", { moduleId, vfId });
+    }
     win.postMessage({ __TS_PREVIEW__: true, type: "focus-vf", vfId, moduleId }, "*");
   }
 
