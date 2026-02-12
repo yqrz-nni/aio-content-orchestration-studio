@@ -488,8 +488,9 @@ export function injectPreviewFocusBridge(html) {
   }
   .ts-vf-loading-badge {
     position: absolute;
-    top: -11px;
-    right: 10px;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -574,7 +575,7 @@ export function injectPreviewFocusBridge(html) {
     var dot = document.createElement('span');
     dot.className = 'ts-vf-loading-dot';
     var label = document.createElement('span');
-    label.textContent = text || 'Binding content…';
+    label.textContent = text || 'Content binding…';
     badge.appendChild(dot);
     badge.appendChild(label);
     target.appendChild(badge);
@@ -645,7 +646,7 @@ export function injectPreviewFocusBridge(html) {
 
       if (target) {
         target.classList.add('ts-vf-loading');
-        addLoadingBadge(target, op === 'vf-hydration' ? 'Binding content…' : 'Updating…');
+        addLoadingBadge(target, op === 'vf-hydration' ? 'Content binding…' : 'Updating…');
         try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch(e) {}
         return;
       }
