@@ -79,9 +79,6 @@ export function TemplateFlow() {
                   if (next) open("template");
                 }}
               />
-              <Text UNSAFE_className="FlowNote">
-                Toggling back to PRB doesn’t change anything. Changing PRB will update bindings in your current HTML.
-              </Text>
             </View>
           ) : (
             <View UNSAFE_className="FlowSummary">
@@ -112,14 +109,12 @@ export function TemplateFlow() {
                 mode="embedded"
                 prbIdOverride={prbId}
                 isDisabled={!hasPrb}
+                studioActive={openStep === "studio"}
                 onOpenTemplate={(tid) => {
                   setTemplateId(tid || null);
                   if (tid) open("studio");
                 }}
               />
-              <Text UNSAFE_className="FlowNote">
-                Switching templates will rebuild the Studio workspace. You’ll be asked to confirm.
-              </Text>
             </View>
           ) : (
             <View UNSAFE_className="FlowSummary">

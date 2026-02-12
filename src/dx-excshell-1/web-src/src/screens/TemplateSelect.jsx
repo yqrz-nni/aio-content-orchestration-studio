@@ -17,6 +17,9 @@ import {
   Dialog,
   Content,
   ButtonGroup,
+  Tabs,
+  TabList,
+  TabPanels,
 } from "@adobe/react-spectrum";
 
 import actions from "../config.json";
@@ -50,7 +53,7 @@ function buildLabelsForPrb(prbNumber) {
   return labels;
 }
 
-export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = false, onOpenTemplate }) {
+export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = false, onOpenTemplate, studioActive = false }) {
   const ims = useContext(ImsContext);
   const headers = useMemo(() => buildHeaders(ims), [ims]);
 
@@ -277,52 +280,47 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
       ) : null}
 
       <View UNSAFE_className="FlowCompactCard">
-        <Flex direction="column" gap="size-150">
-          <Flex gap="size-150" alignItems="end" wrap justifyContent="center">
-            <TextField label="New template name" value={templateName} onChange={setTemplateName} width="size-3600" />
-            <Button
-              variant="cta"
-              onPress={() => {
-                setTemplateMode("new");
-                setConfirmAction({ type: "createFromBaseline" });
-              }}
-              isDisabled={!selectedPrb || isCreating || isDisabled}
-            >
-              {isCreating ? "Creating…" : "Create New Template"}
-            </Button>
-            <Button
-              variant="secondary"
-              onPress={() => setTemplateMode("existing")}
-              isDisabled={!selectedPrb || isDisabled}
-            >
-              Choose Existing Template
-            </Button>
-          </Flex>
+        <Tabs
+          aria-label="Template actions"
+          selectedKey={templateMode}
+          onSelectionChange={(key) => setTemplateMode(String(key))}
+        >
+          <TabList>
+            <Item key="new">Create New</Item>
+            <Item key="existing">Choose Existing</Item>
+          </TabList>
 
-          <Text UNSAFE_style={{ opacity: 0.8 }}>
-            Choose Existing Template to create a new version or view the current version.
-          </Text>
+          <TabPanels>
+            <Item key="new">
+              <Flex direction="column" gap="size-150">
+                <TextField label="Template name" value={templateName} onChange={setTemplateName} width="size-4600" />
+                <Button
+                  variant="cta"
+                  onPress={() => {
+                    if (studioActive) setConfirmAction({ type: "createFromBaseline" });
+                    else createFromBaselineAndOpen();
+                  }}
+                  isDisabled={!selectedPrb || isCreating || isDisabled}
+                >
+                  {isCreating ? "Creating…" : "Create New Template"}
+                </Button>
+                <Text UNSAFE_style={{ opacity: 0.7, fontSize: 12 }}>
+                  Creates a fresh template from the baseline and opens Studio.
+                </Text>
+              </Flex>
+            </Item>
 
-          {err ? <StatusLight variant="negative">{err}</StatusLight> : null}
-          {status ? <StatusLight variant="info">{status}</StatusLight> : null}
-        </Flex>
-      </View>
-
-      {templateMode === "existing" ? (
-        <View>
-          <Divider size="S" marginY="size-150" />
-
-          <View UNSAFE_className="FlowCompactCard">
-            <Flex direction="column" gap="size-150">
-              <ComboBox
-                label="Template"
-                placeholder={isLoadingTemplates ? "Loading…" : "Search template name…"}
-                selectedKey={selectedTemplateId}
-                onSelectionChange={(key) => setSelectedTemplateId(key)}
-                width="100%"
-                menuTrigger="focus"
-                isDisabled={isLoadingTemplates || isDisabled}
-              >
+            <Item key="existing">
+              <Flex direction="column" gap="size-150">
+                <ComboBox
+                  label="Template"
+                  placeholder={isLoadingTemplates ? "Loading…" : "Search template name…"}
+                  selectedKey={selectedTemplateId}
+                  onSelectionChange={(key) => setSelectedTemplateId(key)}
+                  width="100%"
+                  menuTrigger="focus"
+                  isDisabled={isLoadingTemplates || isDisabled}
+                >
                 {templates.map((t) => (
                   <Item key={t.id} textValue={t.name || t.id}>
                     {t.name || t.id}
@@ -330,67 +328,89 @@ export function TemplateSelect({ mode = "route", prbIdOverride, isDisabled = fal
                 ))}
               </ComboBox>
 
-              {selectedTemplateId ? (
-                <View>
-                  <Text UNSAFE_style={{ opacity: 0.85, marginBottom: 8 }}>
-                    Selected: {selectedTemplate?.name || selectedTemplateId}
+                {!templates.length && !isLoadingTemplates ? (
+                  <Text UNSAFE_style={{ opacity: 0.7, fontSize: 12 }}>
+                    No templates available for this PRB yet.
                   </Text>
-                  {selectedTemplate?.id ? (
-                    <Text UNSAFE_style={{ opacity: 0.6, fontSize: 12, marginBottom: 8 }}>ID: {selectedTemplate.id}</Text>
-                  ) : null}
-                  <Flex gap="size-100" alignItems="center" wrap>
-                    <Button
-                      variant="primary"
-                      onPress={() => setConfirmAction({ type: "createFromTemplate" })}
-                      isDisabled={!selectedTemplateId || isCreating || isDisabled}
-                    >
-                      {isCreating ? "Creating…" : "Create New Version"}
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      onPress={() => setConfirmAction({ type: "openTemplate", templateId: selectedTemplateId })}
-                      isDisabled={!selectedTemplateId || isDisabled}
-                    >
-                      View Current Version
-                    </Button>
-                  </Flex>
-                  <Text UNSAFE_style={{ opacity: 0.7, fontSize: 12, marginTop: 8 }}>
-                    Actions above rebuild the Studio workspace.
-                  </Text>
-                </View>
-              ) : null}
-            </Flex>
-          </View>
-        </View>
-      ) : null}
+                ) : null}
 
-      <DialogContainer onDismiss={() => setConfirmAction(null)}>
-        {confirmAction ? (
-          <Dialog>
-            <Heading>Confirm Template Rebuild</Heading>
-            <Content>
-              This will rebuild the Studio workspace and may discard current changes. Continue?
-            </Content>
-            <ButtonGroup>
-              <Button variant="secondary" onPress={() => setConfirmAction(null)}>
-                No
-              </Button>
-              <Button
-                variant="negative"
-                onPress={async () => {
-                  const action = confirmAction;
-                  setConfirmAction(null);
-                  if (action?.type === "createFromBaseline") await createFromBaselineAndOpen();
-                  if (action?.type === "createFromTemplate") await createFromTemplateAndOpen();
-                  if (action?.type === "openTemplate") openTemplateId(action.templateId);
-                }}
-              >
-                Yes
-              </Button>
-            </ButtonGroup>
-          </Dialog>
-        ) : null}
-      </DialogContainer>
+                {selectedTemplateId ? (
+                  <View>
+                    <Text UNSAFE_style={{ opacity: 0.85, marginBottom: 6 }}>
+                      Selected: {selectedTemplate?.name || selectedTemplateId}
+                    </Text>
+                    {selectedTemplate?.id ? (
+                      <Text UNSAFE_style={{ opacity: 0.6, fontSize: 12, marginBottom: 8 }}>ID: {selectedTemplate.id}</Text>
+                    ) : null}
+                    <Flex gap="size-100" alignItems="center" wrap>
+                      <Button
+                        variant="primary"
+                        onPress={() => {
+                          if (studioActive) setConfirmAction({ type: "createFromTemplate" });
+                          else createFromTemplateAndOpen();
+                        }}
+                        isDisabled={!selectedTemplateId || isCreating || isDisabled}
+                      >
+                        {isCreating ? "Creating…" : "Create New Version"}
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        onPress={() => {
+                          if (studioActive) setConfirmAction({ type: "openTemplate", templateId: selectedTemplateId });
+                          else openTemplateId(selectedTemplateId);
+                        }}
+                        isDisabled={!selectedTemplateId || isDisabled}
+                      >
+                        View Current Version
+                      </Button>
+                    </Flex>
+                    <Text UNSAFE_style={{ opacity: 0.7, fontSize: 12, marginTop: 8 }}>
+                      Actions above rebuild the Studio workspace.
+                    </Text>
+                  </View>
+                ) : (
+                  <Text UNSAFE_style={{ opacity: 0.7, fontSize: 12 }}>
+                    Select a template to create a new version or view the current one.
+                  </Text>
+                )}
+              </Flex>
+            </Item>
+          </TabPanels>
+        </Tabs>
+
+        {err ? <StatusLight variant="negative">{err}</StatusLight> : null}
+        {status ? <StatusLight variant="info">{status}</StatusLight> : null}
+      </View>
+
+      {studioActive ? (
+        <DialogContainer onDismiss={() => setConfirmAction(null)}>
+          {confirmAction ? (
+            <Dialog>
+              <Heading>Confirm Template Rebuild</Heading>
+              <Content>
+                This will rebuild the Studio workspace and may discard current changes. Continue?
+              </Content>
+              <ButtonGroup>
+                <Button variant="secondary" onPress={() => setConfirmAction(null)}>
+                  No
+                </Button>
+                <Button
+                  variant="negative"
+                  onPress={async () => {
+                    const action = confirmAction;
+                    setConfirmAction(null);
+                    if (action?.type === "createFromBaseline") await createFromBaselineAndOpen();
+                    if (action?.type === "createFromTemplate") await createFromTemplateAndOpen();
+                    if (action?.type === "openTemplate") openTemplateId(action.templateId);
+                  }}
+                >
+                  Yes
+                </Button>
+              </ButtonGroup>
+            </Dialog>
+          ) : null}
+        </DialogContainer>
+      ) : null}
     </View>
   );
 }
