@@ -23,6 +23,8 @@ function ensureDiagnostics(d) {
   if (!rt.warnings) rt.warnings = [];
   if (!rt.errors) rt.errors = [];
   if (!rt.info) rt.info = []; // INFO-level events
+  if (!Array.isArray(rt.stages)) rt.stages = [];
+  if (rt.autoDiagnostics !== true) rt.autoDiagnostics = true;
 
   // convenience counters
   if (!rt.liquid.unknownFns) rt.liquid.unknownFns = {};
@@ -51,6 +53,55 @@ function ensureDiagnostics(d) {
   }
 
   return rt;
+}
+
+function quickChecksum(s) {
+  const str = String(s || "");
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
+function countMatches(s, re) {
+  if (!s || typeof s !== "string") return 0;
+  const m = s.match(re);
+  return m ? m.length : 0;
+}
+
+function firstSnippetAround(s, re, radius = 180) {
+  if (!s || typeof s !== "string") return null;
+  const m = re.exec(s);
+  if (!m) return null;
+  const i = Math.max(0, m.index - radius);
+  const j = Math.min(s.length, m.index + (m[0]?.length || 0) + radius);
+  return s.slice(i, j);
+}
+
+function recordStage(diag, stage, html) {
+  if (!diag || !Array.isArray(diag.stages)) return;
+  const s = typeof html === "string" ? html : String(html || "");
+  diag.stages.push({
+    stage,
+    length: s.length,
+    checksum: quickChecksum(s),
+    markers: {
+      eachBlocks: countMatches(s, /{{\s*#each\b/g),
+      liquidLets: countMatches(s, /{%\s*(?:let|assign)\b/g),
+      liquidIf: countMatches(s, /{%\s*(?:#if|if|else|\/if|elseif|elsif)\b/g),
+      handlebarsTriple: countMatches(s, /\{\{\{[\s\S]*?\}\}\}/g),
+      handlebarsDouble: countMatches(s, /\{\{[\s\S]*?\}\}/g),
+      aemBindings: countMatches(s, /\{\{\s*fragment\s+id='aem:/g),
+      ajoFragments: countMatches(s, /data-fragment-id=\"ajo:/g),
+    },
+    snippets: {
+      firstEach: firstSnippetAround(s, /{{\s*#each\b/),
+      firstLiquidLet: firstSnippetAround(s, /{%\s*(?:let|assign)\b/),
+      firstAemBinding: firstSnippetAround(s, /\{\{\s*fragment\s+id='aem:/),
+    },
+  });
 }
 
 function diagAddWarning(rt, msg, meta) {
@@ -1791,6 +1842,7 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
   if (diag) diag.timings.totalStartMs = t0;
 
   let out = stitchedHtml;
+  recordStage(diag, "input", out);
 
   const defaultPrbCtx = pickDefaultCtxForNamespace({
     namespace: "prbProperties",
@@ -1827,6 +1879,7 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
       diag,
     });
     if (diag) diag.timings.stylesMs = nowMs() - t;
+    recordStage(diag, "afterStyles", out);
   }
 
   // prbProperties namespace
@@ -1844,6 +1897,7 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
       dynamicReferences: dynConfig,
     });
     if (diag) diag.timings.prbNsMs = nowMs() - t;
+    recordStage(diag, "afterPrb", out);
   }
 
   // cf namespace (dynamic refs are primarily tied to cf.references)
@@ -1861,6 +1915,7 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
       dynamicReferences: dynConfig,
     });
     if (diag) diag.timings.cfNsMs = nowMs() - t;
+    recordStage(diag, "afterCf", out);
   }
 
   // Final global liquid let evaluation using defaults (catches footer/global blocks)
@@ -1881,6 +1936,7 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     out = replaceNamespaceVars(out, "brandProps", brandPropsCtx);
 
     if (diag) diag.timings.finalLiquidMs = nowMs() - t;
+    recordStage(diag, "afterFinalLiquid", out);
   }
 
   // Render any leftover refArray loops using our accumulated orderedNotes
@@ -1896,6 +1952,7 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
 
     out = renderRefArrayBlocksBestEffort(out, dynState);
     if (diag) diag.timings.dynamicRefsRefArrayMs = nowMs() - t;
+    recordStage(diag, "afterDynRefs", out);
 
     if (diag?.dynamicReferences) {
       // Always set wrapperInferred when known
@@ -1960,6 +2017,7 @@ function buildRenderedHtmlBestEffort({ stitchedHtml, aemBindingsEncountered, aem
     const t = nowMs();
     out = stripAjoSyntax(out);
     if (diag) diag.timings.stripMs = nowMs() - t;
+    recordStage(diag, "afterStrip", out);
   }
 
   if (diag) {
