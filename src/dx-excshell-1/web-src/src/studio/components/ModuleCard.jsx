@@ -31,7 +31,7 @@ export function ModuleCard({
   const supportsCfBinding = vfMeta?.supportsCfBinding;
   const bindingMode = vfMeta?.bindingMode || null;
   const showBindCombo = Boolean(module?.contentId) || supportsCfBinding !== false;
-  const bindingHint = bindingMode === "prb-global" ? "Binding Inherited From PRB Globals" : bindingMode === "none" ? "No Binding" : null;
+  const bindingHint = bindingMode === "prb-global" ? "Binding Inherited" : bindingMode === "none" ? "No Binding" : null;
 
   // If hydrated contentId isn’t in the loaded list yet, add a visible placeholder option.
   const options = useMemo(() => {

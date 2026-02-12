@@ -179,6 +179,7 @@ async function main(params) {
       authHeader,
       imsOrg,
     });
+    const bindingDetectionEnabled = Boolean(params.AJO_GET_FRAGMENT_URL);
     const debug = params.debug === true || params.debug === "true";
     const debugFull = params.debug === "full";
 
@@ -191,6 +192,10 @@ async function main(params) {
         tagged.length === 0
           ? "No vf:content-block labels found; falling back to type=html + channels includes 'email'."
           : undefined,
+      bindingDetection: {
+        enabled: bindingDetectionEnabled,
+        reason: bindingDetectionEnabled ? null : "Missing AJO_GET_FRAGMENT_URL; VF binding capabilities are unknown.",
+      },
       items: enriched,
       page: payload?._page,
       debug: debug || debugFull
