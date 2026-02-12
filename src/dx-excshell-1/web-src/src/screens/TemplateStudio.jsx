@@ -622,6 +622,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       const root = compositionRef.current;
       if (!root || typeof root.contains !== "function") return;
       const inComposition = root.contains(ev.target);
+      const keepFocus = ev.target?.closest ? ev.target.closest("[data-keep-module-focus='true']") : null;
       const inPopover = ev.target?.closest
         ? ev.target.closest(
             ".spectrum-Popover, .spectrum-Modal, .spectrum-Dialog, .spectrum-Overlay, [role=\"listbox\"], [role=\"dialog\"]"
@@ -631,6 +632,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       const clickedModuleId = card?.getAttribute ? card.getAttribute("data-module-id") : null;
 
       if (inPopover) return;
+      if (keepFocus) return;
 
       if (!inComposition) {
         if (pinnedModule) setPinnedModule(null);
@@ -1138,7 +1140,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
             <Heading level={4}>Composition</Heading>
 
             <DialogTrigger>
-              <Button variant="cta" isDisabled={!templateId || !canonicalHtml}>
+              <Button variant="cta" isDisabled={!templateId || !canonicalHtml} data-keep-module-focus="true">
                 Add pattern
               </Button>
               <PatternPickerDialog vfItems={vfItems} onSelect={addPattern} />
