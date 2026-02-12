@@ -448,15 +448,16 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     enqueue(async () => {
       const vfName = (vfItems.find((v) => v?.id === vfId)?.name || "").trim() || null;
       const moduleId = `m_${Date.now()}`;
-      const nextModules = [
-        ...modules,
-        {
-          moduleId,
-          vfId,
-          contentId: null,
-          vars: { firstName: "" },
-        },
-      ];
+      const focusModuleId = pinnedModule?.moduleId || hoveredModule?.moduleId || null;
+      const focusedIdx = focusModuleId ? modules.findIndex((m) => m?.moduleId === focusModuleId) : -1;
+      const insertAt = focusedIdx >= 0 ? focusedIdx + 1 : modules.length;
+      const newModule = {
+        moduleId,
+        vfId,
+        contentId: null,
+        vars: { firstName: "" },
+      };
+      const nextModules = [...modules.slice(0, insertAt), newModule, ...modules.slice(insertAt)];
       const vfOrdinal = nextModules.filter((m) => m?.vfId === vfId).length - 1;
       setModules(nextModules);
       setPendingScrollModuleId(moduleId);
@@ -464,7 +465,15 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       setHoveredModule(null);
       setPendingFocusModule({ moduleId, vfId, vfOrdinal });
 
-      const nextHtml = appendPatternOnlyToTemplateHtml(canonicalHtml, { vfId, vfName, moduleId });
+      const nextNeighbor = modules[insertAt] || null;
+      const nextHtml = nextNeighbor?.moduleId
+        ? insertPatternBeforeModuleHtml(canonicalHtml, {
+            vfId,
+            vfName,
+            moduleId,
+            beforeModuleId: nextNeighbor.moduleId,
+          })
+        : appendPatternOnlyToTemplateHtml(canonicalHtml, { vfId, vfName, moduleId });
       queueRenderIntent("pattern-add", { moduleId, vfId });
       setCanonicalHtml(nextHtml);
     });
