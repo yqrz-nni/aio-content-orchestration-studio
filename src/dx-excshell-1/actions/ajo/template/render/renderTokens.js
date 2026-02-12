@@ -1516,15 +1516,8 @@ function renderNamespaceByBindingOrder({
 
     let maybeExpanded = renderMiniAjo(html, miniRoot);
 
-    if (namespace !== "cf") {
-      const needed = collectTopLevelVarNames(maybeExpanded);
-      maybeExpanded = evaluateLiquidLetsAndReplace(maybeExpanded, {
-        ctx: miniRoot,
-        locale: "en-US",
-        neededVars: needed,
-        diag,
-      });
-    }
+    // Do not evaluate Liquid lets inside namespace passes; it can mutate
+    // unresolved loop-local aliases before the owning namespace is hydrated.
 
     // Dynamic references (only meaningful with cf context)
     if (dynEnabled && namespace === "cf") {
@@ -1572,10 +1565,8 @@ function renderNamespaceByBindingOrder({
 
     before = renderMiniAjo(before, miniRoot);
 
-    if (namespace !== "cf") {
-      const needed = collectTopLevelVarNames(before);
-      before = evaluateLiquidLetsAndReplace(before, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
-    }
+    // Do not evaluate Liquid lets inside namespace passes; it can mutate
+    // unresolved loop-local aliases before the owning namespace is hydrated.
 
     // Dynamic references pass per segment (only cf)
     if (dynEnabled && namespace === "cf") {
@@ -1656,15 +1647,8 @@ function renderNamespaceByBindingOrder({
 
         // Apply mini AJO + lets only to the bound block (NOT full tail).
         boundBlock = renderMiniAjo(boundBlock, miniRoot);
-        if (namespace !== "cf") {
-          const boundNeeded = collectTopLevelVarNames(boundBlock);
-          boundBlock = evaluateLiquidLetsAndReplace(boundBlock, {
-            ctx: miniRoot,
-            locale: "en-US",
-            neededVars: boundNeeded,
-            diag,
-          });
-        }
+        // Do not evaluate Liquid lets inside namespace passes; it can mutate
+        // unresolved loop-local aliases before the owning namespace is hydrated.
 
         // Apply CF context + dynamic refs only to the bound block.
         boundBlock = resolveDynamicReferencesInSegment({
@@ -1690,10 +1674,8 @@ function renderNamespaceByBindingOrder({
   // Non-CF passes can safely evaluate the whole tail.
   tail = renderMiniAjo(tail, miniRoot);
 
-  if (namespace !== "cf") {
-    const needed = collectTopLevelVarNames(tail);
-    tail = evaluateLiquidLetsAndReplace(tail, { ctx: miniRoot, locale: "en-US", neededVars: needed, diag });
-  }
+  // Do not evaluate Liquid lets inside namespace passes; it can mutate
+  // unresolved loop-local aliases before the owning namespace is hydrated.
 
   if (dynEnabled && namespace === "cf") {
     tail = resolveDynamicReferencesInSegment({
