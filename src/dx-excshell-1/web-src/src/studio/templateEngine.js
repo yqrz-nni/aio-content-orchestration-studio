@@ -115,6 +115,33 @@ export function appendPatternOnlyToTemplateHtml(html, { vfId, vfName = null, mod
   return html + insertion;
 }
 
+/**
+ * Insert a pattern (VF) before an existing module marker.
+ * Falls back to append when markers/target are missing.
+ */
+export function insertPatternBeforeModuleHtml(html, { vfId, vfName = null, moduleId = null, beforeModuleId = null }) {
+  const appended = appendPatternOnlyToTemplateHtml(html, { vfId, vfName, moduleId });
+  if (!html || !beforeModuleId || !moduleId) return appended;
+
+  const targetOpen = `<!-- ts:module id="${beforeModuleId}" -->`;
+  const insertOpen = `<!-- ts:module id="${moduleId}" -->`;
+  const idx = html.indexOf(targetOpen);
+  if (idx < 0) return appended;
+
+  // Build insertion via append helper so we keep block shape consistent, then extract that block by marker.
+  const start = appended.lastIndexOf(insertOpen);
+  if (start < 0) return appended;
+  const endMarker = `<!-- ts:module-end id="${moduleId}" -->`;
+  const end = appended.indexOf(endMarker, start);
+  if (end < 0) return appended;
+  const block = appended.slice(start, end + endMarker.length);
+
+  const withoutBlock = appended.slice(0, start) + appended.slice(end + endMarker.length);
+  const targetIdx = withoutBlock.indexOf(targetOpen);
+  if (targetIdx < 0) return appended;
+  return withoutBlock.slice(0, targetIdx) + block + "\n" + withoutBlock.slice(targetIdx);
+}
+
 // Bind content into an existing module block (identified by marker comments).
 // If markers aren’t found, fall back to appending a full module (safe but may duplicate layout).
 export function bindContentInModuleHtml(html, { moduleId, vfId, vfName = null, aemCfId, repoId, vars = {} }) {

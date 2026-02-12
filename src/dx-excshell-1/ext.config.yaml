@@ -43,6 +43,9 @@ runtimeManifest:
             AJO_API_KEY: $AJO_API_KEY
             SANDBOX_NAME: $SANDBOX_NAME
             AJO_VF_CONTENT_BLOCK_TAG_ID: $AJO_VF_CONTENT_BLOCK_TAG_ID
+            AJO_VF_COMPILED_REFERENCES_TAG_ID: $AJO_VF_COMPILED_REFERENCES_TAG_ID
+            AJO_VF_FOOTER_TAG_ID: $AJO_VF_FOOTER_TAG_ID
+            AJO_COMPILED_REFERENCES_DEFAULT_VF: $AJO_COMPILED_REFERENCES_DEFAULT_VF
         ajo-template-create:
           function: actions/ajo/template/create/index.js
           web: 'yes'

@@ -59,8 +59,19 @@ async function main(params) {
 
     const query = `
       query {
-        unifiedPromotionalContentList(limit: 5) {
-          items { _path _id headlineText }
+        unifiedPromotionalContentList(limit: 50) {
+          items {
+            _path
+            _id
+            headlineText
+            bodyCopy {
+              html
+              plaintext
+            }
+            references {
+              referenceNote
+            }
+          }
         }
       }
     `;

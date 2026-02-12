@@ -196,6 +196,11 @@ async function main(params) {
         enabled: bindingDetectionEnabled,
         reason: bindingDetectionEnabled ? null : "Missing AJO_GET_FRAGMENT_URL; VF binding capabilities are unknown.",
       },
+      autoInsertConfig: {
+        compiledReferencesTagId: params.AJO_VF_COMPILED_REFERENCES_TAG_ID || null,
+        footerTagId: params.AJO_VF_FOOTER_TAG_ID || null,
+        compiledReferencesDefaultVfId: params.AJO_COMPILED_REFERENCES_DEFAULT_VF || null,
+      },
       items: enriched,
       page: payload?._page,
       debug: debug || debugFull

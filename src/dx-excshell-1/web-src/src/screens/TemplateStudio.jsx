@@ -30,6 +30,7 @@ import {
   appendPatternOnlyToTemplateHtml,
   bindContentInModuleHtml,
   hydrateFromHtml,
+  insertPatternBeforeModuleHtml,
   moveModuleInTemplateHtml,
   removeModuleFromTemplateHtml,
   stripTsModuleMarkers,
@@ -104,6 +105,26 @@ function extractModuleSkeletonHints(html) {
   return out;
 }
 
+function normalizeVfId(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  return s.toLowerCase().startsWith("ajo:") ? s.slice(4) : s;
+}
+
+function hasDynamicReferenceTokens(content) {
+  if (!content || typeof content !== "object") return false;
+
+  const refs = Array.isArray(content.references) ? content.references : [];
+  if (refs.length > 0) return true;
+
+  const body = Array.isArray(content.bodyCopy) ? content.bodyCopy : [];
+  return body.some((row) => {
+    const html = typeof row?.html === "string" ? row.html : "";
+    const plaintext = typeof row?.plaintext === "string" ? row.plaintext : "";
+    return /{{\s*r\d+\s*}}/i.test(html) || /{{\s*r\d+\s*}}/i.test(plaintext);
+  });
+}
+
 export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverride }) {
   const ims = useContext(ImsContext);
   const headers = useMemo(() => buildHeaders(ims), [ims]);
@@ -143,6 +164,11 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const [vfItems, setVfItems] = useState([]);
   const [vfDebugSample, setVfDebugSample] = useState(null);
   const [contentOptions, setContentOptions] = useState([]);
+  const [vfAutoInsertConfig, setVfAutoInsertConfig] = useState({
+    compiledReferencesTagId: null,
+    footerTagId: null,
+    compiledReferencesDefaultVfId: null,
+  });
 
   const [modules, setModules] = useState([]);
   const [hoveredModule, setHoveredModule] = useState(null);
@@ -157,6 +183,8 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
 
   const [renderError, setRenderError] = useState("");
   const [previewWarnings, setPreviewWarnings] = useState([]);
+  const [autoPatternToast, setAutoPatternToast] = useState("");
+  const autoPatternToastTimerRef = useRef(null);
 
   const [iframeMsgs, setIframeMsgs] = useState([]);
 
@@ -224,6 +252,27 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   function queueRenderIntent(kind, meta = {}) {
     pendingRenderIntentRef.current = { kind, ...meta, at: Date.now() };
   }
+
+  function showAutoPatternToast(message) {
+    if (autoPatternToastTimerRef.current) {
+      clearTimeout(autoPatternToastTimerRef.current);
+      autoPatternToastTimerRef.current = null;
+    }
+    setAutoPatternToast(message);
+    autoPatternToastTimerRef.current = setTimeout(() => {
+      setAutoPatternToast("");
+      autoPatternToastTimerRef.current = null;
+    }, 5000);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (autoPatternToastTimerRef.current) {
+        clearTimeout(autoPatternToastTimerRef.current);
+        autoPatternToastTimerRef.current = null;
+      }
+    };
+  }, []);
 
   // Iframe message listener (bridge)
   useEffect(() => {
@@ -298,6 +347,11 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     const res = await actionWebInvoke(actions["ajo-vf-list"], headers, { debug: true });
     const items = res?.items || res?.fragments || [];
     setVfItems(items);
+    setVfAutoInsertConfig({
+      compiledReferencesTagId: res?.autoInsertConfig?.compiledReferencesTagId || null,
+      footerTagId: res?.autoInsertConfig?.footerTagId || null,
+      compiledReferencesDefaultVfId: normalizeVfId(res?.autoInsertConfig?.compiledReferencesDefaultVfId),
+    });
     setVfDebugSample(res?.debug?.sample || null);
   }
 
@@ -311,6 +365,9 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
           id: it._id,
           label: it.headlineText || it._path || it._id,
           path: it._path,
+          bodyCopy: Array.isArray(it?.bodyCopy) ? it.bodyCopy : [],
+          references: Array.isArray(it?.references) ? it.references : [],
+          hasDynamicReferences: hasDynamicReferenceTokens(it),
         }))
       );
     } catch (e) {
@@ -599,6 +656,14 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     });
   }, [modules, pendingScrollModuleId]);
 
+  function vfHasTagId(vfId, tagId) {
+    if (!vfId || !tagId) return false;
+    const cleanVfId = normalizeVfId(vfId);
+    const hit = (vfItems || []).find((v) => normalizeVfId(v?.id) === cleanVfId) || null;
+    const tagIds = Array.isArray(hit?.tagIds) ? hit.tagIds : [];
+    return tagIds.some((t) => String(t || "") === String(tagId));
+  }
+
   function bindContent(moduleId, contentId) {
     if (!templateId) return;
     if (!moduleId || !contentId) return;
@@ -611,12 +676,14 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     setPinnedModule(focusTarget);
     setHoveredModule(null);
     setPendingFocusModule(focusTarget);
+    const selectedContent = (contentOptions || []).find((c) => c?.id === contentId) || null;
+    const contentHasDynamicReferences =
+      selectedContent?.hasDynamicReferences === true || hasDynamicReferenceTokens(selectedContent || {});
 
     enqueue(async () => {
-      const nextModules = modules.map((x) => (x.moduleId === moduleId ? { ...x, contentId } : x));
-      setModules(nextModules);
+      let nextModules = modules.map((x) => (x.moduleId === moduleId ? { ...x, contentId } : x));
 
-      const nextHtml = bindContentInModuleHtml(canonicalHtml, {
+      let nextHtml = bindContentInModuleHtml(canonicalHtml, {
         moduleId,
         vfId: m.vfId,
         vfName,
@@ -625,8 +692,61 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         vars: m.vars || { firstName: "" },
       });
 
+      let compiledPatternAdded = false;
+      if (contentHasDynamicReferences) {
+        const compiledTagId = vfAutoInsertConfig?.compiledReferencesTagId || null;
+        const footerTagId = vfAutoInsertConfig?.footerTagId || null;
+        const compiledDefaultVfId = normalizeVfId(vfAutoInsertConfig?.compiledReferencesDefaultVfId);
+
+        const hasCompiledPattern = nextModules.some(
+          (mod) =>
+            vfHasTagId(mod?.vfId, compiledTagId) ||
+            (compiledDefaultVfId && normalizeVfId(mod?.vfId) === compiledDefaultVfId)
+        );
+
+        if (!hasCompiledPattern && compiledDefaultVfId) {
+          const footerModule =
+            nextModules.find((mod) => vfHasTagId(mod?.vfId, footerTagId)) || null;
+
+          const compiledModuleId = `m_${Date.now()}_compiled_refs`;
+          const compiledVfMeta = (vfItems || []).find((v) => normalizeVfId(v?.id) === compiledDefaultVfId) || null;
+          const compiledVfName = (compiledVfMeta?.name || "").trim() || null;
+          const compiledModule = {
+            moduleId: compiledModuleId,
+            vfId: compiledDefaultVfId,
+            contentId: null,
+            vars: { firstName: "" },
+          };
+
+          if (footerModule?.moduleId) {
+            const footerIndex = nextModules.findIndex((mod) => mod?.moduleId === footerModule.moduleId);
+            const insertAt = footerIndex >= 0 ? footerIndex : nextModules.length;
+            nextModules = [...nextModules.slice(0, insertAt), compiledModule, ...nextModules.slice(insertAt)];
+            nextHtml = insertPatternBeforeModuleHtml(nextHtml, {
+              vfId: compiledDefaultVfId,
+              vfName: compiledVfName,
+              moduleId: compiledModuleId,
+              beforeModuleId: footerModule.moduleId,
+            });
+          } else {
+            nextModules = [...nextModules, compiledModule];
+            nextHtml = appendPatternOnlyToTemplateHtml(nextHtml, {
+              vfId: compiledDefaultVfId,
+              vfName: compiledVfName,
+              moduleId: compiledModuleId,
+            });
+          }
+          compiledPatternAdded = true;
+        }
+      }
+
+      setModules(nextModules);
       queueRenderIntent("vf-hydration", { moduleId, contentId });
       setCanonicalHtml(nextHtml);
+
+      if (compiledPatternAdded) {
+        showAutoPatternToast("Pattern Automatically Added: Compiled Reference Statements");
+      }
     });
   }
 
@@ -891,6 +1011,11 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       ) : null}
 
       {/* Studio content starts here */}
+      {autoPatternToast ? (
+        <View marginBottom="size-150">
+          <StatusLight variant="info">{autoPatternToast}</StatusLight>
+        </View>
+      ) : null}
 
       {/* 2-column Studio */}
       <Grid columns={["0.85fr", "1.15fr"]} gap="size-200" height="80vh" UNSAFE_className="StudioGrid">
