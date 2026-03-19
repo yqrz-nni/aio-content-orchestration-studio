@@ -149,3 +149,8 @@ runtimeManifest:
             AEM_GQL_PATH: $AEM_GQL_PATH
             AEM_GQL_PATH_PROXY: $AEM_GQL_PATH_PROXY
             USE_AEM_PROXY: $USE_AEM_PROXY
+        audience-state-orchestration:
+          function: actions/audience-state-orchestration/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs: {}

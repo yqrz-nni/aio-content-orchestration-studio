@@ -5,13 +5,14 @@
 import React from 'react'
 import { Provider, defaultTheme, View, Flex, Text } from '@adobe/react-spectrum'
 import ErrorBoundary from 'react-error-boundary'
-import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import { HashRouter as Router, Routes, Route, Navigate, Link } from 'react-router-dom'
 import { ImsContext } from "../context/ImsContext";
 
 import { PrbSelect } from "../screens/PrbSelect";
 import { TemplateSelect } from "../screens/TemplateSelect";
 import { TemplateStudio } from "../screens/TemplateStudio";
 import { TemplateFlow } from "../screens/TemplateFlow";
+import { AudienceStateStudio } from "../screens/AudienceStateStudio";
 
 function App (props) {
   // eslint-disable-next-line no-console
@@ -41,6 +42,9 @@ function App (props) {
                   <Text UNSAFE_className="AppSubtle">AJO + AEM preview sandbox</Text>
                 </View>
                 <View>
+                  <Text><Link to="/audience">Audience State Studio (Hello World)</Link></Text>
+                </View>
+                <View>
                   <Text UNSAFE_className="AppMeta">Org: {props?.ims?.org || 'unknown'}</Text>
                 </View>
               </Flex>
@@ -52,6 +56,9 @@ function App (props) {
 
                 {/* Unified single-screen flow */}
                 <Route path="/flow" element={<TemplateFlow />} />
+
+                {/* Audience State Orchestration Studio demo */}
+                <Route path="/audience" element={<AudienceStateStudio />} />
 
                 {/* Keep existing deep-link routes */}
                 <Route path="/prb" element={<PrbSelect />} />
