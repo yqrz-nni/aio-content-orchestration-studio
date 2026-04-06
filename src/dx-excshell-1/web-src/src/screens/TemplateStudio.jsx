@@ -1,6 +1,6 @@
 // File: src/dx-excshell-1/web-src/src/screens/TemplateStudio.jsx
 
-import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
+import React, { useContext, useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Heading,
@@ -149,6 +149,20 @@ function ExternalOpenIcon() {
   );
 }
 
+/**
+ * Prevent "setState on unmounted component" warnings for async flows that navigate away.
+ */
+function useIsMounted() {
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  return useCallback(() => mountedRef.current, []);
+}
+
 export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverride }) {
   const ims = useContext(ImsContext);
   const headers = useMemo(() => buildHeaders(ims), [ims]);
@@ -158,6 +172,7 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   const prbId = mode === "embedded" ? prbIdOverride : params.prbId;
   const templateId = mode === "embedded" ? templateIdOverride : params.templateId;
   const [searchParams] = useSearchParams();
+  const isMounted = useIsMounted();
   const [focusDebug, setFocusDebug] = useState(() => {
     try {
       return window.localStorage.getItem("ts_focus_debug") === "1";
@@ -348,71 +363,77 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   async function loadPrbList() {
     const res = await actionWebInvoke(actions["aem-prb-list"]);
     const items = res?.data?.prbPropertiesList?.items || [];
-    setDeepLinkConfig((prev) => ({
-      ...prev,
-      cfDetailUrlPrefix: res?.deepLinkConfig?.cfDetailUrlPrefix || prev.cfDetailUrlPrefix || null,
-    }));
+    if (isMounted()) {
+      setDeepLinkConfig((prev) => ({
+        ...prev,
+        cfDetailUrlPrefix: res?.deepLinkConfig?.cfDetailUrlPrefix || prev.cfDetailUrlPrefix || null,
+      }));
 
-    setPrbOptions(
-      items.map((it) => {
-        const displayName = it.name || it.prbNumber || it._path || it._id;
-        return {
-          id: it._id,
-          label: it.prbNumber && it.name ? `${it.prbNumber} — ${it.name}` : displayName,
-          prbNumber: it.prbNumber || "",
-          name: it.name || "",
-          raw: it,
-        };
-      })
-    );
+      setPrbOptions(
+        items.map((it) => {
+          const displayName = it.name || it.prbNumber || it._path || it._id;
+          return {
+            id: it._id,
+            label: it.prbNumber && it.name ? `${it.prbNumber} — ${it.name}` : displayName,
+            prbNumber: it.prbNumber || "",
+            name: it.name || "",
+            raw: it,
+          };
+        })
+      );
+    }
   }
 
   async function loadTemplateById(tid) {
     if (!tid) return;
     const getRes = await actionWebInvoke(actions["ajo-template-get"], headers, { templateId: tid });
-    if (getRes?.name) setTemplateName(getRes.name);
-    setDeepLinkConfig((prev) => ({
-      ...prev,
-      templateDetailUrlPrefix: getRes?.deepLinkConfig?.templateDetailUrlPrefix || prev.templateDetailUrlPrefix || null,
-    }));
-    const html = getRes?.htmlBody;
-    if (!html) {
-      // eslint-disable-next-line no-console
-      console.warn("Template fetched but no htmlBody found:", getRes);
-      return;
+    if (isMounted()) {
+      if (getRes?.name) setTemplateName(getRes.name);
+      setDeepLinkConfig((prev) => ({
+        ...prev,
+        templateDetailUrlPrefix: getRes?.deepLinkConfig?.templateDetailUrlPrefix || prev.templateDetailUrlPrefix || null,
+      }));
+      const html = getRes?.htmlBody;
+      if (!html) {
+        // eslint-disable-next-line no-console
+        console.warn("Template fetched but no htmlBody found:", getRes);
+        return;
+      }
+
+      const hydrated = hydrateFromHtml(html);
+      queueRenderIntent("template-load");
+      setCanonicalHtml(html);
+
+      if (hydrated?.prbCfId) {
+        setSelectedPrbId(hydrated.prbCfId);
+        const prbObj = prbOptions.find((o) => o.id === hydrated.prbCfId) || null;
+        setSelectedPrb(prbObj);
+      } else if (prbId) {
+        setSelectedPrbId(prbId);
+      }
+
+      setModules(Array.isArray(hydrated?.modules) ? hydrated.modules : []);
     }
-
-    const hydrated = hydrateFromHtml(html);
-    queueRenderIntent("template-load");
-    setCanonicalHtml(html);
-
-    if (hydrated?.prbCfId) {
-      setSelectedPrbId(hydrated.prbCfId);
-      const prbObj = prbOptions.find((o) => o.id === hydrated.prbCfId) || null;
-      setSelectedPrb(prbObj);
-    } else if (prbId) {
-      setSelectedPrbId(prbId);
-    }
-
-    setModules(Array.isArray(hydrated?.modules) ? hydrated.modules : []);
   }
 
   async function loadVfs() {
     const res = await actionWebInvoke(actions["ajo-vf-list"], headers, { debug: true });
     const items = res?.items || res?.fragments || [];
-    setVfItems(items);
-    setDeepLinkConfig((prev) => ({
-      ...prev,
-      vfDetailUrlPrefix: res?.deepLinkConfig?.vfDetailUrlPrefix || prev.vfDetailUrlPrefix || null,
-      vfTemplate: res?.deepLinkConfig?.vfTemplate || prev.vfTemplate || null,
-      vfBaseUrl: res?.deepLinkConfig?.vfBaseUrl || prev.vfBaseUrl || null,
-    }));
-    setVfAutoInsertConfig({
-      compiledReferencesTagId: res?.autoInsertConfig?.compiledReferencesTagId || null,
-      footerTagId: res?.autoInsertConfig?.footerTagId || null,
-      compiledReferencesDefaultVfId: normalizeVfId(res?.autoInsertConfig?.compiledReferencesDefaultVfId),
-    });
-    setVfDebugSample(res?.debug?.sample || null);
+    if (isMounted()) {
+      setVfItems(items);
+      setDeepLinkConfig((prev) => ({
+        ...prev,
+        vfDetailUrlPrefix: res?.deepLinkConfig?.vfDetailUrlPrefix || prev.vfDetailUrlPrefix || null,
+        vfTemplate: res?.deepLinkConfig?.vfTemplate || prev.vfTemplate || null,
+        vfBaseUrl: res?.deepLinkConfig?.vfBaseUrl || prev.vfBaseUrl || null,
+      }));
+      setVfAutoInsertConfig({
+        compiledReferencesTagId: res?.autoInsertConfig?.compiledReferencesTagId || null,
+        footerTagId: res?.autoInsertConfig?.footerTagId || null,
+        compiledReferencesDefaultVfId: normalizeVfId(res?.autoInsertConfig?.compiledReferencesDefaultVfId),
+      });
+      setVfDebugSample(res?.debug?.sample || null);
+    }
   }
 
   async function loadContentList() {
@@ -420,23 +441,25 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       const res = await actionWebInvoke(actions["aem-gql-demo"]);
       const items = res?.data?.unifiedPromotionalContentList?.items || [];
 
-      setContentOptions(
-        items.map((it) => ({
-          id: it._id,
-          label: it.headlineText || it._path || it._id,
-          path: it._path,
-          deepLinkUrl: it.deepLinkUrl || null,
-          bodyCopy: Array.isArray(it?.bodyCopy) ? it.bodyCopy : [],
-          references: Array.isArray(it?.references) ? it.references : [],
-          hasDynamicReferences: hasDynamicReferenceTokens(it),
-        }))
-      );
-      setDeepLinkConfig((prev) => ({
-        ...prev,
-        cfDetailUrlPrefix: res?.deepLinkConfig?.cfDetailUrlPrefix || prev.cfDetailUrlPrefix || null,
-        cfTemplate: res?.deepLinkConfig?.cfTemplate || prev.cfTemplate || null,
-        aemAuthor: res?.deepLinkConfig?.aemAuthor || prev.aemAuthor || null,
-      }));
+      if (isMounted()) {
+        setContentOptions(
+          items.map((it) => ({
+            id: it._id,
+            label: it.headlineText || it._path || it._id,
+            path: it._path,
+            deepLinkUrl: it.deepLinkUrl || null,
+            bodyCopy: Array.isArray(it?.bodyCopy) ? it.bodyCopy : [],
+            references: Array.isArray(it?.references) ? it.references : [],
+            hasDynamicReferences: hasDynamicReferenceTokens(it),
+          }))
+        );
+        setDeepLinkConfig((prev) => ({
+          ...prev,
+          cfDetailUrlPrefix: res?.deepLinkConfig?.cfDetailUrlPrefix || prev.cfDetailUrlPrefix || null,
+          cfTemplate: res?.deepLinkConfig?.cfTemplate || prev.cfTemplate || null,
+          aemAuthor: res?.deepLinkConfig?.aemAuthor || prev.aemAuthor || null,
+        }));
+      }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Load Content CFs failed:", e);
@@ -499,7 +522,9 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         // eslint-disable-next-line no-console
         console.error("PRB update failed:", e);
       } finally {
-        setIsUpdatingPrb(false);
+        if (isMounted()) {
+          setIsUpdatingPrb(false);
+        }
       }
     });
   }
@@ -546,8 +571,10 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   async function saveTemplate() {
     if (!templateId || !canonicalHtml || isSavingTemplate) return;
     try {
-      setSaveStatus("");
-      setIsSavingTemplate(true);
+      if (isMounted()) {
+        setSaveStatus("");
+        setIsSavingTemplate(true);
+      }
       const prbNumber = selectedPrb?.raw?.prbNumber || null;
       await actionWebInvoke(actions["ajo-template-update"], headers, {
         templateId,
@@ -555,13 +582,19 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         labels: buildLabelsForPrb(prbNumber),
         html: canonicalHtml,
       });
-      setSaveStatus("Saved");
+      if (isMounted()) {
+        setSaveStatus("Saved");
+      }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Save template failed:", e);
-      setSaveStatus("Save failed");
+      if (isMounted()) {
+        setSaveStatus("Save failed");
+      }
     } finally {
-      setIsSavingTemplate(false);
+      if (isMounted()) {
+        setIsSavingTemplate(false);
+      }
     }
   }
 
@@ -907,13 +940,17 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
   async function renderPreview() {
     let canonicalForRender = "";
     try {
-      setRenderError("");
-      setPreviewWarnings([]);
-      setIframeMsgs([]);
-      setIsRendering(true);
+      if (isMounted()) {
+        setRenderError("");
+        setPreviewWarnings([]);
+        setIframeMsgs([]);
+        setIsRendering(true);
+      }
       const intent = pendingRenderIntentRef.current || { kind: "rerender" };
       pendingRenderIntentRef.current = null;
-      setActiveRenderIntent(intent);
+      if (isMounted()) {
+        setActiveRenderIntent(intent);
+      }
       if (intent.kind === "vf-hydration" || intent.kind === "pattern-add" || intent.kind === "pattern-change") {
         emitPreviewOpStart(intent);
       }
@@ -925,7 +962,9 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
       }
 
       if (!canonicalHtml) {
-        setPreviewHtml("<html><body><p>No HTML loaded yet.</p></body></html>");
+        if (isMounted()) {
+          setPreviewHtml("<html><body><p>No HTML loaded yet.</p></body></html>");
+        }
         return;
       }
 
@@ -948,42 +987,54 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
         renderContext,
       });
 
-      setLastRenderResult(res || null);
+      if (isMounted()) {
+        setLastRenderResult(res || null);
+      }
 
       const best = resolvePreviewHtmlFromRenderResult(res, canonicalForRender);
       if (!best || typeof best !== "string") {
-        setPreviewHtml("<html><body><p>Render succeeded but returned no HTML.</p></body></html>");
+        if (isMounted()) {
+          setPreviewHtml("<html><body><p>Render succeeded but returned no HTML.</p></body></html>");
+        }
         return;
       }
 
       const sanitized = stripAjoSyntax(best);
 
-      setLastBestHtml(best);
-      setLastSanitizedHtml(sanitized);
+      if (isMounted()) {
+        setLastBestHtml(best);
+        setLastSanitizedHtml(sanitized);
+      }
 
       if (enableDiagnostics) {
-        setVfDiag({
-          expected: extractAllAjoVfIdsFromHtml(canonicalHtml),
-          best: extractAllAjoVfIdsFromHtml(best),
-          sanitized: extractAllAjoVfIdsFromHtml(sanitized),
-        });
+        if (isMounted()) {
+          setVfDiag({
+            expected: extractAllAjoVfIdsFromHtml(canonicalHtml),
+            best: extractAllAjoVfIdsFromHtml(best),
+            sanitized: extractAllAjoVfIdsFromHtml(sanitized),
+          });
 
-        const warnings = computePreviewWarnings({
-          canonicalHtml,
-          bestHtml: best,
-          sanitizedHtml: sanitized,
-          expectedVfIds,
-        });
-        setPreviewWarnings(warnings);
+          const warnings = computePreviewWarnings({
+            canonicalHtml,
+            bestHtml: best,
+            sanitizedHtml: sanitized,
+            expectedVfIds,
+          });
+          setPreviewWarnings(warnings);
+        }
       } else {
-        setVfDiag({ expected: [], best: [], sanitized: [] });
-        setPreviewWarnings([]);
+        if (isMounted()) {
+          setVfDiag({ expected: [], best: [], sanitized: [] });
+          setPreviewWarnings([]);
+        }
       }
 
       const bridged = enableIframeBridge ? injectPreviewBridge(sanitized, expectedVfIds) : sanitized;
       const marked = safeInjectMarkers(bridged);
       const withFocusBridge = safeInjectFocusBridge(marked);
-      setPreviewHtml(withFocusBridge);
+      if (isMounted()) {
+        setPreviewHtml(withFocusBridge);
+      }
 
       // Defer compiled-references auto-insert until the initial CF hydration render has completed.
       if (intent.kind === "vf-hydration" && pendingAutoRefVfInsertRef.current) {
@@ -1081,14 +1132,18 @@ export function TemplateStudio({ mode = "route", prbIdOverride, templateIdOverri
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Render preview failed:", e);
-      setRenderError(e?.message || "Render failed");
-      setPreviewWarnings([]);
-      const fallback = stripAjoSyntax(canonicalForRender || "<html><body><p>Render failed.</p></body></html>");
-      const marked = safeInjectMarkers(fallback);
-      setPreviewHtml(safeInjectFocusBridge(marked));
+      if (isMounted()) {
+        setRenderError(e?.message || "Render failed");
+        setPreviewWarnings([]);
+        const fallback = stripAjoSyntax(canonicalForRender || "<html><body><p>Render failed.</p></body></html>");
+        const marked = safeInjectMarkers(fallback);
+        setPreviewHtml(safeInjectFocusBridge(marked));
+      }
     } finally {
-      setIsRendering(false);
-      setActiveRenderIntent(null);
+      if (isMounted()) {
+        setIsRendering(false);
+        setActiveRenderIntent(null);
+      }
     }
   }
 

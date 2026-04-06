@@ -1,6 +1,6 @@
 // File: src/dx-excshell-1/web-src/src/screens/PrbSelect.jsx
 
-import React, { useContext, useEffect, useMemo, useState } from "react";
+import React, { useContext, useEffect, useMemo, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Heading, View, Flex, Button, Text, ComboBox, Item, StatusLight, Divider, ActionButton, TooltipTrigger, Tooltip } from "@adobe/react-spectrum";
 
@@ -56,6 +56,7 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
     [ims]
   );
   const nav = useNavigate();
+  const mounted = useRef(true);
 
   const [prbOptions, setPrbOptions] = useState([]);
   const [selectedPrbId, setSelectedPrbId] = useState(value || null);
@@ -68,6 +69,12 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
     if (mode === "embedded") setSelectedPrbId(value || null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, mode]);
+
+  useEffect(() => {
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const selectedPrb = useMemo(() => prbOptions.find((o) => o.id === selectedPrbId) || null, [prbOptions, selectedPrbId]);
   const selectedPrbHref = useMemo(() => {
@@ -84,17 +91,23 @@ export function PrbSelect({ mode = "route", value, onChange, onSelect }) {
       setIsLoading(true);
       const res = await actionWebInvoke(actions["aem-prb-list"], headers);
       const items = res?.data?.prbPropertiesList?.items || [];
-      setPrbOptions(items.map((it) => toPrbOption(it)));
-      setDeepLinkConfig({
-        cfDetailUrlPrefix: res?.deepLinkConfig?.cfDetailUrlPrefix || null,
-        wfMissingPrbIntakeUrl: res?.deepLinkConfig?.wfMissingPrbIntakeUrl || null,
-      });
+      if (mounted.current) {
+        setPrbOptions(items.map((it) => toPrbOption(it)));
+        setDeepLinkConfig({
+          cfDetailUrlPrefix: res?.deepLinkConfig?.cfDetailUrlPrefix || null,
+          wfMissingPrbIntakeUrl: res?.deepLinkConfig?.wfMissingPrbIntakeUrl || null,
+        });
+      }
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Load PRBs failed:", e);
-      setErr(e?.message || "Failed to load PRBs");
+      if (mounted.current) {
+        setErr(e?.message || "Failed to load PRBs");
+      }
     } finally {
-      setIsLoading(false);
+      if (mounted.current) {
+        setIsLoading(false);
+      }
     }
   }
 
