@@ -25,7 +25,98 @@ function inferType(def) {
   return String(def?.type || def?.['meta:xdmType'] || '').toLowerCase() || 'string'
 }
 
-function pushField(def, path, out) {
+function resolveJsonPointer(root, pointer) {
+  if (!pointer || pointer[0] !== '#') return null
+  const parts = pointer.slice(1).split('/').filter(Boolean).map((p) => p.replace(/~1/g, '/').replace(/~0/g, '~'))
+
+  let cur = root
+  for (const part of parts) {
+    if (!isObject(cur) || !(part in cur)) return null
+    cur = cur[part]
+  }
+
+  return cur
+}
+
+function extractProperties(node, rootNode = node, seen = new Set()) {
+  if (!isObject(node)) return {}
+
+  const out = {}
+
+  if (isObject(node.properties)) {
+    Object.assign(out, node.properties)
+  }
+
+  if (Array.isArray(node.allOf)) {
+    for (const part of node.allOf) {
+      let resolved = part
+      if (isObject(part) && typeof part.$ref === 'string' && part.$ref.startsWith('#/')) {
+        if (seen.has(part.$ref)) continue
+        seen.add(part.$ref)
+        resolved = resolveJsonPointer(rootNode, part.$ref)
+      }
+
+      const partProps = extractProperties(resolved, rootNode, seen)
+      Object.assign(out, partProps)
+    }
+  }
+
+  return out
+}
+
+function normalizeRefBase(registryBase, kind) {
+  // from .../tenant/schemas => .../tenant/{kind}
+  if (/\/tenant\/schemas\/?$/i.test(registryBase)) {
+    return registryBase.replace(/\/tenant\/schemas\/?$/i, `/tenant/${kind}`)
+  }
+
+  // fallback for already-rooted registry base
+  return `${registryBase.replace(/\/$/, '')}/${kind}`
+}
+
+function inferRefKind(ref) {
+  const s = String(ref || '')
+  if (s.includes('/datatypes/')) return 'datatypes'
+  if (s.includes('/mixins/')) return 'mixins'
+  if (s.includes('/classes/')) return 'classes'
+  if (s.includes('/schemas/')) return 'schemas'
+  return null
+}
+
+function createRefResolver({ registryBase, headers }) {
+  const cache = new Map()
+
+  async function resolveRef(ref) {
+    const key = String(ref || '').trim()
+    if (!key) return null
+    if (cache.has(key)) return cache.get(key)
+
+    const kind = inferRefKind(key)
+    if (!kind) {
+      cache.set(key, null)
+      return null
+    }
+
+    const base = normalizeRefBase(registryBase, kind)
+    const url = `${base}/${encodeURIComponent(key)}`
+
+    try {
+      const payload = await fetchJson(url, {
+        method: 'GET',
+        headers
+      })
+      cache.set(key, payload)
+      return payload
+    } catch (e) {
+      cache.set(key, null)
+      return null
+    }
+  }
+
+  return { resolveRef }
+}
+
+function buildField(def, path) {
   const type = inferType(def)
   const field = {
     path,
@@ -40,29 +131,62 @@ function pushField(def, path, out) {
     field.itemType = inferType(itemDef)
     field.itemEnum = Array.isArray(itemDef?.enum) ? itemDef.enum : null
     field.itemRef = itemDef?.$ref || null
+    field.itemFields = []
   }
 
   if (type === 'object' && def?.$ref) field.ref = def.$ref
 
-  out.push(field)
+  return field
 }
 
-function collectLeafFields(node, prefix = '', out = []) {
+async function resolveObjectDef(def, resolver, visitedRefs = new Set()) {
+  if (!isObject(def)) return null
+  if (isObject(def.properties) || (Array.isArray(def.allOf) && def.allOf.length)) return def
+
+  const ref = String(def.$ref || '').trim()
+  if (!ref || visitedRefs.has(ref)) return null
+  visitedRefs.add(ref)
+
+  return resolver.resolveRef(ref)
+}
+
+async function collectLeafFields(node, prefix = '', out = [], resolver, visitedRefs = new Set()) {
   if (!isObject(node)) return out
 
-  const properties = isObject(node.properties) ? node.properties : null
-  if (!properties) return out
-
+  const properties = extractProperties(node, node)
   for (const [key, def] of Object.entries(properties)) {
     const path = prefix ? `${prefix}.${key}` : key
     const type = inferType(def)
 
-    if (type === 'object' && isObject(def?.properties)) {
-      collectLeafFields(def, path, out)
+    if (type === 'object') {
+      const objDef = await resolveObjectDef(def, resolver, visitedRefs)
+      if (objDef) {
+        await collectLeafFields(objDef, path, out, resolver, new Set(visitedRefs))
+        continue
+      }
+
+      out.push(buildField(def, path))
       continue
     }
 
-    pushField(def, path, out)
+    if (type === 'array') {
+      const field = buildField(def, path)
+      const itemDef = isObject(def?.items) ? def.items : {}
+
+      if (field.itemType === 'object') {
+        const itemObjDef = await resolveObjectDef(itemDef, resolver, new Set(visitedRefs))
+        if (itemObjDef) {
+          const itemFields = []
+          await collectLeafFields(itemObjDef, '', itemFields, resolver, new Set(visitedRefs))
+          field.itemFields = itemFields
+        }
+      }
+
+      out.push(field)
+      continue
+    }
+
+    out.push(buildField(def, path))
   }
 
   return out
@@ -148,9 +272,13 @@ async function main(params) {
       headers
     })
 
+    const resolver = createRefResolver({ registryBase, headers })
     const novoNodes = findNovoNodes(schemaPayload)
     const collected = []
-    for (const node of novoNodes) collectLeafFields(node, '', collected)
+
+    for (const node of novoNodes) {
+      await collectLeafFields(node, '', collected, resolver)
+    }
 
     const fields = uniqByPath(collected).sort((a, b) => a.path.localeCompare(b.path))
 

@@ -7,7 +7,6 @@ function buildIdentityObject(entityIdNS, entityId, tenantNs) {
   if (!ns || !id) return null
 
   if (ns === 'Email') return { email: id.toLowerCase() }
-  if (ns === 'testProfileId') return { testProfileId: id }
 
   // Namespace and attribute are different concepts:
   // namespace can be tenant code (e.g. novo), attribute remains novoMedlinkId.
@@ -128,3 +127,4 @@ async function main(params) {
 }
 
 exports.main = main
+

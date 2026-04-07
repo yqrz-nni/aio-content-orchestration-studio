@@ -22,7 +22,7 @@ function parseLines(text) {
 
 function toUiProfile (row) {
   return {
-    id: row?.profileId || row?.testProfileId || row?.novoMedlinkId || 'unknown-profile',
+    id: row?.email || row?.novoMedlinkId || row?.testProfileId || row?.profileId || 'unknown-profile',
     name: row?.name || '(unnamed profile)',
     channel: row?.channel || '-',
     email: row?.email || '-',
@@ -64,7 +64,7 @@ export function ProfileLabList () {
       } else if (identityType === 'tenant') {
         payload = { entityId: value, entityIdNS: '__tenant__' }
       } else {
-        payload = { entityId: value, entityIdNS: 'testProfileId' }
+        payload = { entityId: value, entityIdNS: '__tenant__' }
       }
 
       const res = await actionWebInvoke(actions['profile-lab-direct-read'], headers, payload, { method: 'POST' })
@@ -170,7 +170,6 @@ export function ProfileLabList () {
           <Flex gap="size-100" wrap>
             <Button variant={identityType === 'email' ? 'primary' : 'secondary'} onPress={() => setIdentityType('email')}>Email</Button>
             <Button variant={identityType === 'tenant' ? 'primary' : 'secondary'} onPress={() => setIdentityType('tenant')}>Tenant NS (novoMedlinkId)</Button>
-            <Button variant={identityType === 'testProfileId' ? 'primary' : 'secondary'} onPress={() => setIdentityType('testProfileId')}>testProfileId</Button>
           </Flex>
 
           <TextField

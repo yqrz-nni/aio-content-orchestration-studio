@@ -60,6 +60,42 @@ function isDateType (field) {
   return field?.format === 'date' || field?.format === 'date-time'
 }
 
+function hasMeaningfulValue (v) {
+  if (v === null || v === undefined) return false
+  if (typeof v === 'boolean') return true
+  if (typeof v === 'number') return Number.isFinite(v)
+  if (typeof v === 'string') return v.trim().length > 0
+  if (Array.isArray(v)) return v.length > 0
+  if (typeof v === 'object') return Object.keys(v).length > 0
+  return false
+}
+
+function normalizeValueByMeta (meta, value) {
+  const type = String(meta?.type || '').toLowerCase()
+
+  if (value === undefined || value === null) {
+    if (type === 'boolean') return false
+    return ''
+  }
+
+  if (isDateType(meta)) return String(value)
+
+  if (isNumericType(type)) {
+    if (typeof value === 'number') return value
+    const n = Number(value)
+    return Number.isFinite(n) ? n : ''
+  }
+
+  if (type === 'boolean') return Boolean(value)
+  return String(value)
+}
+
+function emptyValueByMeta (meta) {
+  const type = String(meta?.type || '').toLowerCase()
+  if (type === 'boolean') return false
+  return ''
+}
+
 function normalizeFieldValue (field, value) {
   const type = String(field?.type || '').toLowerCase()
 
@@ -79,6 +115,21 @@ function normalizeFieldValue (field, value) {
   if (type === 'array') {
     const itemType = String(field?.itemType || '').toLowerCase()
     if (!Array.isArray(value)) return ''
+
+    if (itemType === 'object') {
+      const itemFields = Array.isArray(field?.itemFields) ? field.itemFields : []
+      if (!itemFields.length) return value
+
+      return value.map((row) => {
+        const nextRow = {}
+        for (const itemField of itemFields) {
+          const raw = getByPath(row, itemField.path)
+          const normalized = normalizeValueByMeta(itemField, raw)
+          setByPath(nextRow, itemField.path, normalized)
+        }
+        return nextRow
+      })
+    }
 
     if (!itemType || itemType === 'string') return value.join('\n')
     return JSON.stringify(value, null, 2)
@@ -103,6 +154,29 @@ function valueForSave (field, value) {
 
   if (type === 'array') {
     const itemType = String(field?.itemType || '').toLowerCase()
+    if (itemType === 'object') {
+      if (!Array.isArray(value)) {
+        const text = String(value || '').trim()
+        if (!text) return []
+        return JSON.parse(text)
+      }
+
+      const itemFields = Array.isArray(field?.itemFields) ? field.itemFields : []
+      if (!itemFields.length) return value
+
+      const rows = []
+      for (const row of value) {
+        const next = {}
+        for (const itemField of itemFields) {
+          const raw = getByPath(row, itemField.path)
+          const converted = valueForSave(itemField, raw)
+          if (hasMeaningfulValue(converted)) setByPath(next, itemField.path, converted)
+        }
+        if (Object.keys(next).length) rows.push(next)
+      }
+      return rows
+    }
+
     if (!itemType || itemType === 'string') {
       return String(value || '')
         .split(/\r?\n/)
@@ -145,22 +219,22 @@ function valuesEqual (a, b) {
 function guessIdentityNs (decodedProfileId, currentNovo) {
   const id = String(decodedProfileId || '').trim()
   if (id.includes('@')) return 'Email'
-  if (currentNovo?.testProfileId) return 'testProfileId'
+  if (currentNovo?.email) return 'Email'
   if (currentNovo?.novoMedlinkId) return '__tenant__'
-  return 'testProfileId'
+  return '__tenant__'
 }
 
 function guessIdentityValue (decodedProfileId, currentNovo, ns) {
   if (ns === 'Email') return currentNovo?.email || decodedProfileId || ''
   if (ns === '__tenant__') return currentNovo?.novoMedlinkId || decodedProfileId || ''
-  return currentNovo?.testProfileId || decodedProfileId || ''
+  return decodedProfileId || ''
 }
 
 function toLookupPayload (decodedProfileId) {
   const id = String(decodedProfileId || '').trim()
   if (!id) return null
   if (id.includes('@')) return { emails: [id.toLowerCase()] }
-  return { entityId: id, entityIdNS: 'testProfileId' }
+  return { entityId: id, entityIdNS: '__tenant__' }
 }
 
 function fieldLabel (field) {
@@ -223,11 +297,12 @@ export function ProfileLabEdit () {
   const [datasetId, setDatasetId] = useState('')
   const [fields, setFields] = useState([])
 
-  const [identityNs, setIdentityNs] = useState('testProfileId')
+  const [identityNs, setIdentityNs] = useState('__tenant__')
   const [identityValue, setIdentityValue] = useState(decodedProfileId)
 
   const [baselineValues, setBaselineValues] = useState({})
   const [formValues, setFormValues] = useState({})
+  const [loadedNovo, setLoadedNovo] = useState({})
 
   const [isLoading, setIsLoading] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -247,6 +322,39 @@ export function ProfileLabEdit () {
     onFieldChange(path, baselineValues[path])
   }
 
+  function onArrayObjectItemChange (path, index, itemPath, value) {
+    setFormValues((prev) => {
+      const list = Array.isArray(prev[path]) ? [...prev[path]] : []
+      while (list.length <= index) list.push({})
+      const row = { ...(list[index] || {}) }
+      setByPath(row, itemPath, value)
+      list[index] = row
+      return { ...prev, [path]: list }
+    })
+  }
+
+  function onArrayObjectAddItem (path, field) {
+    const itemFields = Array.isArray(field?.itemFields) ? field.itemFields : []
+    const emptyItem = {}
+    for (const itemField of itemFields) {
+      setByPath(emptyItem, itemField.path, emptyValueByMeta(itemField))
+    }
+
+    setFormValues((prev) => {
+      const list = Array.isArray(prev[path]) ? [...prev[path]] : []
+      list.push(emptyItem)
+      return { ...prev, [path]: list }
+    })
+  }
+
+  function onArrayObjectRemoveItem (path, index) {
+    setFormValues((prev) => {
+      const list = Array.isArray(prev[path]) ? [...prev[path]] : []
+      if (index < 0 || index >= list.length) return prev
+      list.splice(index, 1)
+      return { ...prev, [path]: list }
+    })
+  }
   async function loadSchema () {
     try {
       setIsLoading(true)
@@ -275,13 +383,16 @@ export function ProfileLabEdit () {
     }
   }
 
-  async function loadCurrentValues (knownFields = fields) {
+  async function loadCurrentValues () {
     const payload = toLookupPayload(decodedProfileId)
     if (!payload) {
       setErr('Missing profile identifier in route.')
       setStatus('')
       return
     }
+
+    if (schemaId.trim()) payload.schemaId = schemaId.trim()
+    if (datasetId.trim()) payload.datasetId = datasetId.trim()
 
     try {
       setIsLoading(true)
@@ -292,14 +403,19 @@ export function ProfileLabEdit () {
       let first = Array.isArray(res?.items) && res.items.length ? res.items[0] : null
 
       if (!first && !decodedProfileId.includes('@')) {
-        res = await actionWebInvoke(actions['profile-lab-direct-read'], headers, {
+        const fallbackPayload = {
           entityId: decodedProfileId,
           entityIdNS: '__tenant__'
-        }, { method: 'POST' })
+        }
+        if (schemaId.trim()) fallbackPayload.schemaId = schemaId.trim()
+        if (datasetId.trim()) fallbackPayload.datasetId = datasetId.trim()
+
+        res = await actionWebInvoke(actions['profile-lab-direct-read'], headers, fallbackPayload, { method: 'POST' })
         first = Array.isArray(res?.items) && res.items.length ? res.items[0] : null
       }
 
       const currentNovo = first?.rawNovo || {}
+      setLoadedNovo(currentNovo)
 
       const effectiveNs = guessIdentityNs(decodedProfileId, currentNovo)
       const effectiveValue = guessIdentityValue(decodedProfileId, currentNovo, effectiveNs)
@@ -307,7 +423,7 @@ export function ProfileLabEdit () {
       setIdentityValue(effectiveValue)
 
       const nextBaseline = {}
-      const sourceFields = Array.isArray(knownFields) ? knownFields : []
+      const sourceFields = Array.isArray(fields) ? fields : []
       for (const field of sourceFields) {
         const raw = getByPath(currentNovo, field.path)
         nextBaseline[field.path] = normalizeFieldValue(field, raw)
@@ -326,7 +442,7 @@ export function ProfileLabEdit () {
 
   async function loadAll () {
     const loadedFields = await loadSchema()
-    if (loadedFields.length) await loadCurrentValues(loadedFields)
+    if (loadedFields.length) await loadCurrentValues()
   }
 
   async function saveChanges () {
@@ -335,7 +451,9 @@ export function ProfileLabEdit () {
       setErr('')
       setStatus('Submitting update...')
 
-      const novoPatch = {}
+      const mergedNovo = JSON.parse(JSON.stringify(loadedNovo || {}))
+      let hasChanges = false
+
       for (const field of fields) {
         const path = field.path
         const before = baselineValues[path]
@@ -352,18 +470,28 @@ export function ProfileLabEdit () {
         }
 
         if (converted === null) continue
-        setByPath(novoPatch, path, converted)
+        setByPath(mergedNovo, path, converted)
+        hasChanges = true
       }
 
-      if (!Object.keys(novoPatch).length) {
+      if (!String(mergedNovo?.novoMedlinkId || '').trim()) {
+        const fallbackNovoMedlinkId = String(
+          formValues?.novoMedlinkId || baselineValues?.novoMedlinkId || (identityNs.trim() === '__tenant__' ? identityValue.trim() : '')
+        ).trim()
+
+        if (fallbackNovoMedlinkId) {
+          mergedNovo.novoMedlinkId = fallbackNovoMedlinkId
+        }
+      }
+
+      if (!hasChanges) {
         setStatus('No changes detected.')
         return
       }
-
       const payload = {
         identityNs: identityNs.trim(),
         identityValue: identityValue.trim(),
-        attributes: { _novo: novoPatch },
+        attributes: { _novo: mergedNovo },
         syncValidation: true
       }
 
@@ -379,6 +507,7 @@ export function ProfileLabEdit () {
         }
       }
       setBaselineValues(nextBaseline)
+      setLoadedNovo(mergedNovo)
       setStatus(res?.note || 'Update submitted.')
     } catch (e) {
       setErr(e?.message || 'Update failed')
@@ -463,6 +592,115 @@ export function ProfileLabEdit () {
 
     if (type === 'array') {
       const itemType = String(field?.itemType || '').toLowerCase()
+
+      if (itemType === 'object' && Array.isArray(field?.itemFields) && field.itemFields.length) {
+        const rows = Array.isArray(value) ? value : []
+        return (
+          <View key={path} UNSAFE_style={{ gridColumn: '1 / -1' }}>
+            <Flex direction='row' justifyContent='space-between' alignItems='end'>
+              <Heading level={5}>{fieldLabel(field)}</Heading>
+              <Button variant='secondary' onPress={() => onArrayObjectAddItem(path, field)}>
+                Add Entry
+              </Button>
+            </Flex>
+            {help ? <Text UNSAFE_style={{ opacity: 0.7, fontSize: 11, marginBottom: 8 }}>{help}</Text> : null}
+
+            <Flex direction='column' gap='size-150'>
+              {rows.length === 0 ? (
+                <Text UNSAFE_style={{ opacity: 0.75 }}>No entries yet.</Text>
+              ) : (
+                rows.map((row, index) => (
+                  <View key={`${path}-${index}`} borderWidth='thin' borderColor='medium' borderRadius='small' padding='size-150'>
+                    <Flex direction='row' justifyContent='space-between' alignItems='center' marginBottom='size-100'>
+                      <Text><strong>Entry {index + 1}</strong></Text>
+                      <Button variant='negative' onPress={() => onArrayObjectRemoveItem(path, index)}>Remove</Button>
+                    </Flex>
+                    <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
+                      {field.itemFields.map((itemField) => {
+                        const itemValue = getByPath(row, itemField.path)
+                        const itemTypeLocal = String(itemField.type || '').toLowerCase()
+                        const label = itemField.title || itemField.path
+                        const itemKey = `${path}-${index}-${itemField.path}`
+
+                        if (itemTypeLocal === 'boolean') {
+                          return (
+                            <View key={itemKey}>
+                              <Checkbox
+                                isSelected={Boolean(itemValue)}
+                                onChange={(v) => onArrayObjectItemChange(path, index, itemField.path, v)}
+                                onKeyDown={(e) => onFieldUndo(e, path)}
+                              >
+                                {label}
+                              </Checkbox>
+                            </View>
+                          )
+                        }
+
+                        if (itemField?.enum?.length) {
+                          return (
+                            <View key={itemKey}>
+                              <Picker
+                                label={label}
+                                selectedKey={String(itemValue || '')}
+                                onSelectionChange={(k) => onArrayObjectItemChange(path, index, itemField.path, String(k || ''))}
+                                width='100%'
+                              >
+                                <Item key=''>--</Item>
+                                {itemField.enum.map((opt) => <Item key={opt}>{opt}</Item>)}
+                              </Picker>
+                            </View>
+                          )
+                        }
+
+                        if (isDateType(itemField)) {
+                          const dateValue = String(itemValue || '').slice(0, 10)
+                          return (
+                            <View key={itemKey}>
+                              <Text>{label}</Text>
+                              <input
+                                type='date'
+                                value={dateValue}
+                                onChange={(e) => onArrayObjectItemChange(path, index, itemField.path, e.target.value)}
+                                onKeyDown={(e) => onFieldUndo(e, path)}
+                                style={{ width: '100%', minHeight: 32, padding: 6, borderRadius: 4, border: '1px solid var(--spectrum-global-color-gray-400)' }}
+                              />
+                            </View>
+                          )
+                        }
+
+                        if (isNumericType(itemTypeLocal)) {
+                          return (
+                            <NumberField
+                              key={itemKey}
+                              label={label}
+                              value={itemValue === '' || itemValue === undefined ? undefined : Number(itemValue)}
+                              onChange={(v) => onArrayObjectItemChange(path, index, itemField.path, Number.isFinite(v) ? v : '')}
+                              onKeyDown={(e) => onFieldUndo(e, path)}
+                              width='100%'
+                            />
+                          )
+                        }
+
+                        return (
+                          <TextField
+                            key={itemKey}
+                            label={label}
+                            value={String(itemValue ?? '')}
+                            onChange={(v) => onArrayObjectItemChange(path, index, itemField.path, v)}
+                            onKeyDown={(e) => onFieldUndo(e, path)}
+                            width='100%'
+                          />
+                        )
+                      })}
+                    </div>
+                  </View>
+                ))
+              )}
+            </Flex>
+          </View>
+        )
+      }
+
       const label = itemType && itemType !== 'string'
         ? `${fieldLabel(field)} (JSON array)`
         : `${fieldLabel(field)} (one per line)`
@@ -481,7 +719,6 @@ export function ProfileLabEdit () {
         </View>
       )
     }
-
     if (type === 'object') {
       return (
         <View key={path}>
@@ -582,5 +819,8 @@ export function ProfileLabEdit () {
     </View>
   )
 }
+
+
+
 
 
