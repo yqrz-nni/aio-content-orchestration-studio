@@ -149,3 +149,94 @@ runtimeManifest:
             AEM_GQL_PATH: $AEM_GQL_PATH
             AEM_GQL_PATH_PROXY: $AEM_GQL_PATH_PROXY
             USE_AEM_PROXY: $USE_AEM_PROXY
+        profile-lab-list:
+          function: actions/aep/profile-lab/list/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs:
+            CLIENT_ID: $CLIENT_ID
+            SANDBOX_NAME: $SANDBOX_NAME
+            AEP_API_KEY: $AEP_API_KEY
+            AEP_SANDBOX_NAME: $AEP_SANDBOX_NAME
+            AEP_QUERY_API_BASE: $AEP_QUERY_API_BASE
+            AEP_QUERY_DB_NAME: $AEP_QUERY_DB_NAME
+            AEP_PROFILE_LAB_TABLE: $AEP_PROFILE_LAB_TABLE
+            AEP_PROFILE_LAB_SNAPSHOT_TABLE: $AEP_PROFILE_LAB_SNAPSHOT_TABLE
+            AEP_PROFILE_LAB_LIST_QUERY_NAME: $AEP_PROFILE_LAB_LIST_QUERY_NAME
+            AEP_QUERY_TIMEOUT_MS: $AEP_QUERY_TIMEOUT_MS
+            AEP_QUERY_POLL_MS: $AEP_QUERY_POLL_MS
+        profile-lab-refresh:
+          function: actions/aep/profile-lab/refresh/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs:
+            CLIENT_ID: $CLIENT_ID
+            SANDBOX_NAME: $SANDBOX_NAME
+            AEP_API_KEY: $AEP_API_KEY
+            AEP_SANDBOX_NAME: $AEP_SANDBOX_NAME
+            AEP_QUERY_API_BASE: $AEP_QUERY_API_BASE
+            AEP_QUERY_DB_NAME: $AEP_QUERY_DB_NAME
+            AEP_PROFILE_LAB_TABLE: $AEP_PROFILE_LAB_TABLE
+            AEP_PROFILE_LAB_SOURCE_TABLE: $AEP_PROFILE_LAB_SOURCE_TABLE
+            AEP_PROFILE_LAB_SNAPSHOT_TABLE: $AEP_PROFILE_LAB_SNAPSHOT_TABLE
+            AEP_PROFILE_LAB_REFRESH_QUERY_NAME: $AEP_PROFILE_LAB_REFRESH_QUERY_NAME
+        profile-lab-direct-read:
+          function: actions/aep/profile-lab/direct-read/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs:
+            CLIENT_ID: $CLIENT_ID
+            SANDBOX_NAME: $SANDBOX_NAME
+            AEP_API_KEY: $AEP_API_KEY
+            AEP_SANDBOX_NAME: $AEP_SANDBOX_NAME
+            AIO_TENANT_NAMESPACE: $AIO_TENANT_NAMESPACE
+            AEP_XDM_SCHEMA_ID: $AEP_XDM_SCHEMA_ID
+        profile-lab-schema-fields:
+          function: actions/aep/profile-lab/schema-fields/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs:
+            CLIENT_ID: $CLIENT_ID
+            SANDBOX_NAME: $SANDBOX_NAME
+            AEP_API_KEY: $AEP_API_KEY
+            AEP_SANDBOX_NAME: $AEP_SANDBOX_NAME
+            AEP_XDM_SCHEMA_ID: $AEP_XDM_SCHEMA_ID
+            AEP_PROFILE_DATASET_ID: $AEP_PROFILE_DATASET_ID
+            AEP_SCHEMA_REGISTRY_BASE: $AEP_SCHEMA_REGISTRY_BASE
+            AIO_TENANT_NAMESPACE: $AIO_TENANT_NAMESPACE
+        profile-lab-get:
+          function: actions/aep/profile-lab/get/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs: {}
+        profile-lab-create:
+          function: actions/aep/profile-lab/create/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs: {}
+        profile-lab-update:
+          function: actions/aep/profile-lab/update/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs:
+            AEP_STREAMING_INGEST_BASE: $AEP_STREAMING_INGEST_BASE
+            AEP_STREAMING_CONNECTION_ID: $AEP_STREAMING_CONNECTION_ID
+            AEP_XDM_SCHEMA_ID: $AEP_XDM_SCHEMA_ID
+            AEP_PROFILE_DATASET_ID: $AEP_PROFILE_DATASET_ID
+            AIO_TENANT_NAMESPACE: $AIO_TENANT_NAMESPACE
+            ORG_ID: $ORG_ID
+        audience-state-orchestration:
+          function: actions/audience-state-orchestration/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs: {}
+
+
+
+
+
+
+
+
+
+
