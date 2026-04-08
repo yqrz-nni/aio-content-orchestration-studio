@@ -20,6 +20,7 @@ import {
 import actions from '../../config.json'
 import actionWebInvoke from '../../utils'
 import { ImsContext } from '../../context/ImsContext'
+import { computeDerivedSignals } from './simulation/engine'
 
 function buildHeaders (ims) {
   return {
@@ -285,6 +286,45 @@ function groupFields (fields) {
     })
 }
 
+const DERIVED_PATH_PREFIXES = [
+  'hcpDemo.demoData.scores.contentAffinity',
+  'hcpDemo.demoData.scores.portfolioAffinity',
+  'hcpDemo.demoData.scores.engagementState',
+  'hcpDemo.demoData.scores.brandScores'
+]
+
+function isDerivedFieldPath(path) {
+  const p = String(path || '')
+  return DERIVED_PATH_PREFIXES.some((prefix) => p.startsWith(prefix))
+}
+
+function deepMerge(target, source) {
+  if (!source || typeof source !== 'object') return target
+
+  for (const [key, val] of Object.entries(source)) {
+    if (Array.isArray(val)) {
+      target[key] = val
+      continue
+    }
+
+    if (val && typeof val === 'object') {
+      const base = target[key] && typeof target[key] === 'object' && !Array.isArray(target[key]) ? target[key] : {}
+      target[key] = deepMerge(base, val)
+      continue
+    }
+
+    target[key] = val
+  }
+
+  return target
+}
+
+function formatScore(value, max = 1) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '-'
+  if (max === 10) return n.toFixed(1)
+  return n.toFixed(2)
+}
 export function ProfileLabEdit () {
   const nav = useNavigate()
   const { profileId } = useParams()
@@ -308,10 +348,43 @@ export function ProfileLabEdit () {
   const [isSaving, setIsSaving] = useState(false)
   const [status, setStatus] = useState('Load schema and current profile attributes to begin editing.')
   const [err, setErr] = useState('')
+  const [expandedSections, setExpandedSections] = useState({})
 
-  const sections = useMemo(() => groupFields(fields), [fields])
+  const editableFields = useMemo(() => fields.filter((f) => !isDerivedFieldPath(f?.path)), [fields])
+  const sections = useMemo(() => groupFields(editableFields), [editableFields])
 
-  function onFieldChange (path, value) {
+  const simulation = useMemo(() => {
+    const workingNovo = JSON.parse(JSON.stringify(loadedNovo || {}))
+
+    for (const field of fields) {
+      const current = formValues[field.path]
+      let converted
+
+      try {
+        converted = valueForSave(field, current)
+      } catch (e) {
+        continue
+      }
+
+      if (converted === null) continue
+      setByPath(workingNovo, field.path, converted)
+    }
+
+    if (!String(workingNovo?.novoMedlinkId || '').trim()) {
+      const fallbackNovoMedlinkId = String(
+        formValues?.novoMedlinkId || baselineValues?.novoMedlinkId || (identityNs.trim() === '__tenant__' ? identityValue.trim() : '')
+      ).trim()
+      if (fallbackNovoMedlinkId) workingNovo.novoMedlinkId = fallbackNovoMedlinkId
+    }
+
+    return computeDerivedSignals(workingNovo)
+  }, [loadedNovo, fields, formValues, baselineValues, identityNs, identityValue])
+
+  
+  function toggleSection(sectionKey) {
+    setExpandedSections((prev) => ({ ...prev, [sectionKey]: !prev[sectionKey] }))
+  }
+function onFieldChange (path, value) {
     setFormValues((prev) => ({ ...prev, [path]: value }))
   }
 
@@ -383,7 +456,7 @@ export function ProfileLabEdit () {
     }
   }
 
-  async function loadCurrentValues () {
+  async function loadCurrentValues (knownFields = fields) {
     const payload = toLookupPayload(decodedProfileId)
     if (!payload) {
       setErr('Missing profile identifier in route.')
@@ -423,7 +496,7 @@ export function ProfileLabEdit () {
       setIdentityValue(effectiveValue)
 
       const nextBaseline = {}
-      const sourceFields = Array.isArray(fields) ? fields : []
+      const sourceFields = Array.isArray(knownFields) ? knownFields : []
       for (const field of sourceFields) {
         const raw = getByPath(currentNovo, field.path)
         nextBaseline[field.path] = normalizeFieldValue(field, raw)
@@ -442,7 +515,7 @@ export function ProfileLabEdit () {
 
   async function loadAll () {
     const loadedFields = await loadSchema()
-    if (loadedFields.length) await loadCurrentValues()
+    if (loadedFields.length) await loadCurrentValues(loadedFields)
   }
 
   async function saveChanges () {
@@ -452,6 +525,7 @@ export function ProfileLabEdit () {
       setStatus('Submitting update...')
 
       const mergedNovo = JSON.parse(JSON.stringify(loadedNovo || {}))
+      const beforeSnapshot = JSON.stringify(mergedNovo)
       let hasChanges = false
 
       for (const field of fields) {
@@ -484,7 +558,11 @@ export function ProfileLabEdit () {
         }
       }
 
-      if (!hasChanges) {
+      const derivedResult = computeDerivedSignals(mergedNovo)
+      deepMerge(mergedNovo, derivedResult.derivedPatch)
+      const changedByDerived = JSON.stringify(mergedNovo) !== beforeSnapshot
+
+      if (!hasChanges && !changedByDerived) {
         setStatus('No changes detected.')
         return
       }
@@ -516,7 +594,16 @@ export function ProfileLabEdit () {
       setIsSaving(false)
     }
   }
-
+  useEffect(() => {
+    if (!sections.length) return
+    setExpandedSections((prev) => {
+      const next = { ...prev }
+      for (const section of sections) {
+        if (!(section.key in next)) next[section.key] = true
+      }
+      return next
+    })
+  }, [sections])
   useEffect(() => {
     loadAll()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -605,7 +692,7 @@ export function ProfileLabEdit () {
             </Flex>
             {help ? <Text UNSAFE_style={{ opacity: 0.7, fontSize: 11, marginBottom: 8 }}>{help}</Text> : null}
 
-            <Flex direction='column' gap='size-150'>
+            <Flex direction='column' gap='size-150' UNSAFE_style={{ height: '100%' }}>
               {rows.length === 0 ? (
                 <Text UNSAFE_style={{ opacity: 0.75 }}>No entries yet.</Text>
               ) : (
@@ -750,36 +837,30 @@ export function ProfileLabEdit () {
   }
 
   return (
-    <View>
+    <View UNSAFE_style={{ height: 'calc(100vh - 120px)', overflow: 'hidden' }}>
       <Heading level={2}>Edit Test Profile</Heading>
       <Text UNSAFE_style={{ opacity: 0.85 }}>
         Fields are grouped by schema path. Current profile values are loaded by default.
       </Text>
       <Divider size='S' marginY='size-200' />
 
-      <Flex direction='column' gap='size-150'>
-        <View>
-          <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))' }}>
-            <TextField label='Schema ID' value={schemaId} onChange={setSchemaId} width='100%' />
-            <TextField label='Dataset ID' value={datasetId} onChange={setDatasetId} width='100%' />
-          </div>
-        </View>
-
-        <Flex gap='size-100' wrap>
-          <Button variant='secondary' onPress={loadSchema} isDisabled={isLoading || isSaving}>Load Schema Fields</Button>
-          <Button variant='secondary' onPress={() => loadCurrentValues()} isDisabled={isLoading || isSaving || !fields.length}>Load Current Values</Button>
-          <Button variant='secondary' onPress={loadAll} isDisabled={isLoading || isSaving}>Load All</Button>
-        </Flex>
-
-        <Divider size='S' />
-
-        <View>
+      <Flex direction='column' gap='size-150' UNSAFE_style={{ height: '100%' }}>
+        <View
+          borderWidth='thin'
+          borderColor='medium'
+          borderRadius='small'
+          padding='size-150'
+          UNSAFE_style={{ position: 'sticky', top: 8, zIndex: 10, background: 'var(--spectrum-global-color-gray-50)' }}
+        >
           <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
             <TextField label='Identity Namespace' value={identityNs} onChange={setIdentityNs} width='100%' />
             <TextField label='Identity Value' value={identityValue} onChange={setIdentityValue} width='100%' />
           </div>
-        </View>
 
+          <Flex gap='size-100' marginTop='size-125' wrap>
+            <Button variant='secondary' onPress={() => loadCurrentValues()} isDisabled={isLoading || isSaving || !fields.length}>Reload Current Values</Button>
+          </Flex>
+        </View>
         {isLoading ? (
           <Flex alignItems='center' gap='size-100'>
             <ProgressCircle size='S' isIndeterminate />
@@ -788,30 +869,117 @@ export function ProfileLabEdit () {
         ) : null}
 
         {sections.length ? (
-          <Flex direction='column' gap='size-200'>
-            {sections.map((section) => (
-              <View key={section.key} borderWidth='thin' borderColor='dark' borderRadius='small' padding='size-175'>
-                <Heading level={4}>{section.title}</Heading>
-                <Text UNSAFE_style={{ opacity: 0.72, fontSize: 11, marginBottom: 10 }}>
-                  {section.key === '__root__' ? 'Top-level profile attributes.' : section.key}
-                </Text>
+          <Flex direction='row' gap='size-200' alignItems='start' UNSAFE_style={{ flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
+            <View
+              borderWidth='thin'
+              borderColor='dark'
+              borderRadius='small'
+              padding='size-175'
+              UNSAFE_style={{ flex: '1 1 760px', minWidth: 0, overflow: 'auto', maxHeight: '100%' }}
+            >
+              <Flex direction='row' justifyContent='space-between' alignItems='center' wrap gap='size-100'>
+                <Heading level={4}>Test Profile Data</Heading>
+                <Flex gap='size-100' wrap>
+                  <Button variant='cta' onPress={saveChanges} isDisabled={isLoading || isSaving || !identityNs.trim() || !identityValue.trim() || !fields.length}>
+                    {isSaving ? 'Saving...' : 'Save Changes'}
+                  </Button>
+                  <Button variant='secondary' onPress={() => nav('/profile-lab')}>Back to Search</Button>
+                </Flex>
+              </Flex>
+              <Flex direction='column' gap='size-125'>
+                {sections.map((section) => {
+                  const isOpen = expandedSections[section.key] !== false
+                  return (
+                    <View key={section.key} borderWidth='thin' borderColor='dark' borderRadius='small' padding='size-125'>
+                      <Flex direction='row' justifyContent='space-between' alignItems='center' gap='size-100'>
+                        <View>
+                          <Text><strong>{section.title}</strong></Text>
+                          <Text UNSAFE_style={{ opacity: 0.72, fontSize: 11 }}>
+                            {section.key === '__root__' ? 'Top-level profile attributes.' : section.key}
+                          </Text>
+                        </View>
+                        <Button variant='secondary' onPress={() => toggleSection(section.key)}>
+                          {isOpen ? 'Collapse' : 'Expand'}
+                        </Button>
+                      </Flex>
 
-                <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
-                  {section.fields.map(renderInput)}
-                </div>
+                      {isOpen ? (
+                        <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', marginTop: 12 }}>
+                          {section.fields.map(renderInput)}
+                        </div>
+                      ) : null}
+                    </View>
+                  )
+                })}
+              </Flex>
+            </View>
+
+            <View
+              borderWidth='thin'
+              borderColor='medium'
+              borderRadius='small'
+              padding='size-175'
+              UNSAFE_style={{ flex: '1 1 360px', minWidth: 300, overflow: 'auto', maxHeight: '100%', background: 'var(--spectrum-global-color-gray-50)' }}
+            >
+              <Heading level={4}>Simulated Outcomes</Heading>
+
+              <View borderWidth='thin' borderColor='light' borderRadius='small' padding='size-125' marginBottom='size-125'>
+                <Text><strong>Engagement State</strong></Text>
+                <View borderWidth='thin' borderColor='light' borderRadius='small' padding='size-100' marginTop='size-75'>
+                  <Text>ownedChannels</Text>
+                  <Text UNSAFE_style={{ fontSize: 12, opacity: 0.9 }}>{simulation?.preview?.engagementState?.ownedChannels || '-'}</Text>
+                </View>
               </View>
-            ))}
+
+              <View borderWidth='thin' borderColor='light' borderRadius='small' padding='size-125' marginBottom='size-125'>
+                <Text><strong>Content Affinity</strong></Text>
+                <Flex direction='column' gap='size-75' marginTop='size-75'>
+                  {Object.entries(simulation?.preview?.contentAffinity || {}).map(([k, v]) => (
+                    <View key={k} borderWidth='thin' borderColor='light' borderRadius='small' padding='size-100'>
+                      <Text>{k}</Text>
+                      <Text UNSAFE_style={{ fontSize: 12, opacity: 0.9 }}>{formatScore(v, k === 'samples' ? 10 : 1)}</Text>
+                    </View>
+                  ))}
+                  <View borderWidth='thin' borderColor='light' borderRadius='small' padding='size-100'>
+                    <Text>portfolioAffinity</Text>
+                    <Text UNSAFE_style={{ fontSize: 12, opacity: 0.9 }}>{formatScore(simulation?.preview?.portfolioAffinity, 1)}</Text>
+                  </View>
+                </Flex>
+              </View>
+
+              <View borderWidth='thin' borderColor='light' borderRadius='small' padding='size-125' marginBottom='size-125'>
+                <Text><strong>Brand Scores</strong></Text>
+                {(simulation?.preview?.brandScores || []).length ? (
+                  <Flex direction='column' gap='size-100' marginTop='size-75'>
+                    {(simulation?.preview?.brandScores || []).map((score) => (
+                      <View key={score.brandId} borderWidth='thin' borderColor='light' borderRadius='small' padding='size-100'>
+                        <Text><strong>{score.brandId}</strong></Text>
+                        <Text UNSAFE_style={{ fontSize: 11, opacity: 0.85 }}>NBRx: {score.nbrxDirection} / {score.nbrxState}</Text>
+                        <Text UNSAFE_style={{ fontSize: 11, opacity: 0.85 }}>RBRx: {score.rbrxDirection} / {score.rbrxState}</Text>
+                        <Text UNSAFE_style={{ fontSize: 11, opacity: 0.85 }}>TRx: {score.trxDirection} / {score.trxState}</Text>
+                      </View>
+                    ))}
+                  </Flex>
+                ) : (
+                  <Text UNSAFE_style={{ opacity: 0.75, marginTop: 8 }}>No brandSignals found to derive brandScores.</Text>
+                )}
+              </View>
+
+              <View borderWidth='thin' borderColor='light' borderRadius='small' padding='size-125'>
+                <Text><strong>Why these values?</strong></Text>
+                <Flex direction='column' gap='size-75' marginTop='size-75'>
+                  {(simulation?.explanations || []).map((line, idx) => (
+                    <View key={`sim-exp-${idx}`} borderWidth='thin' borderColor='light' borderRadius='small' padding='size-100'>
+                      <Text UNSAFE_style={{ fontSize: 11, opacity: 0.85 }}>{line}</Text>
+                    </View>
+                  ))}
+                </Flex>
+              </View>
+            </View>
           </Flex>
         ) : (
           <Text UNSAFE_style={{ opacity: 0.75 }}>No fields loaded yet.</Text>
         )}
-
-        <Flex gap='size-100' wrap>
-          <Button variant='cta' onPress={saveChanges} isDisabled={isLoading || isSaving || !identityNs.trim() || !identityValue.trim() || !fields.length}>
-            {isSaving ? 'Saving...' : 'Save Changes'}
-          </Button>
-          <Button variant='secondary' onPress={() => nav('/profile-lab')}>Back to Search</Button>
-        </Flex>
 
         {status ? <StatusLight variant='positive'>{status}</StatusLight> : null}
         {err ? <StatusLight variant='negative'>{err}</StatusLight> : null}
@@ -819,7 +987,6 @@ export function ProfileLabEdit () {
     </View>
   )
 }
-
 
 
 
