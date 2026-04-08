@@ -4,6 +4,7 @@
   "private": true,
   "dependencies": {
     "@adobe/aio-sdk": "^6",
+    "@adobe/aio-lib-state": "^5",
     "@adobe/exc-app": "^1.3.0",
     "@adobe/generator-app-excshell": "^2.0.0",
     "@adobe/react-spectrum": "^3.4.0",

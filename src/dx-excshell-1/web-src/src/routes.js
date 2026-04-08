@@ -6,7 +6,8 @@ export const appNavRoutes = [
   { path: '/flow', label: 'Content Orchestration Studio' },
   { path: '/audience', label: 'Audience State Orchestration Studio' },
   { path: '/prb', label: 'PRB Explorer' },
-  { path: '/profile-lab', label: 'Profile Lab' }
+  { path: '/profile-lab', label: 'Profile Lab' },
+  { path: '/state-admin', label: 'State Admin' }
 ]
 
 export const appRouteConfig = [
@@ -27,6 +28,10 @@ export const appRouteConfig = [
     component: lazyLoad(() => import('./apps/profile-lab').then((m) => ({ default: m.default })))
   },
   {
+    path: '/state-admin',
+    component: lazyLoad(() => import('./apps/state-admin').then((m) => ({ default: m.default })))
+  },
+  {
     path: '/profile-lab/new',
     component: lazyLoad(() => import('./screens/profile-lab/ProfileLabCreate').then((m) => ({ default: m.ProfileLabCreate })))
   },
@@ -43,3 +48,5 @@ export const appRouteConfig = [
     component: lazyLoad(() => import('./screens/TemplateStudio').then((m) => ({ default: m.TemplateStudio })))
   }
 ]
+
+

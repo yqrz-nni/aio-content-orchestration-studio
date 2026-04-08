@@ -225,16 +225,31 @@ runtimeManifest:
             AEP_PROFILE_DATASET_ID: $AEP_PROFILE_DATASET_ID
             AIO_TENANT_NAMESPACE: $AIO_TENANT_NAMESPACE
             ORG_ID: $ORG_ID
+        state-admin-list:
+          function: actions/aep/state-admin/list/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs: {}
+        state-admin-get:
+          function: actions/aep/state-admin/get/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs: {}
+        state-admin-upsert:
+          function: actions/aep/state-admin/upsert/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs: {}
+        state-admin-delete:
+          function: actions/aep/state-admin/delete/index.js
+          web: 'yes'
+          runtime: nodejs:18
+          inputs: {}
         audience-state-orchestration:
           function: actions/audience-state-orchestration/index.js
           web: 'yes'
           runtime: nodejs:18
           inputs: {}
-
-
-
-
-
 
 
 
